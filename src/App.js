@@ -897,6 +897,271 @@ function ResultadosPanel({ circ, tarifario, TC }) {
   )
 }
 
-function useState(init) {
-  return require('react').useState(init)
+
+
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App'
+
+const root = ReactDOM.createRoot(document.getElementById('root'))
+root.render(<React.StrictMode><App /></React.StrictMode>)
+
+import { norm, CAT_COLORS, CAT_ICONS } from './helpers'
+
+export function Badge({ text }) {
+  const c = norm(text)
+  const style = CAT_COLORS[c] || { bg: '#f0f0f0', color: '#666' }
+  const ico = CAT_ICONS[c] || '📌'
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 9, fontSize: 11, fontWeight: 700, background: style.bg, color: style.color, whiteSpace: 'nowrap' }}>
+      {ico} {text || '—'}
+    </span>
+  )
+}
+
+export function TipoBadge({ tipo }) {
+  const t = norm(tipo)
+  if (t === 'LIBERO') return <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 9, fontSize: 11, fontWeight: 700, background: '#d8f3dc', color: '#1b4332' }}>LIBERO</span>
+  if (t === 'OPCIONAL') return <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 9, fontSize: 11, fontWeight: 700, background: '#caf0f8', color: '#03045e' }}>OPCIONAL</span>
+  return <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 9, fontSize: 11, background: '#eee', color: '#666' }}>{tipo || '—'}</span>
+}
+
+export function Btn({ children, onClick, outline, danger, disabled, small, full }) {
+  const base = {
+    padding: small ? '5px 13px' : '8px 18px',
+    borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer',
+    fontSize: small ? 12 : 13, fontFamily: 'inherit', fontWeight: 600,
+    border: 'none', opacity: disabled ? 0.5 : 1, transition: 'all .2s',
+    width: full ? '100%' : 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
+  }
+  if (danger) return <button style={{ ...base, background: '#b83232', color: '#fff' }} onClick={onClick} disabled={disabled}>{children}</button>
+  if (outline) return <button style={{ ...base, background: 'transparent', border: '1.5px solid #d8d2c8', color: '#8a8278' }} onClick={onClick} disabled={disabled}>{children}</button>
+  return <button style={{ ...base, background: '#b8952a', color: '#12151f' }} onClick={onClick} disabled={disabled}>{children}</button>
+}
+
+export function KPIGrid({ items }) {
+  const colors = { gold: '#b8952a', forest: '#52b788', rust: '#b83232', sky: '#1565a0', violet: '#5c35a0' }
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginBottom: 22 }}>
+      {items.map((kpi, i) => (
+        <div key={i} style={{ background: '#fff', borderRadius: 12, padding: '14px 16px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderLeft: `3px solid ${colors[kpi.cls] || '#d8d2c8'}` }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: .8, color: '#8a8278', fontWeight: 600, marginBottom: 5 }}>{kpi.label}</div>
+          <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, lineHeight: 1.2 }}>{kpi.val}</div>
+          {kpi.sub && <div style={{ fontSize: 11, color: '#8a8278', marginTop: 3 }}>{kpi.sub}</div>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export function Modal({ title, children, onClose, wide }) {
+  return (
+    <div onClick={(e) => e.target === e.currentTarget && onClose()}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: `min(${wide ? '900px' : '500px'}, 95vw)`, maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 40px rgba(0,0,0,.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20 }}>{title}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#aaa' }}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+export function Spinner() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 60 }}>
+      <div style={{ width: 32, height: 32, border: '3px solid #ece7df', borderTop: '3px solid #b8952a', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+    </div>
+  )
+}
+
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = process.env.REACT_APP_SUPABASE_URL
+const supabaseKey = process.env.REACT_APP_SUPABASE_ANON_KEY
+
+export const supabase = createClient(supabaseUrl, supabaseKey)
+
+import { useState } from 'react'
+import { supabase } from './supabase'
+import { Btn } from './components'
+
+export default function Login() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleLogin = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) setError('Correo o contraseña incorrectos')
+    setLoading(false)
+  }
+
+  const inp = {
+    width: '100%', padding: '11px 14px', border: '1.5px solid #d8d2c8',
+    borderRadius: 9, fontFamily: 'inherit', fontSize: 14, outline: 'none',
+    transition: 'border-color .2s', background: '#fafaf8',
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#12151f', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 20, padding: '40px 36px', width: 'min(420px,100%)', boxShadow: '0 20px 60px rgba(0,0,0,.3)' }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 32, fontWeight: 700, color: '#12151f' }}>
+            CxP <span style={{ color: '#b8952a' }}>Circuitos</span>
+          </div>
+          <div style={{ color: '#8a8278', fontSize: 13, marginTop: 6 }}>Control de Cuentas por Pagar</div>
+        </div>
+
+        <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#8a8278', display: 'block', marginBottom: 5 }}>CORREO</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              style={inp} placeholder="tu@correo.com" required
+              onFocus={(e) => e.target.style.borderColor = '#b8952a'}
+              onBlur={(e) => e.target.style.borderColor = '#d8d2c8'} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#8a8278', display: 'block', marginBottom: 5 }}>CONTRASEÑA</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+              style={inp} placeholder="••••••••" required
+              onFocus={(e) => e.target.style.borderColor = '#b8952a'}
+              onBlur={(e) => e.target.style.borderColor = '#d8d2c8'} />
+          </div>
+
+          {error && (
+            <div style={{ background: '#fff0f0', border: '1px solid #ffcdd2', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b83232' }}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          <Btn full disabled={loading} onClick={handleLogin}>
+            {loading ? 'Ingresando...' : 'Ingresar →'}
+          </Btn>
+        </form>
+
+        <div style={{ textAlign: 'center', marginTop: 24, fontSize: 12, color: '#bbb' }}>
+          ¿Problemas para ingresar? Contacta al administrador.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export const norm = (v) => (v ? String(v).toUpperCase().trim().replace(/\s+/g, ' ') : '')
+export const clean = (v) => (!v || v === '\xa0' ? '' : String(v).trim())
+export const parseAmt = (v) => {
+  if (!v || v === '\xa0') return 0
+  if (typeof v === 'number') return Math.abs(v)
+  return parseFloat(String(v).replace(/[^0-9.]/g, '')) || 0
+}
+export const fmtMXN = (v) =>
+  v > 0 ? new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(v) : '—'
+export const fmtUSD = (v) =>
+  v > 0 ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v) : '—'
+export const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s)
+
+export const CAT_ICONS = { HOSPEDAJE: '🏨', TRANSPORTE: '🚌', ACTIVIDADES: '🎯', ALIMENTOS: '🍽', GUIA: '🧭' }
+export const CAT_COLORS = {
+  HOSPEDAJE: { bg: '#fff3cd', color: '#7d5a00' },
+  TRANSPORTE: { bg: '#e0e7ff', color: '#1e1b8b' },
+  ACTIVIDADES: { bg: '#fce7f3', color: '#831843' },
+  ALIMENTOS: { bg: '#ecfdf5', color: '#064e3b' },
+  GUIA: { bg: '#f3e8ff', color: '#4a0072' },
+}
+
+export function getImporte(row, circInfo, tarifario) {
+  const pKey = norm(row.prov_general)
+  const match = tarifario.find((t) => norm(t.proveedor) === pKey)
+  if (!match || match.precio === 0) return { mxn: 0, usd: 0, found: false }
+  let unidades = 1
+  if (norm(row.clasificacion) === 'HOSPEDAJE') unidades = parseInt(circInfo?.habs) || 1
+  const total = match.precio * unidades
+  return match.moneda === 'USD'
+    ? { mxn: 0, usd: total, found: true }
+    : { mxn: total, usd: 0, found: true }
+}
+
+export function getDC(row, tarifario) {
+  const m = tarifario.find((t) => norm(t.proveedor) === norm(row.prov_general))
+  return m ? m.dias_credito || 0 : 0
+}
+
+export function parseCircuito(ws) {
+  const raw = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: null })
+  const info = {
+    tl: raw[0]?.[1], rep: raw[1]?.[1], operador: raw[2]?.[1],
+    id: clean(raw[3]?.[1]), habs: raw[0]?.[5], pax: raw[1]?.[5],
+    fecha_inicio: raw[3]?.[7],
+  }
+  const circId = info.id || 'CIRC-' + Date.now()
+  const rows = []
+  let idx = 0
+  for (let i = 6; i < raw.length; i++) {
+    const r = raw[i]
+    if (!r || r.every((v) => !v || v === '\xa0')) continue
+    if (!r[3] && !r[5] && !r[6]) continue
+    const tipo = norm(r[6])
+    if (tipo !== 'LIBERO' && tipo !== 'OPCIONAL') continue
+    rows.push({
+      idx: idx++,
+      fecha: r[0] instanceof Date ? r[0].toISOString() : null,
+      destino: clean(r[3]),
+      clasificacion: clean(r[4]),
+      servicio: clean(r[5]),
+      tipo: clean(r[6]),
+      prov_general: clean(r[7]),
+      t_venta: parseAmt(r[10]),
+      paid: false,
+      fecha_pago: null,
+      nota: '',
+    })
+  }
+  let monthKey = 'Sin mes'
+  const fi = info.fecha_inicio
+  if (fi instanceof Date) monthKey = fi.toLocaleDateString('es-MX', { year: 'numeric', month: 'long' })
+  return { id: circId, info, rows, monthKey }
+}
+
+REACT_APP_SUPABASE_URL=https://itrmpmqcppfbrhicsyvs.supabase.co
+REACT_APP_SUPABASE_ANON_KEY=sb_publishable_QmsrpM8ve_9AUAKtiDeCtg_CoYRfHe9
+
+node_modules/
+build/
+.env.local
+.DS_Store
+
+{
+  "name": "cxp-circuitos",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "xlsx": "^0.18.5"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test"
+  },
+  "browserslist": {
+    "production": [">0.2%", "not dead", "not op_mini all"],
+    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
+  }
+}
+
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "build",
+  "framework": "create-react-app"
 }
