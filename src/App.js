@@ -305,7 +305,7 @@ function Dashboard({ session }) {
           {view.type === 'all' && <AllView circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'resultados_all' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} />}
-          {view.type === 'resultados_mes' && <EstadoResultados circuits={monthMap[view.monthKey] || []} monthMap={{}} sortedMonths={[]} tarifario={tarifario} TC={TC} titulo={`Estado de Resultados — ${cap(view.monthKey)}`} soloMes />}
+          {view.type === 'resultados_mes' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} initModo="mes" initMes={view.monthKey} />}
           {view.type === 'circuit' && activeCircuit && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows}
@@ -347,88 +347,234 @@ function Dashboard({ session }) {
 // ═══════════════════════════════════════════════
 //  ESTADO DE RESULTADOS
 // ═══════════════════════════════════════════════
-function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, titulo, soloMes }) {
-  const [agrupacion, setAgrupacion] = useState('mes') // 'mes' | 'circuito' | 'resumen'
+function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, initModo, initMes }) {
+  const [modo, setModo] = useState(initModo || 'todos')
+  const [mesSel, setMesSel] = useState(initMes || sortedMonths[0] || '')
+  const [circSel, setCircSel] = useState(circuits[0]?.id || '')
 
-  // Calcular totales globales
-  let totalIngreso = 0, totalCosto = 0, totalPaidMXN = 0, totalPaidUSD = 0, totalPendMXN = 0, totalPendUSD = 0
-  circuits.forEach((c) => {
-    const { costoTotal, paidMXN, paidUSD, ingresoMXN, costoMXN, costoUSD } = calcCircTotals(c, tarifario, TC)
-    totalIngreso += ingresoMXN
+  // Circuitos a mostrar según modo
+  const circsMostrar = modo === 'todos' ? circuits
+    : modo === 'mes' ? (monthMap[mesSel] || [])
+    : circuits.filter((c) => c.id === circSel)
+
+  // Totales de los circuitos seleccionados
+  let totalIngUSD = 0, totalIngMXN = 0, totalCosto = 0
+  let totalPaidMXN = 0, totalPaidUSD = 0, totalPendMXN = 0, totalPendUSD = 0
+  const catCosto = {}, catPaidMXN = {}, catPaidUSD = {}, catPendMXN = {}, catPendUSD = {}
+
+  circsMostrar.forEach((c) => {
+    totalIngUSD += c.importe_cobrado || 0
+    const { costoTotal, paidMXN, paidUSD, costoMXN, costoUSD, ingresoMXN } = calcCircTotals(c, tarifario, TC)
+    totalIngMXN += ingresoMXN
     totalCosto += costoTotal
     totalPaidMXN += paidMXN; totalPaidUSD += paidUSD
     totalPendMXN += costoMXN - paidMXN; totalPendUSD += costoUSD - paidUSD
-  })
-  const totalUtilidad = totalIngreso - totalCosto
-  const hayIngreso = totalIngreso > 0
 
-  const TabBtn = ({ id, label }) => (
-    <button onClick={() => setAgrupacion(id)} style={{ padding: '7px 16px', border: 'none', background: agrupacion === id ? '#12151f' : 'transparent', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: agrupacion === id ? 700 : 500, color: agrupacion === id ? '#e0c96a' : 'rgba(255,255,255,.55)', fontFamily: 'inherit', transition: 'all .2s' }}>{label}</button>
+    c.rows.forEach((r) => {
+      const cat = norm(r.clasificacion) || 'OTROS'
+      const { mxn, usd } = getImporte(r, c.info, tarifario)
+      const v = mxn + usd * TC; if (v > 0) catCosto[cat] = (catCosto[cat] || 0) + v
+      if (!catPaidMXN[cat]) { catPaidMXN[cat] = 0; catPaidUSD[cat] = 0; catPendMXN[cat] = 0; catPendUSD[cat] = 0 }
+      if (r.paid) { catPaidMXN[cat] += mxn; catPaidUSD[cat] += usd }
+      else { catPendMXN[cat] += mxn; catPendUSD[cat] += usd }
+    })
+  })
+
+  const utilidad = totalIngMXN - totalCosto
+  const hayIngreso = totalIngMXN > 0
+  const maxCat = Math.max(...Object.values(catCosto), 1)
+  const CATS = ['HOSPEDAJE', 'TRANSPORTE', 'ACTIVIDADES', 'ALIMENTOS', 'GUIA', 'OTROS']
+  const CAT_COLS = { HOSPEDAJE: '#f4a261', TRANSPORTE: '#4361ee', ACTIVIDADES: '#f72585', ALIMENTOS: '#2d6a4f', GUIA: '#9b5de5', OTROS: '#888' }
+  const allCats = [...new Set([...CATS.filter((c) => catCosto[c]), ...Object.keys(catCosto)])]
+
+  const Card = ({ children, col }) => <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16, gridColumn: col }}>{children}</div>
+  const CH = ({ t }) => <h3 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 15, marginBottom: 14, paddingBottom: 8, borderBottom: '2px solid #ece7df' }}>{t}</h3>
+  const DRow = ({ label, val, color, bold, big }) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #f0ebe3', fontSize: big ? 15 : 13 }}>
+      <span style={{ color: bold ? '#12151f' : '#8a8278', fontWeight: bold ? 700 : 400 }}>{label}</span>
+      <span style={{ fontWeight: bold ? 800 : 600, color: color || '#12151f' }}>{val}</span>
+    </div>
   )
+
+  const selStyle = { border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '6px 12px', fontFamily: 'inherit', fontSize: 12, background: '#fff', cursor: 'pointer', outline: 'none', color: '#12151f', minWidth: 180 }
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 26, marginBottom: 4 }}>{titulo || '📈 Estado de Resultados'}</h2>
-      <p style={{ color: '#8a8278', fontSize: 13, marginBottom: 16 }}>{circuits.length} circuito{circuits.length !== 1 ? 's' : ''}{!soloMes ? ` · ${Object.keys(monthMap).length} meses` : ''}</p>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 26, marginBottom: 16 }}>📈 Estado de Resultados</h2>
 
-      {/* Selector de agrupación */}
-      <div style={{ display: 'flex', gap: 3, background: '#12151f', borderRadius: 10, padding: 3, marginBottom: 20, width: 'fit-content' }}>
-        <TabBtn id="resumen" label="📊 Resumen General" />
-        {!soloMes && <TabBtn id="mes" label="📅 Por Mes" />}
-        <TabBtn id="circuito" label="🗂 Por Circuito" />
+      {/* ── Selector de modo ── */}
+      <div style={{ background: '#fff', borderRadius: 12, padding: '14px 16px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        {[['todos', '📊 Todos los circuitos'], ['mes', '📅 Por Mes'], ['circuito', '🗂 Por Circuito']].map(([id, lbl]) => (
+          <button key={id} onClick={() => setModo(id)}
+            style={{ padding: '8px 18px', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: modo === id ? 700 : 500, fontFamily: 'inherit', background: modo === id ? '#12151f' : '#f5f1eb', color: modo === id ? '#e0c96a' : '#8a8278', transition: 'all .15s' }}>
+            {lbl}
+          </button>
+        ))}
+
+        {modo === 'mes' && sortedMonths.length > 0 && (
+          <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={selStyle}>
+            {sortedMonths.map((mk) => <option key={mk} value={mk}>{cap(mk)} ({monthMap[mk]?.length || 0} circuitos)</option>)}
+          </select>
+        )}
+
+        {modo === 'circuito' && circuits.length > 0 && (
+          <select value={circSel} onChange={(e) => setCircSel(e.target.value)} style={selStyle}>
+            {circuits.map((c) => <option key={c.id} value={c.id}>{c.id.split('-').slice(-3).join('-')}{c.info?.tl ? ` — ${c.info.tl}` : ''}</option>)}
+          </select>
+        )}
+
+        <span style={{ fontSize: 11, color: '#8a8278', marginLeft: 'auto' }}>
+          {circsMostrar.length} circuito{circsMostrar.length !== 1 ? 's' : ''}
+        </span>
       </div>
 
-      {/* ── Resumen general KPIs ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 20 }}>
+      {/* ── KPIs resumen ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(148px,1fr))', gap: 12, marginBottom: 20 }}>
         {[
-          { label: 'Circuitos', val: circuits.length, cls: 'gold' },
-          { label: '💰 Ingresos', val: hayIngreso ? fmtMXN(totalIngreso) : 'Sin capturar', cls: 'forest' },
-          { label: '📤 Costos', val: fmtMXN(totalCosto), cls: 'rust' },
-          { label: hayIngreso ? (totalUtilidad >= 0 ? '✅ Utilidad' : '❌ Pérdida') : 'Margen', val: hayIngreso ? fmtMXN(Math.abs(totalUtilidad)) : '—', cls: hayIngreso ? (totalUtilidad >= 0 ? 'forest' : 'rust') : 'sky' },
+          { label: 'Circuitos', val: circsMostrar.length, cls: 'gold' },
+          { label: '💰 Cobrado (USD)', val: totalIngUSD > 0 ? fmtUSD(totalIngUSD) : '—', sub: totalIngUSD > 0 ? fmtMXN(totalIngMXN) + ' MN' : 'Sin capturar', cls: 'forest' },
+          { label: '📤 Total Costos', val: fmtMXN(totalCosto), cls: 'rust' },
+          { label: hayIngreso ? (utilidad >= 0 ? '✅ Utilidad' : '❌ Pérdida') : '💡 Margen', val: hayIngreso ? fmtMXN(Math.abs(utilidad)) : '—', sub: hayIngreso && totalCosto > 0 ? `${((utilidad / totalIngMXN) * 100).toFixed(1)}%` : undefined, cls: hayIngreso ? (utilidad >= 0 ? 'forest' : 'rust') : 'sky' },
           { label: '✅ Pagado MXN', val: fmtMXN(totalPaidMXN), sub: fmtUSD(totalPaidUSD) + ' USD', cls: 'forest' },
           { label: '⏳ Pendiente MXN', val: fmtMXN(totalPendMXN), sub: fmtUSD(totalPendUSD) + ' USD', cls: 'rust' },
         ].map((k, i) => <KPICard key={i} {...k} />)}
       </div>
 
-      {/* ── Resumen general ── */}
-      {agrupacion === 'resumen' && <ResumenGeneralCard circuits={circuits} tarifario={tarifario} TC={TC} />}
+      {/* ── Cuerpo principal en grid ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
 
-      {/* ── Por mes ── */}
-      {agrupacion === 'mes' && !soloMes && (
-        <div>
-          {sortedMonths.map((mk) => {
-            const mCircs = monthMap[mk]
-            let mIng = 0, mCosto = 0, mPaidMXN = 0, mPaidUSD = 0
-            mCircs.forEach((c) => { const t = calcCircTotals(c, tarifario, TC); mIng += t.ingresoMXN; mCosto += t.costoTotal; mPaidMXN += t.paidMXN; mPaidUSD += t.paidUSD })
-            const mUtil = mIng - mCosto
-            return (
-              <div key={mk} style={{ marginBottom: 24 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-                  <h3 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18, fontWeight: 700 }}>{cap(mk)}</h3>
-                  <span style={{ background: '#b8952a', color: '#12151f', borderRadius: 10, padding: '1px 9px', fontSize: 12, fontWeight: 700 }}>{mCircs.length}</span>
-                  {mIng > 0 && <UtilidadBadge utilidad={mUtil} />}
-                </div>
-                <TablaResumenCircuitos circuits={mCircs} tarifario={tarifario} TC={TC} />
-              </div>
-            )
-          })}
+        {/* Utilidad / Pérdida */}
+        <Card>
+          <CH t="💰 Utilidad / Pérdida" />
+          <DRow label="Total Cobrado (USD)" val={totalIngUSD > 0 ? fmtUSD(totalIngUSD) : 'Sin capturar'} color="#1565a0" />
+          {totalIngUSD > 0 && <DRow label="Equivalente MXN" val={fmtMXN(totalIngMXN)} color="#1565a0" />}
+          <DRow label="Total Costos MXN" val={fmtMXN(totalCosto)} color="#b83232" />
+          {hayIngreso && totalCosto > 0 && (
+            <>
+              <DRow label={utilidad >= 0 ? '✅ Utilidad Bruta' : '❌ Pérdida'} val={fmtMXN(Math.abs(utilidad))} color={utilidad >= 0 ? '#1e5c3a' : '#b83232'} bold big />
+              <DRow label="Margen" val={`${((utilidad / totalIngMXN) * 100).toFixed(1)}%`} color={utilidad >= 0 ? '#1e5c3a' : '#b83232'} bold />
+            </>
+          )}
+          {!hayIngreso && <p style={{ fontSize: 12, color: '#8a8278', marginTop: 10 }}>⚠️ Captura el importe cobrado en cada circuito para ver la utilidad.</p>}
+        </Card>
+
+        {/* Distribución por Categoría */}
+        <Card>
+          <CH t="📊 Distribución por Categoría" />
+          {totalCosto === 0
+            ? <p style={{ color: '#8a8278', fontSize: 12 }}>Sin costos capturados en el tarifario.</p>
+            : allCats.map((cat) => {
+                const v = catCosto[cat] || 0; if (!v) return null
+                return (
+                  <div key={cat} style={{ marginBottom: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                      <span style={{ fontWeight: 600 }}>{cat}</span>
+                      <span style={{ fontWeight: 600 }}>{fmtMXN(v)} <span style={{ color: '#8a8278', fontWeight: 400 }}>({((v / totalCosto) * 100).toFixed(1)}%)</span></span>
+                    </div>
+                    <div style={{ background: '#ece7df', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: ((v / maxCat) * 100) + '%', background: CAT_COLS[cat] || '#888', borderRadius: 4 }} />
+                    </div>
+                  </div>
+                )
+              })
+          }
+          {totalCosto > 0 && <DRow label="Total Costos" val={fmtMXN(totalCosto)} color="#b83232" bold />}
+        </Card>
+      </div>
+
+      {/* Pagado / Pendiente por Rubro — tabla completa */}
+      <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16 }}>
+        <CH t="💳 Pagado / Pendiente por Rubro" />
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: '#12151f', color: '#fff' }}>
+                <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6 }}>Rubro</th>
+                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#1a3a1a' }}>✅ Pagado MXN</th>
+                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#1a3a1a' }}>✅ Pagado USD</th>
+                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#3a1a1a' }}>⏳ Pendiente MXN</th>
+                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#3a1a1a' }}>⏳ Pendiente USD</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allCats.filter((cat) => catPaidMXN[cat] !== undefined).map((cat, i) => (
+                <tr key={cat} style={{ borderBottom: '1px solid #ece7df', background: i % 2 === 0 ? '#fafaf8' : '#fff' }}>
+                  <td style={{ padding: '10px 14px' }}>
+                    <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: CAT_COLS[cat] ? CAT_COLS[cat] + '22' : '#f0ebe3', color: CAT_COLS[cat] || '#666', border: `1px solid ${CAT_COLS[cat] || '#ccc'}44` }}>{cat}</span>
+                  </td>
+                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#1e5c3a' }}>{catPaidMXN[cat] > 0 ? fmtMXN(catPaidMXN[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
+                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#1565a0' }}>{catPaidUSD[cat] > 0 ? fmtUSD(catPaidUSD[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
+                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#b83232' }}>{catPendMXN[cat] > 0 ? fmtMXN(catPendMXN[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
+                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#b83232' }}>{catPendUSD[cat] > 0 ? fmtUSD(catPendUSD[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ background: '#12151f', color: '#fff' }}>
+                <td style={{ padding: '10px 14px', fontWeight: 700, fontSize: 12 }}>TOTAL</td>
+                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#86efac' }}>{fmtMXN(totalPaidMXN)}</td>
+                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#93c5fd' }}>{fmtUSD(totalPaidUSD)}</td>
+                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#fca5a5' }}>{fmtMXN(totalPendMXN)}</td>
+                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#fca5a5' }}>{fmtUSD(totalPendUSD)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      {/* Desglose por circuito */}
+      {circsMostrar.length > 0 && (
+        <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16 }}>
+          <CH t="🗂 Desglose por Circuito" />
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: '#12151f', color: '#fff' }}>
+                {['Circuito', 'Tour Leader', 'PAX', 'Servicios', 'Cobrado USD', 'Equivalente MN', 'Costo MXN', 'Costo USD', '% Pagado', 'Utilidad/Pérdida'].map((h) => (
+                  <th key={h} style={{ padding: '9px 10px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, whiteSpace: 'nowrap' }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {circsMostrar.map((circ) => {
+                  const { costoMXN, costoUSD, ingresoMXN, utilidad } = calcCircTotals(circ, tarifario, TC)
+                  const paid = circ.rows.filter((r) => r.paid).length
+                  const pct = circ.rows.length > 0 ? Math.round((paid / circ.rows.length) * 100) : 0
+                  const hayIng = ingresoMXN > 0
+                  return (
+                    <tr key={circ.id} style={{ borderBottom: '1px solid #ece7df' }}>
+                      <td style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11 }}>{circ.id.split('-').slice(-3).join('-')}</td>
+                      <td style={{ padding: '8px 10px', fontSize: 11 }}>{circ.info?.tl || '—'}</td>
+                      <td style={{ padding: '8px 10px' }}>{circ.info?.pax || '—'}</td>
+                      <td style={{ padding: '8px 10px' }}>{circ.rows.length}</td>
+                      <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>
+                        {hayIng ? fmtUSD(circ.importe_cobrado) : <span style={{ color: '#ccc', fontSize: 10 }}>—</span>}
+                      </td>
+                      <td style={{ padding: '8px 10px', fontWeight: 600, color: '#1e5c3a' }}>
+                        {hayIng ? fmtMXN(ingresoMXN) : <span style={{ color: '#ccc', fontSize: 10 }}>—</span>}
+                      </td>
+                      <td style={{ padding: '8px 10px', fontWeight: 700 }}>{costoMXN > 0 ? fmtMXN(costoMXN) : '—'}</td>
+                      <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>{costoUSD > 0 ? fmtUSD(costoUSD) : '—'}</td>
+                      <td style={{ padding: '8px 10px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <div style={{ flex: 1, height: 6, background: '#ece7df', borderRadius: 3, overflow: 'hidden', minWidth: 50 }}>
+                            <div style={{ height: '100%', width: pct + '%', background: pct === 100 ? '#52b788' : '#b8952a', borderRadius: 3 }} />
+                          </div>
+                          <span style={{ fontSize: 11, fontWeight: 600 }}>{pct}%</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: '8px 10px' }}>
+                        {hayIng
+                          ? <span style={{ fontWeight: 700, color: utilidad >= 0 ? '#1e5c3a' : '#b83232' }}>{utilidad >= 0 ? '✅' : '❌'} {fmtMXN(Math.abs(utilidad))}</span>
+                          : <span style={{ color: '#ccc', fontSize: 10 }}>—</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
-
-      {/* ── Por circuito ── */}
-      {agrupacion === 'circuito' && (
-        <TablaResumenCircuitos circuits={circuits} tarifario={tarifario} TC={TC} detallado />
-      )}
     </div>
-  )
-}
-
-function UtilidadBadge({ utilidad }) {
-  const pos = utilidad >= 0
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700, background: pos ? '#d8f3dc' : '#ffe0e0', color: pos ? '#1b4332' : '#7f1d1d' }}>
-      {pos ? '✅' : '❌'} {pos ? 'Utilidad' : 'Pérdida'}: {fmtMXN(Math.abs(utilidad))}
-    </span>
   )
 }
 
@@ -443,109 +589,6 @@ function KPICard({ label, val, sub, cls }) {
   )
 }
 
-function ResumenGeneralCard({ circuits, tarifario, TC }) {
-  const cc = {}; let totalCosto = 0, totalIng = 0
-  circuits.forEach((circ) => {
-    circ.rows.forEach((r) => {
-      const cat = norm(r.clasificacion) || 'OTROS'
-      const { mxn, usd } = getImporte(r, circ.info, tarifario)
-      const v = mxn + usd * TC; if (v > 0) { cc[cat] = (cc[cat] || 0) + v; totalCosto += v }
-    })
-    totalIng += calcCircTotals(circ, tarifario, TC).ingresoMXN
-  })
-  const utilidad = totalIng - totalCosto
-  const maxV = Math.max(...Object.values(cc), 1)
-  const cols = { HOSPEDAJE: '#f4a261', TRANSPORTE: '#4361ee', ACTIVIDADES: '#f72585', ALIMENTOS: '#2d6a4f', GUIA: '#9b5de5' }
-  const Card = ({ children }) => <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16 }}>{children}</div>
-  const CH = ({ t }) => <h3 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 15, marginBottom: 12, paddingBottom: 8, borderBottom: '2px solid #ece7df' }}>{t}</h3>
-  const Row = ({ label, val, color, bold, big }) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #ece7df', fontSize: big ? 15 : 13 }}>
-      <span style={{ color: bold ? '#12151f' : '#8a8278', fontWeight: bold ? 700 : 400 }}>{label}</span>
-      <span style={{ fontWeight: bold ? 800 : 600, color: color || '#12151f', fontSize: big ? 16 : 13 }}>{val}</span>
-    </div>
-  )
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-      <Card>
-        <CH t="📊 Costos por Categoría" />
-        {totalCosto === 0 ? <p style={{ color: '#8a8278', fontSize: 12 }}>Sin tarifario capturado.</p> :
-          Object.entries(cc).sort((a, b) => b[1] - a[1]).map(([c, v]) => (
-            <div key={c} style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-                <span>{c}</span>
-                <span style={{ fontWeight: 600 }}>{fmtMXN(v)} <span style={{ color: '#8a8278', fontWeight: 400 }}>({((v / totalCosto) * 100).toFixed(1)}%)</span></span>
-              </div>
-              <div style={{ background: '#ece7df', borderRadius: 4, height: 8, overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: ((v / maxV) * 100) + '%', background: cols[c] || '#888', borderRadius: 4 }} />
-              </div>
-            </div>
-          ))
-        }
-        {totalCosto > 0 && <Row label="Total Costos" val={fmtMXN(totalCosto)} color="#b83232" bold />}
-      </Card>
-      <Card>
-        <CH t="💰 Utilidad / Pérdida" />
-        <Row label="Total Ingresos (cobrado)" val={totalIng > 0 ? fmtMXN(totalIng) : 'Sin capturar'} color="#1e5c3a" />
-        <Row label="Total Costos" val={fmtMXN(totalCosto)} color="#b83232" />
-        {totalIng > 0 && totalCosto > 0 && (
-          <>
-            <Row label={utilidad >= 0 ? '✅ Utilidad Bruta' : '❌ Pérdida'} val={fmtMXN(Math.abs(utilidad))} color={utilidad >= 0 ? '#1e5c3a' : '#b83232'} bold big />
-            <Row label="Margen" val={`${((utilidad / totalIng) * 100).toFixed(1)}%`} color={utilidad >= 0 ? '#1e5c3a' : '#b83232'} bold />
-          </>
-        )}
-        {!(totalIng > 0) && <p style={{ fontSize: 12, color: '#8a8278', marginTop: 12 }}>⚠️ Captura el importe cobrado en cada circuito para ver la utilidad.</p>}
-      </Card>
-    </div>
-  )
-}
-
-function TablaResumenCircuitos({ circuits, tarifario, TC, detallado }) {
-  return (
-    <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 2px 16px rgba(18,21,31,.07)', overflowX: 'auto', marginBottom: 16 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-        <thead><tr style={{ background: '#12151f', color: '#fff' }}>
-          {['Circuito', 'Tour Leader', 'PAX', 'Servicios', 'Ingreso Cobrado', 'Costo MXN', 'Costo USD', '% Pagado', 'Utilidad/Pérdida'].map((h) => (
-            <th key={h} style={{ padding: '9px 10px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, whiteSpace: 'nowrap' }}>{h}</th>
-          ))}
-        </tr></thead>
-        <tbody>
-          {circuits.map((circ) => {
-            const { costoMXN, costoUSD, paidMXN, ingresoMXN, utilidad } = calcCircTotals(circ, tarifario, TC)
-            const paid = circ.rows.filter((r) => r.paid).length
-            const pct = circ.rows.length > 0 ? Math.round((paid / circ.rows.length) * 100) : 0
-            const hayIng = ingresoMXN > 0
-            return (
-              <tr key={circ.id} style={{ borderBottom: '1px solid #ece7df' }}>
-                <td style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11 }}>{circ.id.split('-').slice(-3).join('-')}</td>
-                <td style={{ padding: '8px 10px', fontSize: 11 }}>{circ.info?.tl || '—'}</td>
-                <td style={{ padding: '8px 10px' }}>{circ.info?.pax || '—'}</td>
-                <td style={{ padding: '8px 10px' }}>{circ.rows.length}</td>
-                <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1e5c3a' }}>
-                  {hayIng ? (circ.moneda_cobrado === 'USD' ? fmtUSD(circ.importe_cobrado) : fmtMXN(circ.importe_cobrado)) : <span style={{ color: '#ccc', fontSize: 10 }}>Sin capturar</span>}
-                </td>
-                <td style={{ padding: '8px 10px', fontWeight: 700 }}>{costoMXN > 0 ? fmtMXN(costoMXN) : '—'}</td>
-                <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>{costoUSD > 0 ? fmtUSD(costoUSD) : '—'}</td>
-                <td style={{ padding: '8px 10px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <div style={{ flex: 1, height: 6, background: '#ece7df', borderRadius: 3, overflow: 'hidden', minWidth: 50 }}>
-                      <div style={{ height: '100%', width: pct + '%', background: pct === 100 ? '#52b788' : '#b8952a', borderRadius: 3 }} />
-                    </div>
-                    <span style={{ fontSize: 11, fontWeight: 600 }}>{pct}%</span>
-                  </div>
-                </td>
-                <td style={{ padding: '8px 10px' }}>
-                  {hayIng
-                    ? <span style={{ fontWeight: 700, color: utilidad >= 0 ? '#1e5c3a' : '#b83232', fontSize: 12 }}>{utilidad >= 0 ? '✅' : '❌'} {fmtMXN(Math.abs(utilidad))}</span>
-                    : <span style={{ color: '#ccc', fontSize: 10 }}>—</span>}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
 
 // ═══════════════════════════════════════════════
 //  UI HELPERS
@@ -737,7 +780,7 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
   const hayIng = ingresoMXN > 0
 
   const confirmIC = () => {
-    saveImporteCobrado(circ.id, parseFloat(icVal) || 0, icMon)
+    saveImporteCobrado(circ.id, parseFloat(icVal) || 0, 'USD')
     setEditIC(false)
   }
 
@@ -765,18 +808,20 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <input type="number" value={icVal} onChange={(e) => setIcVal(e.target.value)} placeholder="0.00" autoFocus
                   style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '4px 8px', fontSize: 13, fontFamily: 'inherit', width: 130 }} />
-                <select value={icMon} onChange={(e) => setIcMon(e.target.value)} style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '4px 7px', fontSize: 12, fontFamily: 'inherit', background: '#fff' }}>
-                  <option>MXN</option><option>USD</option>
-                </select>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#1565a0' }}>USD</span>
                 <button onClick={confirmIC} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '4px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}>✓</button>
                 <button onClick={() => setEditIC(false)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
               </div>
             ) : (
-              <div onClick={() => setEditIC(true)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: hayIng ? '#1e5c3a' : '#8a8278', borderBottom: '1px dotted #b8952a' }}>
-                  {hayIng ? (icMon === 'USD' ? fmtUSD(circ.importe_cobrado) : fmtMXN(circ.importe_cobrado)) : 'Clic para capturar'}
-                </span>
-                <span style={{ fontSize: 11, color: '#b8952a' }}>✎</span>
+              <div onClick={() => setEditIC(true)} style={{ cursor: 'pointer' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 700, color: hayIng ? '#1565a0' : '#8a8278', borderBottom: '1px dotted #b8952a' }}>
+                    {hayIng ? fmtUSD(circ.importe_cobrado) : 'Clic para capturar'}
+                  </span>
+                  {hayIng && <span style={{ fontSize: 11, fontWeight: 700, color: '#1565a0' }}>USD</span>}
+                  <span style={{ fontSize: 11, color: '#b8952a' }}>✎</span>
+                </div>
+                {hayIng && <div style={{ fontSize: 11, color: '#8a8278', marginTop: 2 }}>{fmtMXN(circ.importe_cobrado * TC)} <span style={{ fontWeight: 600 }}>MN</span></div>}
               </div>
             )}
           </div>
@@ -874,11 +919,19 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
           </div>
         ))}
 
-        {/* Filtro por proveedor */}
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 7 }}>
+        {/* Filtro por proveedor — dropdown */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 7 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .6, minWidth: 64 }}>Proveedor</span>
-          <FBtn fkey="proveedor" val="ALL" label="Todos" activeColor="#12151f" />
-          {proveedoresCircuito.map((p) => <FBtn key={p} fkey="proveedor" val={p} label={p} activeColor="#b8952a" />)}
+          <select
+            value={F.proveedor}
+            onChange={(e) => setFilters((p) => ({ ...p, proveedor: e.target.value }))}
+            style={{ border: `1.5px solid ${F.proveedor !== 'ALL' ? '#b8952a' : '#d8d2c8'}`, borderRadius: 14, padding: '4px 10px', fontFamily: 'inherit', fontSize: 11, background: F.proveedor !== 'ALL' ? '#fffdf5' : '#f5f1eb', color: '#12151f', cursor: 'pointer', outline: 'none', minWidth: 160 }}>
+            <option value="ALL">Todos los proveedores</option>
+            {proveedoresCircuito.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          {F.proveedor !== 'ALL' && (
+            <button onClick={() => setFilters((p) => ({ ...p, proveedor: 'ALL' }))} style={{ fontSize: 11, background: 'none', border: 'none', color: '#8a8278', cursor: 'pointer' }}>✕</button>
+          )}
         </div>
 
         {/* Filtro fecha */}
