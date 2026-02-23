@@ -488,45 +488,74 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
         </Card>
       </div>
 
-      {/* Pagado / Pendiente por Rubro — tabla completa */}
-      <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16 }}>
-        <CH t="💳 Pagado / Pendiente por Rubro" />
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: '#12151f', color: '#fff' }}>
-                <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6 }}>Rubro</th>
-                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#1a3a1a' }}>✅ Pagado MXN</th>
-                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#1a3a1a' }}>✅ Pagado USD</th>
-                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#3a1a1a' }}>⏳ Pendiente MXN</th>
-                <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, background: '#3a1a1a' }}>⏳ Pendiente USD</th>
-              </tr>
-            </thead>
-            <tbody>
-              {allCats.map((cat, i) => (
-                <tr key={cat} style={{ borderBottom: '1px solid #ece7df', background: i % 2 === 0 ? '#fafaf8' : '#fff' }}>
-                  <td style={{ padding: '10px 14px' }}>
-                    <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: CAT_COLS[cat] ? CAT_COLS[cat] + '22' : '#f0ebe3', color: CAT_COLS[cat] || '#666', border: `1px solid ${CAT_COLS[cat] || '#ccc'}44` }}>{cat}</span>
-                  </td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#1e5c3a' }}>{catPaidMXN[cat] > 0 ? fmtMXN(catPaidMXN[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#1565a0' }}>{catPaidUSD[cat] > 0 ? fmtUSD(catPaidUSD[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#b83232' }}>{catPendMXN[cat] > 0 ? fmtMXN(catPendMXN[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#b83232' }}>{catPendUSD[cat] > 0 ? fmtUSD(catPendUSD[cat]) : <span style={{ color: '#ccc' }}>—</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr style={{ background: '#12151f', color: '#fff' }}>
-                <td style={{ padding: '10px 14px', fontWeight: 700, fontSize: 12 }}>TOTAL</td>
-                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#86efac' }}>{fmtMXN(totalPaidMXN)}</td>
-                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#93c5fd' }}>{fmtUSD(totalPaidUSD)}</td>
-                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#fca5a5' }}>{fmtMXN(totalPendMXN)}</td>
-                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: '#fca5a5' }}>{fmtUSD(totalPendUSD)}</td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      </div>
+      {/* Top Proveedores por Costo */}
+      {(() => {
+        // Construir ranking de proveedores a partir de los circuitos mostrados
+        const pm = {}
+        circsMostrar.forEach((circ) => {
+          circ.rows.forEach((r) => {
+            const p = r.prov_general; if (!p) return
+            const k = norm(p)
+            if (!pm[k]) pm[k] = { nombre: p, totalMXN: 0, totalUSD: 0, paidMXN: 0, paidUSD: 0, pendMXN: 0, pendUSD: 0, servicios: 0 }
+            const { mxn, usd } = getImporte(r, circ.info, tarifario)
+            pm[k].totalMXN += mxn; pm[k].totalUSD += usd; pm[k].servicios++
+            if (r.paid) { pm[k].paidMXN += mxn; pm[k].paidUSD += usd }
+            else { pm[k].pendMXN += mxn; pm[k].pendUSD += usd }
+          })
+        })
+        const provs = Object.values(pm)
+          .map((p) => ({ ...p, totalMXNEq: p.totalMXN + p.totalUSD * TC }))
+          .filter((p) => p.totalMXNEq > 0)
+          .sort((a, b) => b.totalMXNEq - a.totalMXNEq)
+        if (provs.length === 0) return null
+        const maxProv = provs[0].totalMXNEq
+        return (
+          <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16 }}>
+            <CH t="🏢 Proveedores — Costo Total y Estatus de Pago" />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {provs.map((p, i) => {
+                const pctPaid = p.totalMXNEq > 0 ? Math.round(((p.paidMXN + p.paidUSD * TC) / p.totalMXNEq) * 100) : 0
+                const allPaid = pctPaid === 100
+                return (
+                  <div key={p.nombre} style={{ display: 'grid', gridTemplateColumns: '24px 1fr 140px 140px 60px', gap: 12, alignItems: 'center', padding: '10px 12px', borderRadius: 8, background: i % 2 === 0 ? '#fafaf8' : '#fff', border: '1px solid #f0ebe3' }}>
+                    {/* Rank */}
+                    <span style={{ fontSize: 11, fontWeight: 800, color: i < 3 ? '#b8952a' : '#ccc', textAlign: 'center' }}>#{i + 1}</span>
+                    {/* Nombre + barra */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700 }}>{p.nombre}</span>
+                        <span style={{ fontSize: 10, color: '#8a8278' }}>{p.servicios} svc</span>
+                      </div>
+                      <div style={{ background: '#ece7df', borderRadius: 4, height: 6, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: (p.totalMXNEq / maxProv * 100) + '%', background: allPaid ? '#52b788' : '#b8952a', borderRadius: 4 }} />
+                      </div>
+                    </div>
+                    {/* Pagado */}
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: '#1e5c3a', textTransform: 'uppercase', marginBottom: 1 }}>✅ Pagado</div>
+                      {p.paidMXN > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#1e5c3a' }}>{fmtMXN(p.paidMXN)} <span style={{ fontSize: 9 }}>MN</span></div>}
+                      {p.paidUSD > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#1565a0' }}>{fmtUSD(p.paidUSD)}</div>}
+                      {p.paidMXN === 0 && p.paidUSD === 0 && <div style={{ fontSize: 11, color: '#ccc' }}>—</div>}
+                    </div>
+                    {/* Pendiente */}
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: '#b83232', textTransform: 'uppercase', marginBottom: 1 }}>⏳ Pendiente</div>
+                      {p.pendMXN > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#b83232' }}>{fmtMXN(p.pendMXN)} <span style={{ fontSize: 9 }}>MN</span></div>}
+                      {p.pendUSD > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#b83232' }}>{fmtUSD(p.pendUSD)}</div>}
+                      {p.pendMXN === 0 && p.pendUSD === 0 && <div style={{ fontSize: 11, color: '#52b788', fontWeight: 700 }}>Liquidado ✓</div>}
+                    </div>
+                    {/* % pagado */}
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: allPaid ? '#1e5c3a' : '#12151f' }}>{pctPaid}%</div>
+                      <div style={{ fontSize: 9, color: '#8a8278' }}>pagado</div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Desglose por circuito */}
       {circsMostrar.length > 0 && (
