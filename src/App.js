@@ -202,7 +202,7 @@ function Dashboard({ session }) {
 
   const monthMap = {}
   circuits.forEach((c) => { const mk = c.month_key || 'Sin mes'; if (!monthMap[mk]) monthMap[mk] = []; monthMap[mk].push(c) })
-  const sortedMonths = Object.keys(monthMap).sort((a, b) => b.localeCompare(a))
+  const sortedMonths = Object.keys(monthMap).sort((a, b) => a.localeCompare(b))
 
   const filteredRows = (rows) => rows.filter((r) => {
     if (F.tipo !== 'ALL' && norm(r.tipo) !== F.tipo) return false
@@ -278,7 +278,7 @@ function Dashboard({ session }) {
                     const isActive = view.circuitId === c.id
                     return (
                       <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
-                        style={{ padding: '5px 16px 5px 32px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}`, background: isActive ? 'rgba(184,149,42,.1)' : 'transparent' }}>
+                        style={{ padding: '5px 16px 5px 32px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
                         <div style={{ width: 6, height: 6, borderRadius: '50%', background: allPaid ? '#52b788' : '#e0c96a', flexShrink: 0 }} />
                         <div style={{ overflow: 'hidden' }}>
                           <div style={{ fontSize: 11, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.id}>{shortId}</div>
@@ -385,7 +385,13 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
   const maxCat = Math.max(...Object.values(catCosto), 1)
   const CATS = ['HOSPEDAJE', 'TRANSPORTE', 'ACTIVIDADES', 'ALIMENTOS', 'GUIA', 'OTROS']
   const CAT_COLS = { HOSPEDAJE: '#f4a261', TRANSPORTE: '#4361ee', ACTIVIDADES: '#f72585', ALIMENTOS: '#2d6a4f', GUIA: '#9b5de5', OTROS: '#888' }
-  const allCats = [...new Set([...CATS.filter((c) => catCosto[c]), ...Object.keys(catCosto)])]
+  // Incluir todas las categorías que tengan algún dato (costo o pagado/pendiente)
+  const allCatsSet = new Set([
+    ...CATS.filter((c) => catCosto[c] || catPaidMXN[c] || catPendMXN[c]),
+    ...Object.keys(catCosto),
+    ...Object.keys(catPaidMXN),
+  ])
+  const allCats = [...allCatsSet]
 
   const Card = ({ children, col }) => <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16, gridColumn: col }}>{children}</div>
   const CH = ({ t }) => <h3 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 15, marginBottom: 14, paddingBottom: 8, borderBottom: '2px solid #ece7df' }}>{t}</h3>
@@ -433,10 +439,10 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
         {[
           { label: 'Circuitos', val: circsMostrar.length, cls: 'gold' },
           { label: '💰 Cobrado (USD)', val: totalIngUSD > 0 ? fmtUSD(totalIngUSD) : '—', sub: totalIngUSD > 0 ? fmtMXN(totalIngMXN) + ' MN' : 'Sin capturar', cls: 'forest' },
-          { label: '📤 Total Costos', val: fmtMXN(totalCosto), cls: 'rust' },
-          { label: hayIngreso ? (utilidad >= 0 ? '✅ Utilidad' : '❌ Pérdida') : '💡 Margen', val: hayIngreso ? fmtMXN(Math.abs(utilidad)) : '—', sub: hayIngreso && totalCosto > 0 ? `${((utilidad / totalIngMXN) * 100).toFixed(1)}%` : undefined, cls: hayIngreso ? (utilidad >= 0 ? 'forest' : 'rust') : 'sky' },
-          { label: '✅ Pagado MXN', val: fmtMXN(totalPaidMXN), sub: fmtUSD(totalPaidUSD) + ' USD', cls: 'forest' },
-          { label: '⏳ Pendiente MXN', val: fmtMXN(totalPendMXN), sub: fmtUSD(totalPendUSD) + ' USD', cls: 'rust' },
+          { label: '📤 Total Costos', val: fmtMXN(totalCosto), sub: 'MN', cls: 'rust' },
+          { label: hayIngreso ? (utilidad >= 0 ? '✅ Utilidad' : '❌ Pérdida') : '💡 Margen', val: hayIngreso ? fmtMXN(Math.abs(utilidad)) : '—', sub: hayIngreso ? (totalCosto > 0 ? `${((utilidad / totalIngMXN) * 100).toFixed(1)}% · MN` : 'MN') : undefined, cls: hayIngreso ? (utilidad >= 0 ? 'forest' : 'rust') : 'sky' },
+          { label: '✅ Pagado', val: fmtMXN(totalPaidMXN) + ' MN', sub: fmtUSD(totalPaidUSD) + ' USD', cls: 'forest' },
+          { label: '⏳ Pendiente', val: fmtMXN(totalPendMXN) + ' MN', sub: fmtUSD(totalPendUSD) + ' USD', cls: 'rust' },
         ].map((k, i) => <KPICard key={i} {...k} />)}
       </div>
 
@@ -497,7 +503,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
               </tr>
             </thead>
             <tbody>
-              {allCats.filter((cat) => catPaidMXN[cat] !== undefined).map((cat, i) => (
+              {allCats.map((cat, i) => (
                 <tr key={cat} style={{ borderBottom: '1px solid #ece7df', background: i % 2 === 0 ? '#fafaf8' : '#fff' }}>
                   <td style={{ padding: '10px 14px' }}>
                     <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: CAT_COLS[cat] ? CAT_COLS[cat] + '22' : '#f0ebe3', color: CAT_COLS[cat] || '#666', border: `1px solid ${CAT_COLS[cat] || '#ccc'}44` }}>{cat}</span>
@@ -743,13 +749,13 @@ function CircuitCards({ circs, tarifario, TC, onSelect }) {
               ))}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
-              <div><div style={{ fontSize: 10, color: '#b83232' }}>Costo MXN</div><div style={{ fontWeight: 700, fontSize: 13 }}>{costoMXN > 0 ? fmtMXN(costoMXN) : '—'}</div></div>
+              <div><div style={{ fontSize: 10, color: '#b83232' }}>Costo MXN</div><div style={{ fontWeight: 700, fontSize: 13 }}>{costoMXN > 0 ? <>{fmtMXN(costoMXN)} <span style={{ fontSize: 10, color: '#8a8278' }}>MN</span></> : '—'}</div></div>
               <div><div style={{ fontSize: 10, color: '#1565a0' }}>Costo USD</div><div style={{ fontWeight: 700, fontSize: 13, color: '#1565a0' }}>{costoUSD > 0 ? fmtUSD(costoUSD) : '—'}</div></div>
             </div>
             {hayIng && (
               <div style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8, background: utilidad >= 0 ? '#f0faf4' : '#fff5f5', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278' }}>{utilidad >= 0 ? '✅ UTILIDAD' : '❌ PÉRDIDA'}</span>
-                <span style={{ fontWeight: 800, fontSize: 13, color: utilidad >= 0 ? '#1e5c3a' : '#b83232' }}>{fmtMXN(Math.abs(utilidad))}</span>
+                <span style={{ fontWeight: 800, fontSize: 13, color: utilidad >= 0 ? '#1e5c3a' : '#b83232' }}>{fmtMXN(Math.abs(utilidad))} <span style={{ fontSize: 10, fontWeight: 600 }}>MN</span></span>
               </div>
             )}
             <div style={{ height: 4, background: '#ece7df', borderRadius: 2, overflow: 'hidden', marginBottom: 6 }}><div style={{ height: '100%', width: pct + '%', background: '#52b788', borderRadius: 2 }} /></div>
