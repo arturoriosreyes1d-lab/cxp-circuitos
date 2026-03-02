@@ -125,6 +125,7 @@ function Dashboard({ session }) {
         destino: r.destino, clasificacion: r.clasificacion, servicio: r.servicio,
         tipo: r.tipo, prov_general: r.prov_general, t_venta: r.t_venta,
         paid: false, fecha_pago: null, nota: '', precio_custom: null, moneda_custom: null,
+        factura_recibida: false, folio_factura: null,
       })))
       await loadAll()
       setView({ type: 'circuit', circuitId: pendingCircuit.id })
@@ -184,6 +185,10 @@ function Dashboard({ session }) {
   const saveImporte = async (cid, rowId, precio, moneda) => {
     await supabase.from('circuit_rows').update({ precio_custom: precio || null, moneda_custom: moneda }).eq('id', rowId)
     updateRow(cid, rowId, { precio_custom: precio || null, moneda_custom: moneda })
+  }
+  const saveFactura = async (cid, rowId, field, val) => {
+    await supabase.from('circuit_rows').update({ [field]: val }).eq('id', rowId)
+    updateRow(cid, rowId, { [field]: val })
   }
   const saveImporteCobrado = async (cid, valor, moneda) => {
     await supabase.from('circuits').update({ importe_cobrado: valor || null, moneda_cobrado: moneda }).eq('id', cid)
@@ -248,7 +253,7 @@ function Dashboard({ session }) {
 
         {/* ── SIDEBAR ── */}
         {sidebarOpen && (
-          <aside style={{ width: 252, background: '#12151f', borderRight: '1px solid rgba(255,255,255,.07)', overflowY: 'auto', flexShrink: 0, position: 'sticky', top: 54, height: 'calc(100vh - 54px)' }}>
+          <aside style={{ width: 272, background: '#12151f', borderRight: '1px solid rgba(255,255,255,.07)', overflowY: 'auto', flexShrink: 0, position: 'sticky', top: 54, height: 'calc(100vh - 54px)' }}>
 
             <SbItem label="📊 Todos los circuitos" count={circuits.length} active={view.type === 'all'} onClick={() => setView({ type: 'all' })} />
             <SbItem label="📈 Estado de Resultados" count="" active={view.type === 'resultados_all'} onClick={() => setView({ type: 'resultados_all' })} />
@@ -274,14 +279,13 @@ function Dashboard({ session }) {
                   {mCircs.map((c) => {
                     const paid = c.rows.filter((r) => r.paid).length
                     const allPaid = paid === c.rows.length && c.rows.length > 0
-                    const shortId = c.id.split('-').slice(-3).join('-')
                     const isActive = view.circuitId === c.id
                     return (
                       <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
                         style={{ padding: '5px 16px 5px 32px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
                         <div style={{ width: 6, height: 6, borderRadius: '50%', background: allPaid ? '#52b788' : '#e0c96a', flexShrink: 0 }} />
                         <div style={{ overflow: 'hidden' }}>
-                          <div style={{ fontSize: 11, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.id}>{shortId}</div>
+                          <div style={{ fontSize: 9.5, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }} title={c.id}>{c.id}</div>
                           {c.info?.tl && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.info.tl}</div>}
                         </div>
                       </div>
@@ -310,7 +314,7 @@ function Dashboard({ session }) {
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows}
               togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
-              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado}
+              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveFactura={saveFactura}
               onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
           )}
         </main>
@@ -800,7 +804,7 @@ function CircuitCards({ circs, tarifario, TC, onSelect }) {
 }
 
 // ── Circuit Detail ──
-function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, onDelete }) {
+function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveFactura, onDelete }) {
   const [editIC, setEditIC] = useState(false)
   const [icVal, setIcVal] = useState(circ.importe_cobrado || '')
   const [icMon, setIcMon] = useState(circ.moneda_cobrado || 'MXN')
@@ -896,7 +900,7 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
         ))}
       </div>
 
-      {activeTab === 'cxp' && <CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} />}
+      {activeTab === 'cxp' && <CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} saveFactura={saveFactura} />}
       {activeTab === 'proveedores' && <ProvPanel circ={circ} tarifario={tarifario} TC={TC} />}
       {activeTab === 'timeline' && <TimelinePanel circ={circ} tarifario={tarifario} />}
     </div>
@@ -904,16 +908,61 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
 }
 
 // ── CxP Panel ──
-function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte }) {
+function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveFactura }) {
   const [editCell, setEditCell] = useState(null)
   const [editVal, setEditVal] = useState('')
   const [editMoneda, setEditMoneda] = useState('MXN')
+  const [busqueda, setBusqueda] = useState('')
+  const tableRef = useRef(null)
+  const topScrollRef = useRef(null)
+  const syncingRef = useRef(false)
 
-  const rows = filteredRows(circ.rows)
+  // Sincronizar scroll horizontal superior ↔ tabla
+  useEffect(() => {
+    const top = topScrollRef.current
+    const tbl = tableRef.current
+    if (!top || !tbl) return
+    const onTopScroll = () => { if (syncingRef.current) return; syncingRef.current = true; tbl.scrollLeft = top.scrollLeft; setTimeout(() => { syncingRef.current = false }, 50) }
+    const onTblScroll = () => { if (syncingRef.current) return; syncingRef.current = true; top.scrollLeft = tbl.scrollLeft; setTimeout(() => { syncingRef.current = false }, 50) }
+    top.addEventListener('scroll', onTopScroll)
+    tbl.addEventListener('scroll', onTblScroll)
+    return () => { top.removeEventListener('scroll', onTopScroll); tbl.removeEventListener('scroll', onTblScroll) }
+  }, [])
+
+  // Ancho interno de la tabla (para que la barra superior sepa cuánto desplazar)
+  const [tableInnerW, setTableInnerW] = useState(0)
+  useEffect(() => {
+    if (!tableRef.current) return
+    const obs = new ResizeObserver(() => {
+      const inner = tableRef.current?.querySelector('table')
+      if (inner) setTableInnerW(inner.offsetWidth)
+    })
+    obs.observe(tableRef.current)
+    return () => obs.disconnect()
+  }, [])
+
+  let rows = filteredRows(circ.rows)
+
+  // Filtro de búsqueda libre
+  if (busqueda.trim()) {
+    const q = busqueda.trim().toLowerCase()
+    rows = rows.filter((r) => {
+      const imp = getImporte(r, circ.info, tarifario)
+      return (
+        (r.prov_general || '').toLowerCase().includes(q) ||
+        (r.folio_factura || '').toLowerCase().includes(q) ||
+        (r.servicio || '').toLowerCase().includes(q) ||
+        (r.destino || '').toLowerCase().includes(q) ||
+        (r.clasificacion || '').toLowerCase().includes(q) ||
+        (imp.mxn > 0 && imp.mxn.toString().includes(q)) ||
+        (imp.usd > 0 && imp.usd.toString().includes(q))
+      )
+    })
+  }
+
   let tMXN = 0, tUSD = 0
   rows.forEach((r) => { const { mxn, usd } = getImporte(r, circ.info, tarifario); tMXN += mxn; tUSD += usd })
 
-  // Lista única de proveedores en este circuito (para filtro)
   const proveedoresCircuito = [...new Set(circ.rows.map((r) => norm(r.prov_general)).filter(Boolean))].sort()
 
   const startEdit = (rowId, field, row) => {
@@ -930,6 +979,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
     if (field === 'importe') saveImporte(cid, rowId, parseFloat(editVal) || 0, editMoneda)
     setEditCell(null)
   }
+
   const FBtn = ({ fkey, val, label, activeColor }) => {
     const isActive = F[fkey] === val
     return (
@@ -940,9 +990,28 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
     )
   }
 
+  const hayFiltros = F.tipo !== 'ALL' || F.cat !== 'ALL' || F.pago !== 'ALL' || F.fecha || F.proveedor !== 'ALL' || busqueda.trim()
+
   return (
     <div>
+      {/* ── Panel de filtros ── */}
       <div style={{ background: '#fff', borderRadius: 12, padding: '12px 14px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 14 }}>
+
+        {/* Buscador */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #f0ebe3' }}>
+          <span style={{ fontSize: 15 }}>🔍</span>
+          <input
+            type="text"
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por proveedor, folio, servicio, importe…"
+            style={{ flex: 1, border: '1.5px solid #d8d2c8', borderRadius: 20, padding: '6px 14px', fontFamily: 'inherit', fontSize: 12, outline: 'none', background: busqueda ? '#fffdf5' : '#f5f1eb', transition: 'border-color .15s' }}
+            onFocus={(e) => e.target.style.borderColor = '#b8952a'}
+            onBlur={(e) => e.target.style.borderColor = '#d8d2c8'}
+          />
+          {busqueda && <button onClick={() => setBusqueda('')} style={{ background: 'none', border: 'none', color: '#8a8278', cursor: 'pointer', fontSize: 16 }}>✕</button>}
+        </div>
+
         {[
           { key: 'tipo', label: 'Tipo', opts: [['ALL', '#12151f', 'Todos'], ['LIBERO', '#1e5c3a', '🔵 LIBERO'], ['OPCIONAL', '#1565a0', '🔷 OPCIONAL']] },
           { key: 'cat', label: 'Categoría', opts: [['ALL', '#b8952a', 'Todas'], ['HOSPEDAJE', '#b8952a', '🏨 Hospedaje'], ['TRANSPORTE', '#b8952a', '🚌 Transporte'], ['ACTIVIDADES', '#b8952a', '🎯 Actividades'], ['ALIMENTOS', '#b8952a', '🍽 Alimentos'], ['GUIA', '#b8952a', '🧭 Guía']] },
@@ -954,22 +1023,18 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
           </div>
         ))}
 
-        {/* Filtro por proveedor — dropdown */}
+        {/* Proveedor dropdown */}
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 7 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .6, minWidth: 64 }}>Proveedor</span>
-          <select
-            value={F.proveedor}
-            onChange={(e) => setFilters((p) => ({ ...p, proveedor: e.target.value }))}
+          <select value={F.proveedor} onChange={(e) => setFilters((p) => ({ ...p, proveedor: e.target.value }))}
             style={{ border: `1.5px solid ${F.proveedor !== 'ALL' ? '#b8952a' : '#d8d2c8'}`, borderRadius: 14, padding: '4px 10px', fontFamily: 'inherit', fontSize: 11, background: F.proveedor !== 'ALL' ? '#fffdf5' : '#f5f1eb', color: '#12151f', cursor: 'pointer', outline: 'none', minWidth: 160 }}>
             <option value="ALL">Todos los proveedores</option>
             {proveedoresCircuito.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
-          {F.proveedor !== 'ALL' && (
-            <button onClick={() => setFilters((p) => ({ ...p, proveedor: 'ALL' }))} style={{ fontSize: 11, background: 'none', border: 'none', color: '#8a8278', cursor: 'pointer' }}>✕</button>
-          )}
+          {F.proveedor !== 'ALL' && <button onClick={() => setFilters((p) => ({ ...p, proveedor: 'ALL' }))} style={{ fontSize: 11, background: 'none', border: 'none', color: '#8a8278', cursor: 'pointer' }}>✕</button>}
         </div>
 
-        {/* Filtro fecha */}
+        {/* Fecha pago */}
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .6, minWidth: 64 }}>Fecha Pago</span>
           <input type="date" value={F.fecha} onChange={(e) => setFilters((p) => ({ ...p, fecha: e.target.value }))} style={{ border: '1.5px solid #d8d2c8', borderRadius: 14, padding: '4px 10px', fontFamily: 'inherit', fontSize: 11, background: '#f5f1eb' }} />
@@ -977,111 +1042,161 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
         </div>
       </div>
 
-      {rows.length === 0 ? <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8a8278', fontSize: 13 }}>🔍 Sin resultados para ese filtro</div> : (
-        <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 2px 16px rgba(18,21,31,.07)', overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 1150 }}>
-            <thead><tr style={{ background: '#12151f', color: '#fff' }}>
-              {['Fecha', 'Destino', 'Cat.', 'Servicio', 'Tipo', 'Proveedor ✏️', 'MXN ✏️', 'USD ✏️', 'Fecha Pago', 'Estatus', 'Notas'].map((h) => (
-                <th key={h} style={{ padding: '10px 10px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, whiteSpace: 'nowrap' }}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {rows.map((r) => {
-                const { mxn, usd, found, custom } = getImporte(r, circ.info, tarifario)
-                const dc = getDC(r, tarifario)
-                const isEditProv = editCell?.rowId === r.id && editCell?.field === 'prov'
-                const isEditImp = editCell?.rowId === r.id && editCell?.field === 'importe'
-                let dStr = '—'
-                if (r.fecha) { const d = r.fecha instanceof Date ? r.fecha : new Date(r.fecha); dStr = d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) }
-                return (
-                  <tr key={r.id} style={{ borderBottom: '1px solid #ece7df', background: r.paid ? '#f0faf4' : 'transparent' }}>
-                    <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontSize: 11 }}>{dStr}</td>
-                    <td style={{ padding: '8px 10px', fontSize: 11, maxWidth: 100 }}>{r.destino || '—'}</td>
-                    <td style={{ padding: '8px 10px' }}><Badge text={r.clasificacion} /></td>
-                    <td style={{ padding: '8px 10px', fontWeight: 500, maxWidth: 130 }}>{r.servicio || '—'}</td>
-                    <td style={{ padding: '8px 10px' }}><TipoBadge tipo={r.tipo} /></td>
-
-                    {/* Proveedor */}
-                    <td style={{ padding: '8px 10px', minWidth: 160 }}>
-                      {isEditProv ? (
-                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                          <select value={editVal} onChange={(e) => setEditVal(e.target.value)} autoFocus style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '3px 7px', fontSize: 12, fontFamily: 'inherit', background: '#fff', maxWidth: 160 }}>
-                            <option value="">— Sin proveedor —</option>
-                            {tarifario.map((t) => <option key={t.id || t.proveedor} value={t.proveedor}>{t.proveedor}</option>)}
-                          </select>
-                          <button onClick={() => confirmEdit(circ.id, r.id, 'prov')} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '3px 8px', fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>✓</button>
-                          <button onClick={() => setEditCell(null)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
-                        </div>
-                      ) : (
-                        <div>
-                          <span onClick={() => startEdit(r.id, 'prov', r)} style={{ fontWeight: 600, fontSize: 12, cursor: 'pointer', borderBottom: '1px dotted #b8952a' }} title="Clic para cambiar proveedor">
-                            {r.prov_general || <span style={{ color: '#ccc' }}>Sin proveedor</span>}
-                            {!found && tarifario.length > 0 && <span style={{ color: '#b83232', fontSize: 10 }}> ⚠</span>}
-                          </span>
-                          {dc > 0 && !r.paid && <div style={{ fontSize: 9, color: '#8a8278' }}>{dc}d crédito</div>}
-                        </div>
-                      )}
-                    </td>
-
-                    {/* Importe MXN */}
-                    <td style={{ padding: '8px 10px', minWidth: 110 }}>
-                      {isEditImp ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                          <input type="number" value={editVal} onChange={(e) => setEditVal(e.target.value)} placeholder="Importe" autoFocus style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '3px 7px', fontSize: 12, fontFamily: 'inherit', width: 100 }} />
-                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                            <select value={editMoneda} onChange={(e) => setEditMoneda(e.target.value)} style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '2px 5px', fontSize: 11, fontFamily: 'inherit', background: '#fff' }}>
-                              <option>MXN</option><option>USD</option>
-                            </select>
-                            <button onClick={() => confirmEdit(circ.id, r.id, 'importe')} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '3px 8px', fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>✓</button>
-                            <button onClick={() => setEditCell(null)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
-                          </div>
-                        </div>
-                      ) : (
-                        <span onClick={() => startEdit(r.id, 'importe', r)} style={{ fontWeight: 700, cursor: 'pointer', borderBottom: `1px dotted ${custom ? '#b8952a' : '#ddd'}`, color: custom ? '#b8952a' : '#12151f' }} title="Clic para editar importe">
-                          {mxn > 0 ? fmtMXN(mxn) : <span style={{ color: '#ccc' }}>—</span>}
-                          {custom && mxn > 0 && <span style={{ fontSize: 9, marginLeft: 2 }}>✎</span>}
-                        </span>
-                      )}
-                    </td>
-
-                    {/* Importe USD */}
-                    <td style={{ padding: '8px 10px', minWidth: 90 }}>
-                      <span onClick={() => startEdit(r.id, 'importe', r)} style={{ fontWeight: 700, cursor: 'pointer', borderBottom: `1px dotted ${custom ? '#b8952a' : '#ddd'}`, color: usd > 0 ? (custom ? '#b8952a' : '#1565a0') : '#ccc' }} title="Clic para editar">
-                        {usd > 0 ? fmtUSD(usd) : '—'}
-                        {custom && usd > 0 && <span style={{ fontSize: 9, marginLeft: 2 }}>✎</span>}
-                      </span>
-                    </td>
-
-                    <td style={{ padding: '8px 10px' }}>
-                      <input type="date" value={r.fecha_pago || ''} onChange={(e) => setFechaPago(circ.id, r.id, e.target.value)} style={{ border: '1px solid #d8d2c8', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontFamily: 'inherit', width: 118 }} />
-                    </td>
-                    <td style={{ padding: '8px 10px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
-                        <button onClick={() => togglePaid(circ.id, r.id, r.paid)} style={{ width: 34, height: 18, borderRadius: 9, border: 'none', background: r.paid ? '#52b788' : '#ccc', cursor: 'pointer', position: 'relative', flexShrink: 0 }}>
-                          <div style={{ position: 'absolute', top: 2, left: r.paid ? 16 : 2, width: 14, height: 14, borderRadius: '50%', background: '#fff', transition: 'left .25s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
-                        </button>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: r.paid ? '#1e5c3a' : '#b83232' }}>{r.paid ? 'PAGADO' : 'PENDIENTE'}</span>
-                      </div>
-                    </td>
-                    <td style={{ padding: '8px 10px' }}>
-                      <textarea defaultValue={r.nota || ''} placeholder="Nota…" rows={1} onBlur={(e) => setNota(circ.id, r.id, e.target.value)}
-                        style={{ width: 120, fontSize: 11, border: '1px solid transparent', borderRadius: 5, padding: '3px 5px', fontFamily: 'inherit', resize: 'none', background: 'transparent', lineHeight: 1.4 }}
-                        onFocus={(e) => { e.target.style.borderColor = '#b8952a'; e.target.style.background = '#fffdf5' }}
-                        onBlurCapture={(e) => { e.target.style.borderColor = 'transparent'; e.target.style.background = 'transparent' }} />
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-            <tfoot><tr style={{ background: '#ece7df' }}>
-              <td colSpan={6} style={{ padding: '8px 10px', fontSize: 11, color: '#8a8278' }}>{rows.length} servicio{rows.length !== 1 ? 's' : ''}</td>
-              <td style={{ padding: '8px 10px', fontWeight: 700 }}>{tMXN > 0 ? fmtMXN(tMXN) : '—'}</td>
-              <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>{tUSD > 0 ? fmtUSD(tUSD) : '—'}</td>
-              <td colSpan={3} />
-            </tr></tfoot>
-          </table>
+      {/* Contador de resultados */}
+      {hayFiltros && (
+        <div style={{ fontSize: 12, color: '#8a8278', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span>Mostrando <strong>{rows.length}</strong> de {circ.rows.length} servicios</span>
+          <button onClick={() => { setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }); setBusqueda('') }} style={{ fontSize: 11, background: 'none', border: '1px solid #d8d2c8', borderRadius: 10, padding: '2px 8px', color: '#8a8278', cursor: 'pointer' }}>Limpiar filtros</button>
         </div>
       )}
+
+      {rows.length === 0
+        ? <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8a8278', fontSize: 13 }}>🔍 Sin resultados</div>
+        : (
+          <div style={{ borderRadius: 12, boxShadow: '0 2px 16px rgba(18,21,31,.07)', overflow: 'hidden' }}>
+            {/* ── Barra de scroll SUPERIOR ── */}
+            <div ref={topScrollRef} style={{ overflowX: 'scroll', overflowY: 'hidden', height: 16, background: '#f0ebe3', borderBottom: '1px solid #e0d9d0' }}>
+              <div style={{ width: tableInnerW || '100%', height: 1 }} />
+            </div>
+
+            {/* ── Tabla ── */}
+            <div ref={tableRef} style={{ background: '#fff', overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 1380 }}>
+                <thead>
+                  <tr style={{ background: '#12151f', color: '#fff' }}>
+                    {['Fecha', 'Destino', 'Cat.', 'Servicio', 'Tipo', 'Proveedor ✏️', 'MXN ✏️', 'USD ✏️', 'Factura\u00A0Recibida', 'Folio\u00A0Factura', 'Fecha\u00A0Pago', 'Estatus', 'Notas'].map((h) => (
+                      <th key={h} style={{ padding: '10px 10px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const { mxn, usd, found, custom } = getImporte(r, circ.info, tarifario)
+                    const dc = getDC(r, tarifario)
+                    const isEditProv = editCell?.rowId === r.id && editCell?.field === 'prov'
+                    const isEditImp = editCell?.rowId === r.id && editCell?.field === 'importe'
+                    let dStr = '—'
+                    if (r.fecha) { const d = r.fecha instanceof Date ? r.fecha : new Date(r.fecha); dStr = d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) }
+                    return (
+                      <tr key={r.id} style={{ borderBottom: '1px solid #ece7df', background: r.paid ? '#f0faf4' : 'transparent' }}>
+                        <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontSize: 11 }}>{dStr}</td>
+                        <td style={{ padding: '8px 10px', fontSize: 11, maxWidth: 100 }}>{r.destino || '—'}</td>
+                        <td style={{ padding: '8px 10px' }}><Badge text={r.clasificacion} /></td>
+                        <td style={{ padding: '8px 10px', fontWeight: 500, maxWidth: 130 }}>{r.servicio || '—'}</td>
+                        <td style={{ padding: '8px 10px' }}><TipoBadge tipo={r.tipo} /></td>
+
+                        {/* Proveedor */}
+                        <td style={{ padding: '8px 10px', minWidth: 160 }}>
+                          {isEditProv ? (
+                            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                              <select value={editVal} onChange={(e) => setEditVal(e.target.value)} autoFocus style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '3px 7px', fontSize: 12, fontFamily: 'inherit', background: '#fff', maxWidth: 160 }}>
+                                <option value="">— Sin proveedor —</option>
+                                {tarifario.map((t) => <option key={t.id || t.proveedor} value={t.proveedor}>{t.proveedor}</option>)}
+                              </select>
+                              <button onClick={() => confirmEdit(circ.id, r.id, 'prov')} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '3px 8px', fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>✓</button>
+                              <button onClick={() => setEditCell(null)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
+                            </div>
+                          ) : (
+                            <div>
+                              <span onClick={() => startEdit(r.id, 'prov', r)} style={{ fontWeight: 600, fontSize: 12, cursor: 'pointer', borderBottom: '1px dotted #b8952a' }} title="Clic para cambiar">
+                                {r.prov_general || <span style={{ color: '#ccc' }}>Sin proveedor</span>}
+                                {!found && tarifario.length > 0 && <span style={{ color: '#b83232', fontSize: 10 }}> ⚠</span>}
+                              </span>
+                              {dc > 0 && !r.paid && <div style={{ fontSize: 9, color: '#8a8278' }}>{dc}d crédito</div>}
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Importe MXN */}
+                        <td style={{ padding: '8px 10px', minWidth: 110 }}>
+                          {isEditImp ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <input type="number" value={editVal} onChange={(e) => setEditVal(e.target.value)} placeholder="Importe" autoFocus style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '3px 7px', fontSize: 12, fontFamily: 'inherit', width: 100 }} />
+                              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                                <select value={editMoneda} onChange={(e) => setEditMoneda(e.target.value)} style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '2px 5px', fontSize: 11, fontFamily: 'inherit', background: '#fff' }}>
+                                  <option>MXN</option><option>USD</option>
+                                </select>
+                                <button onClick={() => confirmEdit(circ.id, r.id, 'importe')} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '3px 8px', fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>✓</button>
+                                <button onClick={() => setEditCell(null)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <span onClick={() => startEdit(r.id, 'importe', r)} style={{ fontWeight: 700, cursor: 'pointer', borderBottom: `1px dotted ${custom ? '#b8952a' : '#ddd'}`, color: custom ? '#b8952a' : '#12151f' }} title="Clic para editar">
+                              {mxn > 0 ? fmtMXN(mxn) : <span style={{ color: '#ccc' }}>—</span>}
+                              {custom && mxn > 0 && <span style={{ fontSize: 9, marginLeft: 2 }}>✎</span>}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Importe USD */}
+                        <td style={{ padding: '8px 10px', minWidth: 90 }}>
+                          <span onClick={() => startEdit(r.id, 'importe', r)} style={{ fontWeight: 700, cursor: 'pointer', borderBottom: `1px dotted ${custom ? '#b8952a' : '#ddd'}`, color: usd > 0 ? (custom ? '#b8952a' : '#1565a0') : '#ccc' }} title="Clic para editar">
+                            {usd > 0 ? fmtUSD(usd) : '—'}
+                            {custom && usd > 0 && <span style={{ fontSize: 9, marginLeft: 2 }}>✎</span>}
+                          </span>
+                        </td>
+
+                        {/* ── Factura Recibida ── */}
+                        <td style={{ padding: '8px 10px', textAlign: 'center', minWidth: 100 }}>
+                          <button
+                            onClick={() => saveFactura(circ.id, r.id, 'factura_recibida', !r.factura_recibida)}
+                            style={{ padding: '3px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', background: r.factura_recibida ? '#d8f3dc' : '#ffe0e0', color: r.factura_recibida ? '#1b4332' : '#7f1d1d', whiteSpace: 'nowrap' }}>
+                            {r.factura_recibida ? '✅ Sí' : '❌ No'}
+                          </button>
+                        </td>
+
+                        {/* ── Folio Factura ── */}
+                        <td style={{ padding: '8px 10px', minWidth: 120 }}>
+                          <input
+                            type="text"
+                            defaultValue={r.folio_factura || ''}
+                            placeholder="Folio…"
+                            onBlur={(e) => { if (e.target.value !== (r.folio_factura || '')) saveFactura(circ.id, r.id, 'folio_factura', e.target.value) }}
+                            style={{ width: '100%', fontSize: 11, border: '1px solid transparent', borderRadius: 5, padding: '3px 6px', fontFamily: 'inherit', background: r.folio_factura ? '#fffdf5' : 'transparent', color: '#12151f', outline: 'none', transition: 'border-color .15s' }}
+                            onFocus={(e) => { e.target.style.borderColor = '#b8952a'; e.target.style.background = '#fffdf5' }}
+                            onBlurCapture={(e) => { e.target.style.borderColor = 'transparent'; if (!r.folio_factura) e.target.style.background = 'transparent' }}
+                          />
+                        </td>
+
+                        {/* Fecha pago */}
+                        <td style={{ padding: '8px 10px' }}>
+                          <input type="date" value={r.fecha_pago || ''} onChange={(e) => setFechaPago(circ.id, r.id, e.target.value)} style={{ border: '1px solid #d8d2c8', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontFamily: 'inherit', width: 118 }} />
+                        </td>
+
+                        {/* Estatus */}
+                        <td style={{ padding: '8px 10px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                            <button onClick={() => togglePaid(circ.id, r.id, r.paid)} style={{ width: 34, height: 18, borderRadius: 9, border: 'none', background: r.paid ? '#52b788' : '#ccc', cursor: 'pointer', position: 'relative', flexShrink: 0 }}>
+                              <div style={{ position: 'absolute', top: 2, left: r.paid ? 16 : 2, width: 14, height: 14, borderRadius: '50%', background: '#fff', transition: 'left .25s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
+                            </button>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: r.paid ? '#1e5c3a' : '#b83232' }}>{r.paid ? 'PAGADO' : 'PENDIENTE'}</span>
+                          </div>
+                        </td>
+
+                        {/* Notas */}
+                        <td style={{ padding: '8px 10px' }}>
+                          <textarea defaultValue={r.nota || ''} placeholder="Nota…" rows={1} onBlur={(e) => setNota(circ.id, r.id, e.target.value)}
+                            style={{ width: 120, fontSize: 11, border: '1px solid transparent', borderRadius: 5, padding: '3px 5px', fontFamily: 'inherit', resize: 'none', background: 'transparent', lineHeight: 1.4 }}
+                            onFocus={(e) => { e.target.style.borderColor = '#b8952a'; e.target.style.background = '#fffdf5' }}
+                            onBlurCapture={(e) => { e.target.style.borderColor = 'transparent'; e.target.style.background = 'transparent' }} />
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background: '#ece7df' }}>
+                    <td colSpan={6} style={{ padding: '8px 10px', fontSize: 11, color: '#8a8278' }}>{rows.length} servicio{rows.length !== 1 ? 's' : ''}</td>
+                    <td style={{ padding: '8px 10px', fontWeight: 700 }}>{tMXN > 0 ? fmtMXN(tMXN) : '—'}</td>
+                    <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>{tUSD > 0 ? fmtUSD(tUSD) : '—'}</td>
+                    <td colSpan={5} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        )
+      }
     </div>
   )
 }
