@@ -471,7 +471,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
         )}
         {modo==='circuito'&&circuits.length>0&&(
           <select value={circSel} onChange={e=>setCircSel(e.target.value)} style={selStyle}>
-            {circuits.map(c=><option key={c.id} value={c.id}>{c.id.split('-').slice(-3).join('-')}{c.info?.tl?` — ${c.info.tl}":''}</option>)}
+            {circuits.map(c=><option key={c.id} value={c.id}>{c.id.split('-').slice(-3).join('-')}{c.info?.tl?' — '+c.info.tl:''}</option>)}
           </select>
         )}
         <span style={{fontSize:11,color:'#8a8278',marginLeft:'auto'}}>{circsMostrar.length} circuito{circsMostrar.length!==1?'s':''}</span>
@@ -485,8 +485,8 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
           {label:'💰 Cobrado OPCIONAL',val:(totalIngOpcMXN>0||totalIngOpcUSD>0)?(totalIngOpcMXN>0?fmtMXN(totalIngOpcMXN)+' MN':''):'—',sub:totalIngOpcUSD>0?fmtUSD(totalIngOpcUSD):'Sin capturar',cls:'sky'},
           {label:'📤 Costo LIBERO',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
           {label:'📤 Costo OPCIONAL',val:fmtMXN(totalCostoOpc)+' MN',cls:'rust'},
-          {label:hayIngreso?(utilidad>=0?'✅ Utilidad LIB':'❌ Pérdida LIB'):'💡 LIBERO',val:hayIngreso?fmtMXN(Math.abs(utilidad))+' MN':'—',sub:hayIngreso&&totalCosto>0?`${((utilidad/totalIngMXN)*100).toFixed(1)}%`:undefined,cls:hayIngreso?(utilidad>=0?'forest':'rust'):'sky'},
-          {label:hayIngOpc?(utilidadOpc>=0?'✅ Utilidad OPC':'❌ Pérdida OPC'):'💡 OPCIONAL',val:hayIngOpc?fmtMXN(Math.abs(utilidadOpc))+' MN':'—',sub:hayIngOpc&&totalCostoOpc>0?`${((utilidadOpc/totalIngOpcTotal)*100).toFixed(1)}%`:undefined,cls:hayIngOpc?(utilidadOpc>=0?'forest':'rust'):'sky'},
+          {label:hayIngreso?(utilidad>=0?'✅ Utilidad LIB':'❌ Pérdida LIB'):'💡 LIBERO',val:hayIngreso?fmtMXN(Math.abs(utilidad))+' MN':'—',sub:hayIngreso&&totalCosto>0?((utilidad/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidad>=0?'forest':'rust'):'sky'},
+          {label:hayIngOpc?(utilidadOpc>=0?'✅ Utilidad OPC':'❌ Pérdida OPC'):'💡 OPCIONAL',val:hayIngOpc?fmtMXN(Math.abs(utilidadOpc))+' MN':'—',sub:hayIngOpc&&totalCostoOpc>0?((utilidadOpc/totalIngOpcTotal)*100).toFixed(1)+'%':undefined,cls:hayIngOpc?(utilidadOpc>=0?'forest':'rust'):'sky'},
           {label:'✅ Pagado',val:fmtMXN(totalPaidMXN)+' MN',sub:fmtUSD(totalPaidUSD)+' USD',cls:'forest'},
           {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
         ].map((k,i)=><KPICard key={i} {...k}/>)}
