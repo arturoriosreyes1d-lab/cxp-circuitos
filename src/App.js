@@ -29,19 +29,33 @@ function getImporte(row, circInfo, tarifario) {
   return match.moneda === 'USD' ? { mxn: 0, usd: total, found: true, custom: false } : { mxn: total, usd: 0, found: true, custom: false }
 }
 
-// Calcular totales de un circuito
+// Calcular totales LIBERO y OPCIONAL por separado
 function calcCircTotals(circ, tarifario, TC) {
   let costoMXN = 0, costoUSD = 0, paidMXN = 0, paidUSD = 0
+  let costoOpcMXN = 0, costoOpcUSD = 0, paidOpcMXN = 0, paidOpcUSD = 0
   circ.rows.forEach((r) => {
     const { mxn, usd } = getImporte(r, circ.info, tarifario)
-    costoMXN += mxn; costoUSD += usd
-    if (r.paid) { paidMXN += mxn; paidUSD += usd }
+    const esOpc = (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL'
+    if (esOpc) {
+      costoOpcMXN += mxn; costoOpcUSD += usd
+      if (r.paid) { paidOpcMXN += mxn; paidOpcUSD += usd }
+    } else {
+      costoMXN += mxn; costoUSD += usd
+      if (r.paid) { paidMXN += mxn; paidUSD += usd }
+    }
   })
   const costoTotal = costoMXN + costoUSD * TC
+  const costoOpcTotal = costoOpcMXN + costoOpcUSD * TC
   const ingreso = circ.importe_cobrado || 0
   const ingresoMXN = circ.moneda_cobrado === 'USD' ? ingreso * TC : ingreso
   const utilidad = ingresoMXN - costoTotal
-  return { costoMXN, costoUSD, costoTotal, paidMXN, paidUSD, ingreso, ingresoMXN, utilidad }
+  const ingresoOpcMXN = circ.ingreso_opcional_mxn || 0
+  const ingresoOpcUSD = circ.ingreso_opcional_usd || 0
+  const ingresoOpcTotal = ingresoOpcMXN + ingresoOpcUSD * TC
+  const utilidadOpc = ingresoOpcTotal - costoOpcTotal
+  return { costoMXN, costoUSD, costoTotal, paidMXN, paidUSD, ingreso, ingresoMXN, utilidad,
+    costoOpcMXN, costoOpcUSD, costoOpcTotal, paidOpcMXN, paidOpcUSD,
+    ingresoOpcMXN, ingresoOpcUSD, ingresoOpcTotal, utilidadOpc }
 }
 
 export default function App() {
@@ -125,7 +139,7 @@ function Dashboard({ session }) {
         destino: r.destino, clasificacion: r.clasificacion, servicio: r.servicio,
         tipo: r.tipo, prov_general: r.prov_general, t_venta: r.t_venta,
         paid: false, fecha_pago: null, nota: '', precio_custom: null, moneda_custom: null,
-        factura_recibida: false, folio_factura: null,
+        factura_recibida: false, folio_factura: null, visto_bueno_auditoria: false, visto_bueno_pago: false,
       })))
       await loadAll()
       setView({ type: 'circuit', circuitId: pendingCircuit.id })
@@ -190,6 +204,35 @@ function Dashboard({ session }) {
     await supabase.from('circuit_rows').update({ [field]: val }).eq('id', rowId)
     updateRow(cid, rowId, { [field]: val })
   }
+  const saveRowField = async (cid, rowId, changes) => {
+    await supabase.from('circuit_rows').update(changes).eq('id', rowId)
+    updateRow(cid, rowId, changes)
+  }
+  const addRow = async (cid) => {
+    const circ = circuits.find(c => c.id === cid)
+    const nextIdx = circ ? Math.max(0, ...circ.rows.map(r => r.idx || 0)) + 1 : 1
+    const { data, error } = await supabase.from('circuit_rows').insert({
+      circuit_id: cid, idx: nextIdx, fecha: null, destino: '', clasificacion: 'HOSPEDAJE',
+      servicio: 'Nuevo servicio', tipo: 'LIBERO', prov_general: '', t_venta: 0,
+      paid: false, fecha_pago: null, nota: '', precio_custom: null, moneda_custom: null,
+      factura_recibida: false, folio_factura: null, visto_bueno_auditoria: false, visto_bueno_pago: false
+    }).select().single()
+    if (!error && data) {
+      setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, rows: [...c.rows, { ...data, fecha: null }].sort((a,b) => {
+        if (!a.fecha && !b.fecha) return (a.idx||0)-(b.idx||0)
+        if (!a.fecha) return 1; if (!b.fecha) return -1
+        return new Date(a.fecha)-new Date(b.fecha)
+      })}))
+    }
+  }
+  const deleteRow = async (cid, rowId) => {
+    await supabase.from('circuit_rows').delete().eq('id', rowId)
+    setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, rows: c.rows.filter(r => r.id !== rowId) }))
+  }
+  const saveOpcional = async (cid, field, val) => {
+    await supabase.from('circuits').update({ [field]: parseFloat(val) || 0 }).eq('id', cid)
+    setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, [field]: parseFloat(val) || 0 }))
+  }
   const saveImporteCobrado = async (cid, valor, moneda) => {
     await supabase.from('circuits').update({ importe_cobrado: valor || null, moneda_cobrado: moneda }).eq('id', cid)
     setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, importe_cobrado: valor || null, moneda_cobrado: moneda }))
@@ -229,7 +272,7 @@ function Dashboard({ session }) {
     <div style={{ fontFamily: "'Outfit', sans-serif", background: '#f5f1eb', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
       {/* ── HEADER ── */}
-      <header style={{ background: '#12151f', borderBottom: '2px solid #b8952a', padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200 }}>
+      <header style={{ background: '#070a12', borderBottom: '2px solid #b8952a', padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,.5)', cursor: 'pointer', fontSize: 18 }}>☰</button>
           <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: '#fff' }}>CxP <span style={{ color: '#e0c96a' }}>Circuitos</span></span>
@@ -253,7 +296,7 @@ function Dashboard({ session }) {
 
         {/* ── SIDEBAR ── */}
         {sidebarOpen && (
-          <aside style={{ width: 272, background: '#12151f', borderRight: '1px solid rgba(255,255,255,.07)', overflowY: 'auto', flexShrink: 0, position: 'sticky', top: 54, height: 'calc(100vh - 54px)' }}>
+          <aside style={{ width: 272, background: '#090c18', borderRight: '1px solid rgba(255,255,255,.07)', overflowY: 'auto', flexShrink: 0, position: 'sticky', top: 54, height: 'calc(100vh - 54px)' }}>
 
             <SbItem label="📊 Todos los circuitos" count={circuits.length} active={view.type === 'all'} onClick={() => setView({ type: 'all' })} />
             <SbItem label="📈 Estado de Resultados" count="" active={view.type === 'resultados_all'} onClick={() => setView({ type: 'resultados_all' })} />
@@ -314,7 +357,7 @@ function Dashboard({ session }) {
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows}
               togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
-              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveFactura={saveFactura}
+              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional}
               onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
           )}
         </main>
@@ -347,7 +390,6 @@ function Dashboard({ session }) {
     </div>
   )
 }
-
 // ═══════════════════════════════════════════════
 //  ESTADO DE RESULTADOS
 // ═══════════════════════════════════════════════
@@ -356,254 +398,242 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
   const [mesSel, setMesSel] = useState(initMes || sortedMonths[0] || '')
   const [circSel, setCircSel] = useState(circuits[0]?.id || '')
 
-  // Circuitos a mostrar según modo
   const circsMostrar = modo === 'todos' ? circuits
     : modo === 'mes' ? (monthMap[mesSel] || [])
-    : circuits.filter((c) => c.id === circSel)
+    : circuits.filter(c => c.id === circSel)
 
-  // Totales de los circuitos seleccionados
-  let totalIngUSD = 0, totalIngMXN = 0, totalCosto = 0
-  let totalPaidMXN = 0, totalPaidUSD = 0, totalPendMXN = 0, totalPendUSD = 0
-  const catCosto = {}, catPaidMXN = {}, catPaidUSD = {}, catPendMXN = {}, catPendUSD = {}
+  // Acumular totales LIBERO y OPCIONAL separados
+  let totalIngUSD=0, totalIngMXN=0, totalCosto=0
+  let totalPaidMXN=0, totalPaidUSD=0, totalPendMXN=0, totalPendUSD=0
+  let totalCostoOpc=0, totalIngOpcMXN=0, totalIngOpcUSD=0, totalIngOpcTotal=0
+  let totalPaidOpcMXN=0, totalPaidOpcUSD=0
+  const catCosto={}, catPaidMXN={}, catPaidUSD={}, catPendMXN={}, catPendUSD={}
 
-  circsMostrar.forEach((c) => {
+  circsMostrar.forEach(c => {
     totalIngUSD += c.importe_cobrado || 0
-    const { costoTotal, paidMXN, paidUSD, costoMXN, costoUSD, ingresoMXN } = calcCircTotals(c, tarifario, TC)
-    totalIngMXN += ingresoMXN
-    totalCosto += costoTotal
-    totalPaidMXN += paidMXN; totalPaidUSD += paidUSD
-    totalPendMXN += costoMXN - paidMXN; totalPendUSD += costoUSD - paidUSD
+    const T = calcCircTotals(c, tarifario, TC)
+    totalIngMXN    += T.ingresoMXN;    totalCosto     += T.costoTotal
+    totalPaidMXN   += T.paidMXN;       totalPaidUSD   += T.paidUSD
+    totalPendMXN   += T.costoMXN - T.paidMXN
+    totalPendUSD   += T.costoUSD - T.paidUSD
+    totalCostoOpc  += T.costoOpcTotal
+    totalIngOpcMXN += T.ingresoOpcMXN; totalIngOpcUSD += T.ingresoOpcUSD
+    totalIngOpcTotal += T.ingresoOpcTotal
+    totalPaidOpcMXN += T.paidOpcMXN;   totalPaidOpcUSD += T.paidOpcUSD
 
-    c.rows.forEach((r) => {
-      const cat = norm(r.clasificacion) || 'OTROS'
-      const { mxn, usd } = getImporte(r, c.info, tarifario)
-      const v = mxn + usd * TC; if (v > 0) catCosto[cat] = (catCosto[cat] || 0) + v
-      if (!catPaidMXN[cat]) { catPaidMXN[cat] = 0; catPaidUSD[cat] = 0; catPendMXN[cat] = 0; catPendUSD[cat] = 0 }
-      if (r.paid) { catPaidMXN[cat] += mxn; catPaidUSD[cat] += usd }
-      else { catPendMXN[cat] += mxn; catPendUSD[cat] += usd }
+    c.rows.forEach(r => {
+      const cat = (r.clasificacion||'OTROS').toUpperCase().trim()
+      const {mxn,usd} = getImporte(r,c.info,tarifario)
+      const v = mxn + usd*TC; if (v>0) catCosto[cat]=(catCosto[cat]||0)+v
+      if (!catPaidMXN[cat]){catPaidMXN[cat]=0;catPaidUSD[cat]=0;catPendMXN[cat]=0;catPendUSD[cat]=0}
+      if (r.paid){catPaidMXN[cat]+=mxn;catPaidUSD[cat]+=usd}
+      else{catPendMXN[cat]+=mxn;catPendUSD[cat]+=usd}
     })
   })
 
-  const utilidad = totalIngMXN - totalCosto
-  const hayIngreso = totalIngMXN > 0
-  const maxCat = Math.max(...Object.values(catCosto), 1)
-  const CATS = ['HOSPEDAJE', 'TRANSPORTE', 'ACTIVIDADES', 'ALIMENTOS', 'GUIA', 'OTROS']
-  const CAT_COLS = { HOSPEDAJE: '#f4a261', TRANSPORTE: '#4361ee', ACTIVIDADES: '#f72585', ALIMENTOS: '#2d6a4f', GUIA: '#9b5de5', OTROS: '#888' }
-  // Incluir todas las categorías que tengan algún dato (costo o pagado/pendiente)
-  const allCatsSet = new Set([
-    ...CATS.filter((c) => catCosto[c] || catPaidMXN[c] || catPendMXN[c]),
-    ...Object.keys(catCosto),
-    ...Object.keys(catPaidMXN),
-  ])
+  const utilidad     = totalIngMXN   - totalCosto
+  const utilidadOpc  = totalIngOpcTotal - totalCostoOpc
+  const hayIngreso   = totalIngMXN   > 0
+  const hayIngOpc    = totalIngOpcTotal > 0
+  const maxCat = Math.max(...Object.values(catCosto),1)
+  const CATS = ['HOSPEDAJE','TRANSPORTE','ACTIVIDADES','ALIMENTOS','GUIA','OTROS']
+  const CAT_COLS = {HOSPEDAJE:'#f4a261',TRANSPORTE:'#4361ee',ACTIVIDADES:'#f72585',ALIMENTOS:'#2d6a4f',GUIA:'#9b5de5',OTROS:'#888'}
+  const allCatsSet = new Set([...CATS.filter(c=>catCosto[c]||catPaidMXN[c]),
+    ...Object.keys(catCosto),...Object.keys(catPaidMXN)])
   const allCats = [...allCatsSet]
 
-  const Card = ({ children, col }) => <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16, gridColumn: col }}>{children}</div>
-  const CH = ({ t }) => <h3 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 15, marginBottom: 14, paddingBottom: 8, borderBottom: '2px solid #ece7df' }}>{t}</h3>
-  const DRow = ({ label, val, color, bold, big }) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #f0ebe3', fontSize: big ? 15 : 13 }}>
-      <span style={{ color: bold ? '#12151f' : '#8a8278', fontWeight: bold ? 700 : 400 }}>{label}</span>
-      <span style={{ fontWeight: bold ? 800 : 600, color: color || '#12151f' }}>{val}</span>
+  const Card = ({children}) => <div style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:16}}>{children}</div>
+  const CH = ({t}) => <h3 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,marginBottom:14,paddingBottom:8,borderBottom:'2px solid #ece7df'}}>{t}</h3>
+  const DRow = ({label,val,color,bold,big}) => (
+    <div style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid #f0ebe3',fontSize:big?15:13}}>
+      <span style={{color:bold?'#12151f':'#8a8278',fontWeight:bold?700:400}}>{label}</span>
+      <span style={{fontWeight:bold?800:600,color:color||'#12151f'}}>{val}</span>
     </div>
   )
-
-  const selStyle = { border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '6px 12px', fontFamily: 'inherit', fontSize: 12, background: '#fff', cursor: 'pointer', outline: 'none', color: '#12151f', minWidth: 180 }
+  const selStyle = {border:'1.5px solid #d8d2c8',borderRadius:8,padding:'6px 12px',fontFamily:'inherit',fontSize:12,background:'#fff',cursor:'pointer',outline:'none',color:'#12151f',minWidth:180}
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 26, marginBottom: 16 }}>📈 Estado de Resultados</h2>
+      <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,marginBottom:16}}>📈 Estado de Resultados</h2>
 
-      {/* ── Selector de modo ── */}
-      <div style={{ background: '#fff', borderRadius: 12, padding: '14px 16px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        {[['todos', '📊 Todos los circuitos'], ['mes', '📅 Por Mes'], ['circuito', '🗂 Por Circuito']].map(([id, lbl]) => (
-          <button key={id} onClick={() => setModo(id)}
-            style={{ padding: '8px 18px', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: modo === id ? 700 : 500, fontFamily: 'inherit', background: modo === id ? '#12151f' : '#f5f1eb', color: modo === id ? '#e0c96a' : '#8a8278', transition: 'all .15s' }}>
+      {/* Selector modo */}
+      <div style={{background:'#fff',borderRadius:12,padding:'14px 16px',boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:20,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        {[['todos','📊 Todos los circuitos'],['mes','📅 Por Mes'],['circuito','🗂 Por Circuito']].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setModo(id)}
+            style={{padding:'8px 18px',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:modo===id?700:500,fontFamily:'inherit',background:modo===id?'#070a12':'#f5f1eb',color:modo===id?'#e0c96a':'#8a8278',transition:'all .15s'}}>
             {lbl}
           </button>
         ))}
-
-        {modo === 'mes' && sortedMonths.length > 0 && (
-          <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={selStyle}>
-            {sortedMonths.map((mk) => <option key={mk} value={mk}>{cap(mk)} ({monthMap[mk]?.length || 0} circuitos)</option>)}
+        {modo==='mes'&&sortedMonths.length>0&&(
+          <select value={mesSel} onChange={e=>setMesSel(e.target.value)} style={selStyle}>
+            {sortedMonths.map(mk=><option key={mk} value={mk}>{cap(mk)} ({monthMap[mk]?.length||0} circuitos)</option>)}
           </select>
         )}
-
-        {modo === 'circuito' && circuits.length > 0 && (
-          <select value={circSel} onChange={(e) => setCircSel(e.target.value)} style={selStyle}>
-            {circuits.map((c) => <option key={c.id} value={c.id}>{c.id.split('-').slice(-3).join('-')}{c.info?.tl ? ` — ${c.info.tl}` : ''}</option>)}
+        {modo==='circuito'&&circuits.length>0&&(
+          <select value={circSel} onChange={e=>setCircSel(e.target.value)} style={selStyle}>
+            {circuits.map(c=><option key={c.id} value={c.id}>{c.id.split('-').slice(-3).join('-')}{c.info?.tl?` — ${c.info.tl}":''}</option>)}
           </select>
         )}
-
-        <span style={{ fontSize: 11, color: '#8a8278', marginLeft: 'auto' }}>
-          {circsMostrar.length} circuito{circsMostrar.length !== 1 ? 's' : ''}
-        </span>
+        <span style={{fontSize:11,color:'#8a8278',marginLeft:'auto'}}>{circsMostrar.length} circuito{circsMostrar.length!==1?'s':''}</span>
       </div>
 
-      {/* ── KPIs resumen ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(148px,1fr))', gap: 12, marginBottom: 20 }}>
+      {/* KPIs fila */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12,marginBottom:20}}>
         {[
-          { label: 'Circuitos', val: circsMostrar.length, cls: 'gold' },
-          { label: '💰 Cobrado (USD)', val: totalIngUSD > 0 ? fmtUSD(totalIngUSD) : '—', sub: totalIngUSD > 0 ? fmtMXN(totalIngMXN) + ' MN' : 'Sin capturar', cls: 'forest' },
-          { label: '📤 Total Costos', val: fmtMXN(totalCosto), sub: 'MN', cls: 'rust' },
-          { label: hayIngreso ? (utilidad >= 0 ? '✅ Utilidad' : '❌ Pérdida') : '💡 Margen', val: hayIngreso ? fmtMXN(Math.abs(utilidad)) : '—', sub: hayIngreso ? (totalCosto > 0 ? `${((utilidad / totalIngMXN) * 100).toFixed(1)}% · MN` : 'MN') : undefined, cls: hayIngreso ? (utilidad >= 0 ? 'forest' : 'rust') : 'sky' },
-          { label: '✅ Pagado', val: fmtMXN(totalPaidMXN) + ' MN', sub: fmtUSD(totalPaidUSD) + ' USD', cls: 'forest' },
-          { label: '⏳ Pendiente', val: fmtMXN(totalPendMXN) + ' MN', sub: fmtUSD(totalPendUSD) + ' USD', cls: 'rust' },
-        ].map((k, i) => <KPICard key={i} {...k} />)}
+          {label:'Circuitos',val:circsMostrar.length,cls:'gold'},
+          {label:'💰 Cobrado LIBERO',val:totalIngUSD>0?fmtUSD(totalIngUSD):'—',sub:totalIngUSD>0?fmtMXN(totalIngMXN)+' MN':'Sin capturar',cls:'forest'},
+          {label:'💰 Cobrado OPCIONAL',val:(totalIngOpcMXN>0||totalIngOpcUSD>0)?(totalIngOpcMXN>0?fmtMXN(totalIngOpcMXN)+' MN':''):'—',sub:totalIngOpcUSD>0?fmtUSD(totalIngOpcUSD):'Sin capturar',cls:'sky'},
+          {label:'📤 Costo LIBERO',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
+          {label:'📤 Costo OPCIONAL',val:fmtMXN(totalCostoOpc)+' MN',cls:'rust'},
+          {label:hayIngreso?(utilidad>=0?'✅ Utilidad LIB':'❌ Pérdida LIB'):'💡 LIBERO',val:hayIngreso?fmtMXN(Math.abs(utilidad))+' MN':'—',sub:hayIngreso&&totalCosto>0?`${((utilidad/totalIngMXN)*100).toFixed(1)}%`:undefined,cls:hayIngreso?(utilidad>=0?'forest':'rust'):'sky'},
+          {label:hayIngOpc?(utilidadOpc>=0?'✅ Utilidad OPC':'❌ Pérdida OPC'):'💡 OPCIONAL',val:hayIngOpc?fmtMXN(Math.abs(utilidadOpc))+' MN':'—',sub:hayIngOpc&&totalCostoOpc>0?`${((utilidadOpc/totalIngOpcTotal)*100).toFixed(1)}%`:undefined,cls:hayIngOpc?(utilidadOpc>=0?'forest':'rust'):'sky'},
+          {label:'✅ Pagado',val:fmtMXN(totalPaidMXN)+' MN',sub:fmtUSD(totalPaidUSD)+' USD',cls:'forest'},
+          {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
+        ].map((k,i)=><KPICard key={i} {...k}/>)}
       </div>
 
-      {/* ── Cuerpo principal en grid ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      {/* Grid: utilidades lado a lado */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:0}}>
 
-        {/* Utilidad / Pérdida */}
+        {/* LIBERO */}
         <Card>
-          <CH t="💰 Utilidad / Pérdida" />
-          <DRow label="Total Cobrado (USD)" val={totalIngUSD > 0 ? fmtUSD(totalIngUSD) : 'Sin capturar'} color="#1565a0" />
-          {totalIngUSD > 0 && <DRow label="Equivalente MXN" val={fmtMXN(totalIngMXN)} color="#1565a0" />}
-          <DRow label="Total Costos MXN" val={fmtMXN(totalCosto)} color="#b83232" />
-          {hayIngreso && totalCosto > 0 && (
-            <>
-              <DRow label={utilidad >= 0 ? '✅ Utilidad Bruta' : '❌ Pérdida'} val={fmtMXN(Math.abs(utilidad))} color={utilidad >= 0 ? '#1e5c3a' : '#b83232'} bold big />
-              <DRow label="Margen" val={`${((utilidad / totalIngMXN) * 100).toFixed(1)}%`} color={utilidad >= 0 ? '#1e5c3a' : '#b83232'} bold />
-            </>
-          )}
-          {!hayIngreso && <p style={{ fontSize: 12, color: '#8a8278', marginTop: 10 }}>⚠️ Captura el importe cobrado en cada circuito para ver la utilidad.</p>}
+          <CH t="🔵 Circuito LIBERO — Utilidad"/>
+          <DRow label="Cobrado al cliente (USD)" val={totalIngUSD>0?fmtUSD(totalIngUSD):'Sin capturar'} color="#1565a0"/>
+          {totalIngUSD>0&&<DRow label="Equivalente MN" val={fmtMXN(totalIngMXN)+' MN'} color="#1565a0"/>}
+          <DRow label="Total Costos LIBERO" val={fmtMXN(totalCosto)+' MN'} color="#b83232"/>
+          {hayIngreso&&totalCosto>0&&<>
+            <DRow label={utilidad>=0?'✅ Utilidad LIBERO':'❌ Pérdida LIBERO'} val={fmtMXN(Math.abs(utilidad))+' MN'} color={utilidad>=0?'#1e5c3a':'#b83232'} bold big/>
+            <DRow label="Margen LIBERO" val={`${((utilidad/totalIngMXN)*100).toFixed(1)}%`} color={utilidad>=0?'#1e5c3a':'#b83232'} bold/>
+          </>}
+          {!hayIngreso&&<p style={{fontSize:12,color:'#8a8278',marginTop:10}}>⚠️ Captura el importe cobrado en cada circuito.</p>}
         </Card>
 
-        {/* Distribución por Categoría */}
+        {/* OPCIONAL */}
         <Card>
-          <CH t="📊 Distribución por Categoría" />
-          {totalCosto === 0
-            ? <p style={{ color: '#8a8278', fontSize: 12 }}>Sin costos capturados en el tarifario.</p>
-            : allCats.map((cat) => {
-                const v = catCosto[cat] || 0; if (!v) return null
+          <CH t="🔷 Opcionales — Utilidad"/>
+          {totalIngOpcMXN>0&&<DRow label="Ingresos opcionales MXN" val={fmtMXN(totalIngOpcMXN)+' MN'} color="#1565a0"/>}
+          {totalIngOpcUSD>0&&<DRow label="Ingresos opcionales USD" val={fmtUSD(totalIngOpcUSD)} color="#1565a0"/>}
+          {(totalIngOpcMXN>0||totalIngOpcUSD>0)&&<DRow label="Total ingresos opcionales (MN)" val={fmtMXN(totalIngOpcTotal)+' MN'} color="#1565a0"/>}
+          <DRow label="Total Costos OPCIONAL" val={fmtMXN(totalCostoOpc)+' MN'} color="#b83232"/>
+          {hayIngOpc&&totalCostoOpc>0&&<>
+            <DRow label={utilidadOpc>=0?'✅ Utilidad OPCIONAL':'❌ Pérdida OPCIONAL'} val={fmtMXN(Math.abs(utilidadOpc))+' MN'} color={utilidadOpc>=0?'#1e5c3a':'#b83232'} bold big/>
+            <DRow label="Margen OPCIONAL" val={`${((utilidadOpc/totalIngOpcTotal)*100).toFixed(1)}%`} color={utilidadOpc>=0?'#1e5c3a':'#b83232'} bold/>
+          </>}
+          {!hayIngOpc&&<p style={{fontSize:12,color:'#8a8278',marginTop:10}}>⚠️ Captura los ingresos opcionales en cada circuito.</p>}
+        </Card>
+      </div>
+
+      {/* Distribución categorías + proveedores */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:16}}>
+        <Card>
+          <CH t="📊 Distribución por Categoría"/>
+          {(totalCosto+totalCostoOpc)===0
+            ? <p style={{color:'#8a8278',fontSize:12}}>Sin costos capturados.</p>
+            : allCats.map(cat=>{
+                const v=catCosto[cat]||0; if(!v) return null
                 return (
-                  <div key={cat} style={{ marginBottom: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-                      <span style={{ fontWeight: 600 }}>{cat}</span>
-                      <span style={{ fontWeight: 600 }}>{fmtMXN(v)} <span style={{ color: '#8a8278', fontWeight: 400 }}>({((v / totalCosto) * 100).toFixed(1)}%)</span></span>
+                  <div key={cat} style={{marginBottom:11}}>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}>
+                      <span style={{fontWeight:600}}>{cat}</span>
+                      <span style={{fontWeight:600}}>{fmtMXN(v)} MN <span style={{color:'#8a8278',fontWeight:400}}>({(((v)/(totalCosto+totalCostoOpc))*100).toFixed(1)}%)</span></span>
                     </div>
-                    <div style={{ background: '#ece7df', borderRadius: 4, height: 8, overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: ((v / maxCat) * 100) + '%', background: CAT_COLS[cat] || '#888', borderRadius: 4 }} />
+                    <div style={{background:'#ece7df',borderRadius:4,height:7,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:((v/maxCat)*100)+'%',background:CAT_COLS[cat]||'#888',borderRadius:4}}/>
                     </div>
                   </div>
                 )
               })
           }
-          {totalCosto > 0 && <DRow label="Total Costos" val={fmtMXN(totalCosto)} color="#b83232" bold />}
+        </Card>
+
+        {/* Proveedores ranking */}
+        <Card>
+          <CH t="🏢 Top Proveedores"/>
+          {(() => {
+            const pm={}
+            circsMostrar.forEach(circ=>{
+              circ.rows.forEach(r=>{
+                const p=r.prov_general; if(!p) return
+                const k=(p||'').toUpperCase().trim()
+                if(!pm[k]) pm[k]={nombre:p,totalMXN:0,totalUSD:0,paidMXN:0,paidUSD:0,pendMXN:0,pendUSD:0,servicios:0}
+                const {mxn,usd}=getImporte(r,circ.info,tarifario)
+                pm[k].totalMXN+=mxn;pm[k].totalUSD+=usd;pm[k].servicios++
+                if(r.paid){pm[k].paidMXN+=mxn;pm[k].paidUSD+=usd}else{pm[k].pendMXN+=mxn;pm[k].pendUSD+=usd}
+              })
+            })
+            const provs=Object.values(pm).map(p=>({...p,eq:p.totalMXN+p.totalUSD*TC})).filter(p=>p.eq>0).sort((a,b)=>b.eq-a.eq).slice(0,8)
+            if(!provs.length) return <p style={{color:'#8a8278',fontSize:12}}>Sin datos.</p>
+            const maxEq=provs[0].eq
+            return provs.map((p,i)=>{
+              const pctP=p.eq>0?Math.round(((p.paidMXN+p.paidUSD*TC)/p.eq)*100):0
+              return (
+                <div key={p.nombre} style={{display:'grid',gridTemplateColumns:'20px 1fr 80px 55px',gap:8,alignItems:'center',padding:'7px 8px',borderRadius:7,background:i%2===0?'#fafaf8':'#fff',border:'1px solid #f0ebe3',marginBottom:5}}>
+                  <span style={{fontSize:11,fontWeight:800,color:i<3?'#b8952a':'#ccc',textAlign:'center'}}>#{i+1}</span>
+                  <div>
+                    <div style={{display:'flex',justifyContent:'space-between',marginBottom:3}}>
+                      <span style={{fontSize:11,fontWeight:700}}>{p.nombre}</span>
+                      <span style={{fontSize:9,color:'#8a8278'}}>{p.servicios} svc</span>
+                    </div>
+                    <div style={{background:'#ece7df',borderRadius:3,height:5,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:((p.eq/maxEq)*100)+'%',background:pctP===100?'#52b788':'#b8952a',borderRadius:3}}/>
+                    </div>
+                  </div>
+                  <div style={{textAlign:'right',fontSize:10}}>
+                    {p.pendMXN>0&&<div style={{color:'#b83232',fontWeight:700}}>{fmtMXN(p.pendMXN)} MN</div>}
+                    {p.pendUSD>0&&<div style={{color:'#b83232',fontWeight:700}}>{fmtUSD(p.pendUSD)}</div>}
+                    {p.pendMXN===0&&p.pendUSD===0&&<div style={{color:'#52b788',fontWeight:700}}>Liquidado ✓</div>}
+                  </div>
+                  <div style={{textAlign:'center'}}>
+                    <div style={{fontSize:13,fontWeight:800,color:pctP===100?'#1e5c3a':'#12151f'}}>{pctP}%</div>
+                    <div style={{fontSize:9,color:'#8a8278'}}>pagado</div>
+                  </div>
+                </div>
+              )
+            })
+          })()}
         </Card>
       </div>
 
-      {/* Top Proveedores por Costo */}
-      {(() => {
-        // Construir ranking de proveedores a partir de los circuitos mostrados
-        const pm = {}
-        circsMostrar.forEach((circ) => {
-          circ.rows.forEach((r) => {
-            const p = r.prov_general; if (!p) return
-            const k = norm(p)
-            if (!pm[k]) pm[k] = { nombre: p, totalMXN: 0, totalUSD: 0, paidMXN: 0, paidUSD: 0, pendMXN: 0, pendUSD: 0, servicios: 0 }
-            const { mxn, usd } = getImporte(r, circ.info, tarifario)
-            pm[k].totalMXN += mxn; pm[k].totalUSD += usd; pm[k].servicios++
-            if (r.paid) { pm[k].paidMXN += mxn; pm[k].paidUSD += usd }
-            else { pm[k].pendMXN += mxn; pm[k].pendUSD += usd }
-          })
-        })
-        const provs = Object.values(pm)
-          .map((p) => ({ ...p, totalMXNEq: p.totalMXN + p.totalUSD * TC }))
-          .filter((p) => p.totalMXNEq > 0)
-          .sort((a, b) => b.totalMXNEq - a.totalMXNEq)
-        if (provs.length === 0) return null
-        const maxProv = provs[0].totalMXNEq
-        return (
-          <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16 }}>
-            <CH t="🏢 Proveedores — Costo Total y Estatus de Pago" />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {provs.map((p, i) => {
-                const pctPaid = p.totalMXNEq > 0 ? Math.round(((p.paidMXN + p.paidUSD * TC) / p.totalMXNEq) * 100) : 0
-                const allPaid = pctPaid === 100
-                return (
-                  <div key={p.nombre} style={{ display: 'grid', gridTemplateColumns: '24px 1fr 140px 140px 60px', gap: 12, alignItems: 'center', padding: '10px 12px', borderRadius: 8, background: i % 2 === 0 ? '#fafaf8' : '#fff', border: '1px solid #f0ebe3' }}>
-                    {/* Rank */}
-                    <span style={{ fontSize: 11, fontWeight: 800, color: i < 3 ? '#b8952a' : '#ccc', textAlign: 'center' }}>#{i + 1}</span>
-                    {/* Nombre + barra */}
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700 }}>{p.nombre}</span>
-                        <span style={{ fontSize: 10, color: '#8a8278' }}>{p.servicios} svc</span>
-                      </div>
-                      <div style={{ background: '#ece7df', borderRadius: 4, height: 6, overflow: 'hidden' }}>
-                        <div style={{ height: '100%', width: (p.totalMXNEq / maxProv * 100) + '%', background: allPaid ? '#52b788' : '#b8952a', borderRadius: 4 }} />
-                      </div>
-                    </div>
-                    {/* Pagado */}
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: '#1e5c3a', textTransform: 'uppercase', marginBottom: 1 }}>✅ Pagado</div>
-                      {p.paidMXN > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#1e5c3a' }}>{fmtMXN(p.paidMXN)} <span style={{ fontSize: 9 }}>MN</span></div>}
-                      {p.paidUSD > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#1565a0' }}>{fmtUSD(p.paidUSD)}</div>}
-                      {p.paidMXN === 0 && p.paidUSD === 0 && <div style={{ fontSize: 11, color: '#ccc' }}>—</div>}
-                    </div>
-                    {/* Pendiente */}
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: '#b83232', textTransform: 'uppercase', marginBottom: 1 }}>⏳ Pendiente</div>
-                      {p.pendMXN > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#b83232' }}>{fmtMXN(p.pendMXN)} <span style={{ fontSize: 9 }}>MN</span></div>}
-                      {p.pendUSD > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#b83232' }}>{fmtUSD(p.pendUSD)}</div>}
-                      {p.pendMXN === 0 && p.pendUSD === 0 && <div style={{ fontSize: 11, color: '#52b788', fontWeight: 700 }}>Liquidado ✓</div>}
-                    </div>
-                    {/* % pagado */}
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 14, fontWeight: 800, color: allPaid ? '#1e5c3a' : '#12151f' }}>{pctPaid}%</div>
-                      <div style={{ fontSize: 9, color: '#8a8278' }}>pagado</div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )
-      })()}
-
-      {/* Desglose por circuito */}
-      {circsMostrar.length > 0 && (
-        <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 16 }}>
-          <CH t="🗂 Desglose por Circuito" />
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ background: '#12151f', color: '#fff' }}>
-                {['Circuito', 'Tour Leader', 'PAX', 'Servicios', 'Cobrado USD', 'Equivalente MN', 'Costo MXN', 'Costo USD', '% Pagado', 'Utilidad/Pérdida'].map((h) => (
-                  <th key={h} style={{ padding: '9px 10px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, whiteSpace: 'nowrap' }}>{h}</th>
-                ))}
-              </tr></thead>
+      {/* Desglose por circuito con dos utilidades */}
+      {circsMostrar.length>0&&(
+        <div style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginTop:16}}>
+          <CH t="🗂 Desglose por Circuito"/>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+              <thead>
+                <tr style={{background:'#070a12',color:'#fff'}}>
+                  {['Circuito','Tour Leader','PAX','Svc','Cobrado LIB (USD)','Equiv. MN','Costo LIB','Util/Pérd LIB','Ing. OPC MN','Ing. OPC USD','Costo OPC','Util/Pérd OPC','% Pagado'].map(h=>(
+                    <th key={h} style={{padding:'9px 10px',textAlign:'left',fontSize:9,textTransform:'uppercase',letterSpacing:.5,whiteSpace:'nowrap'}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
               <tbody>
-                {circsMostrar.map((circ) => {
-                  const { costoMXN, costoUSD, ingresoMXN, utilidad } = calcCircTotals(circ, tarifario, TC)
-                  const paid = circ.rows.filter((r) => r.paid).length
-                  const pct = circ.rows.length > 0 ? Math.round((paid / circ.rows.length) * 100) : 0
-                  const hayIng = ingresoMXN > 0
+                {circsMostrar.map((circ,i)=>{
+                  const T=calcCircTotals(circ,tarifario,TC)
+                  const paid=circ.rows.filter(r=>r.paid).length
+                  const pct=circ.rows.length>0?Math.round((paid/circ.rows.length)*100):0
+                  const hLib=T.ingresoMXN>0; const hOpc=T.ingresoOpcTotal>0
                   return (
-                    <tr key={circ.id} style={{ borderBottom: '1px solid #ece7df' }}>
-                      <td style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11 }}>{circ.id.split('-').slice(-3).join('-')}</td>
-                      <td style={{ padding: '8px 10px', fontSize: 11 }}>{circ.info?.tl || '—'}</td>
-                      <td style={{ padding: '8px 10px' }}>{circ.info?.pax || '—'}</td>
-                      <td style={{ padding: '8px 10px' }}>{circ.rows.length}</td>
-                      <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>
-                        {hayIng ? fmtUSD(circ.importe_cobrado) : <span style={{ color: '#ccc', fontSize: 10 }}>—</span>}
-                      </td>
-                      <td style={{ padding: '8px 10px', fontWeight: 600, color: '#1e5c3a' }}>
-                        {hayIng ? fmtMXN(ingresoMXN) : <span style={{ color: '#ccc', fontSize: 10 }}>—</span>}
-                      </td>
-                      <td style={{ padding: '8px 10px', fontWeight: 700 }}>{costoMXN > 0 ? fmtMXN(costoMXN) : '—'}</td>
-                      <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>{costoUSD > 0 ? fmtUSD(costoUSD) : '—'}</td>
-                      <td style={{ padding: '8px 10px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div style={{ flex: 1, height: 6, background: '#ece7df', borderRadius: 3, overflow: 'hidden', minWidth: 50 }}>
-                            <div style={{ height: '100%', width: pct + '%', background: pct === 100 ? '#52b788' : '#b8952a', borderRadius: 3 }} />
+                    <tr key={circ.id} style={{borderBottom:'1px solid #ece7df',background:i%2===0?'#fafaf8':'#fff'}}>
+                      <td style={{padding:'8px 10px',fontWeight:700,fontSize:10}}>{circ.id.split('-').slice(-3).join('-')}</td>
+                      <td style={{padding:'8px 10px',fontSize:11}}>{circ.info?.tl||'—'}</td>
+                      <td style={{padding:'8px 10px'}}>{circ.info?.pax||'—'}</td>
+                      <td style={{padding:'8px 10px'}}>{circ.rows.length}</td>
+                      <td style={{padding:'8px 10px',fontWeight:700,color:'#1565a0'}}>{hLib?fmtUSD(circ.importe_cobrado):<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      <td style={{padding:'8px 10px',color:'#1e5c3a'}}>{hLib?fmtMXN(T.ingresoMXN)+' MN':<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      <td style={{padding:'8px 10px',fontWeight:700,color:'#b83232'}}>{T.costoTotal>0?fmtMXN(T.costoTotal)+' MN':'—'}</td>
+                      <td style={{padding:'8px 10px'}}>{hLib?<span style={{fontWeight:700,color:T.utilidad>=0?'#1e5c3a':'#b83232'}}>{T.utilidad>=0?'✅':'❌'} {fmtMXN(Math.abs(T.utilidad))} MN</span>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      <td style={{padding:'8px 10px',color:'#1565a0'}}>{T.ingresoOpcMXN>0?fmtMXN(T.ingresoOpcMXN)+' MN':<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      <td style={{padding:'8px 10px',color:'#1565a0'}}>{T.ingresoOpcUSD>0?fmtUSD(T.ingresoOpcUSD):<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      <td style={{padding:'8px 10px',fontWeight:700,color:'#b83232'}}>{T.costoOpcTotal>0?fmtMXN(T.costoOpcTotal)+' MN':'—'}</td>
+                      <td style={{padding:'8px 10px'}}>{hOpc?<span style={{fontWeight:700,color:T.utilidadOpc>=0?'#1e5c3a':'#b83232'}}>{T.utilidadOpc>=0?'✅':'❌'} {fmtMXN(Math.abs(T.utilidadOpc))} MN</span>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      <td style={{padding:'8px 10px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:5}}>
+                          <div style={{flex:1,height:5,background:'#ece7df',borderRadius:3,overflow:'hidden',minWidth:40}}>
+                            <div style={{height:'100%',width:pct+'%',background:pct===100?'#52b788':'#b8952a',borderRadius:3}}/>
                           </div>
-                          <span style={{ fontSize: 11, fontWeight: 600 }}>{pct}%</span>
+                          <span style={{fontSize:11,fontWeight:600}}>{pct}%</span>
                         </div>
-                      </td>
-                      <td style={{ padding: '8px 10px' }}>
-                        {hayIng
-                          ? <span style={{ fontWeight: 700, color: utilidad >= 0 ? '#1e5c3a' : '#b83232' }}>{utilidad >= 0 ? '✅' : '❌'} {fmtMXN(Math.abs(utilidad))}</span>
-                          : <span style={{ color: '#ccc', fontSize: 10 }}>—</span>}
                       </td>
                     </tr>
                   )
@@ -616,7 +646,6 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
     </div>
   )
 }
-
 function KPICard({ label, val, sub, cls }) {
   const colors = { gold: '#b8952a', forest: '#52b788', rust: '#b83232', sky: '#1565a0', violet: '#5c35a0' }
   return (
@@ -804,392 +833,441 @@ function CircuitCards({ circs, tarifario, TC, onSelect }) {
 }
 
 // ── Circuit Detail ──
-function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveFactura, onDelete }) {
+function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, onDelete }) {
   const [editIC, setEditIC] = useState(false)
   const [icVal, setIcVal] = useState(circ.importe_cobrado || '')
-  const [icMon, setIcMon] = useState(circ.moneda_cobrado || 'MXN')
+  const [editOpc, setEditOpc] = useState(false)
+  const [opcMXN, setOpcMXN] = useState(circ.ingreso_opcional_mxn || '')
+  const [opcUSD, setOpcUSD] = useState(circ.ingreso_opcional_usd || '')
 
   const fi = circ.info?.fecha_inicio
   const fStr = fi ? (fi instanceof Date ? fi : new Date(fi)).toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' }) : 'N/D'
-  const { costoMXN, costoUSD, costoTotal, paidMXN, paidUSD, ingresoMXN, utilidad } = calcCircTotals(circ, tarifario, TC)
-  const pendMXN = costoMXN - paidMXN
-  const pendUSD = costoUSD - paidUSD
-  const lib = circ.rows.filter((r) => norm(r.tipo) === 'LIBERO').length
-  const opc = circ.rows.filter((r) => norm(r.tipo) === 'OPCIONAL').length
-  const hayIng = ingresoMXN > 0
+  const T = calcCircTotals(circ, tarifario, TC)
+  const pendMXN = T.costoMXN - T.paidMXN
+  const pendUSD = T.costoUSD - T.paidUSD
+  const lib = circ.rows.filter((r) => (r.tipo||'').toUpperCase().trim() !== 'OPCIONAL').length
+  const opc = circ.rows.filter((r) => (r.tipo||'').toUpperCase().trim() === 'OPCIONAL').length
+  const hayIngLib = T.ingresoMXN > 0
+  const hayIngOpc = T.ingresoOpcTotal > 0
 
-  const confirmIC = () => {
-    saveImporteCobrado(circ.id, parseFloat(icVal) || 0, 'USD')
-    setEditIC(false)
-  }
+  const confirmIC = () => { saveImporteCobrado(circ.id, parseFloat(icVal)||0, 'USD'); setEditIC(false) }
+  const confirmOpc = () => { saveOpcional(circ.id,'ingreso_opcional_mxn', opcMXN); saveOpcional(circ.id,'ingreso_opcional_usd', opcUSD); setEditOpc(false) }
+
+  const BannerBtn = ({onClick,children}) => (
+    <button onClick={onClick} style={{background:'none',border:'none',color:'#b8952a',cursor:'pointer',fontSize:11,fontWeight:700,padding:'2px 6px',borderRadius:4,textDecoration:'underline dotted'}}>
+      {children}
+    </button>
+  )
+  const UtilBadge = ({util}) => util >= 0
+    ? <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:24,fontWeight:800,color:'#1e5c3a'}}>{fmtMXN(util)} MN</span>
+    : <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:24,fontWeight:800,color:'#b83232'}}>{fmtMXN(Math.abs(util))} MN</span>
 
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+      <div style={{display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:12,marginBottom:16}}>
         <div>
-          <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, marginBottom: 6 }}>{circ.id}</h2>
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-            {[['Fecha', fStr], ['Tour Leader', circ.info?.tl], ['PAX', circ.info?.pax], ['HAB', circ.info?.habs], ['Operador', circ.info?.operador]].map(([l, v]) => (
-              <div key={l}><div style={{ fontSize: 11, color: '#8a8278' }}>{l}</div><div style={{ fontSize: 13, fontWeight: 600 }}>{v || '—'}</div></div>
+          <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:22,marginBottom:6}}>{circ.id}</h2>
+          <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+            {[['Fecha',fStr],['Tour Leader',circ.info?.tl],['PAX',circ.info?.pax],['HAB',circ.info?.habs],['Operador',circ.info?.operador]].map(([l,v]) => (
+              <div key={l}><div style={{fontSize:11,color:'#8a8278'}}>{l}</div><div style={{fontSize:13,fontWeight:600}}>{v||'—'}</div></div>
             ))}
           </div>
         </div>
-        <button onClick={() => onDelete(circ.id)} style={{ background: 'none', border: '1px solid #d8d2c8', color: '#8a8278', padding: '6px 13px', borderRadius: 7, cursor: 'pointer', fontSize: 12 }}>🗑 Eliminar</button>
+        <button onClick={() => onDelete(circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12}}>🗑 Eliminar</button>
       </div>
 
-      {/* ── Utilidad/Pérdida banner ── */}
-      <div style={{ background: hayIng ? (utilidad >= 0 ? '#f0faf4' : '#fff5f5') : '#fafafa', border: `1px solid ${hayIng ? (utilidad >= 0 ? '#95d5b2' : '#fca5a5') : '#d8d2c8'}`, borderRadius: 12, padding: '14px 18px', marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#8a8278', marginBottom: 2 }}>Importe Cobrado al Cliente</div>
-            {editIC ? (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <input type="number" value={icVal} onChange={(e) => setIcVal(e.target.value)} placeholder="0.00" autoFocus
-                  style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '4px 8px', fontSize: 13, fontFamily: 'inherit', width: 130 }} />
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#1565a0' }}>USD</span>
-                <button onClick={confirmIC} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '4px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}>✓</button>
-                <button onClick={() => setEditIC(false)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
-              </div>
-            ) : (
-              <div onClick={() => setEditIC(true)} style={{ cursor: 'pointer' }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 700, color: hayIng ? '#1565a0' : '#8a8278', borderBottom: '1px dotted #b8952a' }}>
-                    {hayIng ? fmtUSD(circ.importe_cobrado) : 'Clic para capturar'}
-                  </span>
-                  {hayIng && <span style={{ fontSize: 11, fontWeight: 700, color: '#1565a0' }}>USD</span>}
-                  <span style={{ fontSize: 11, color: '#b8952a' }}>✎</span>
-                </div>
-                {hayIng && <div style={{ fontSize: 11, color: '#8a8278', marginTop: 2 }}>{fmtMXN(circ.importe_cobrado * TC)} <span style={{ fontWeight: 600 }}>MN</span></div>}
-              </div>
-            )}
+      {/* ── BANNERS DE UTILIDAD — DOS COLUMNAS ── */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+
+        {/* LIBERO */}
+        <div style={{background: hayIngLib ? (T.utilidad>=0?'#f0faf4':'#fff5f5') : '#fafafa', border:`1px solid ${hayIngLib?(T.utilidad>=0?'#95d5b2':'#fca5a5'):'#d8d2c8'}`, borderRadius:12, padding:'14px 18px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+            <div>
+              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'#1e5c3a',marginBottom:2}}>🔵 Circuito LIBERO</div>
+              <div style={{fontSize:10,color:'#8a8278'}}>{lib} servicios incluidos</div>
+            </div>
+            <div style={{textAlign:'right'}}>
+              {hayIngLib ? <>{T.utilidad>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA</span>}<br/><UtilBadge util={T.utilidad}/>{T.ingresoMXN>0&&<div style={{fontSize:10,color:'#8a8278'}}>Margen: {((T.utilidad/T.ingresoMXN)*100).toFixed(1)}%</div>}</> : <span style={{fontSize:11,color:'#8a8278'}}>Sin ingreso</span>}
+            </div>
           </div>
-          <div style={{ width: 1, height: 36, background: '#d8d2c8' }} />
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#8a8278', marginBottom: 2 }}>Total Costos</div>
-            <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: '#b83232' }}>{fmtMXN(costoTotal)}</span>
+          <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Cobrado al cliente</div>
+              {editIC ? (
+                <div style={{display:'flex',gap:5,alignItems:'center'}}>
+                  <input type="number" value={icVal} onChange={e=>setIcVal(e.target.value)} placeholder="0.00" autoFocus style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:110}}/>
+                  <span style={{fontSize:11,fontWeight:700,color:'#1565a0'}}>USD</span>
+                  <button onClick={confirmIC} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                  <button onClick={()=>setEditIC(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                </div>
+              ) : (
+                <div onClick={()=>setEditIC(true)} style={{cursor:'pointer'}}>
+                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:hayIngLib?'#1565a0':'#8a8278',borderBottom:'1px dotted #b8952a'}}>
+                    {hayIngLib?fmtUSD(circ.importe_cobrado):'Clic para capturar'} <span style={{fontSize:10,color:'#b8952a'}}>✎</span>
+                  </span>
+                  {hayIngLib&&<div style={{fontSize:10,color:'#8a8278'}}>{fmtMXN(circ.importe_cobrado*TC)} MN</div>}
+                </div>
+              )}
+            </div>
+            <div style={{width:1,background:'#d8d2c8'}}/>
+            <div>
+              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Costo LIBERO</div>
+              <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'#b83232'}}>{fmtMXN(T.costoTotal)} MN</span>
+              {T.costoUSD>0&&<div style={{fontSize:10,color:'#1565a0'}}>{fmtUSD(T.costoUSD)}</div>}
+            </div>
           </div>
         </div>
-        <div style={{ textAlign: 'right' }}>
-          {hayIng ? (
-            <>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', marginBottom: 2 }}>{utilidad >= 0 ? '✅ Utilidad Bruta' : '❌ Pérdida'}</div>
-              <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 26, fontWeight: 800, color: utilidad >= 0 ? '#1e5c3a' : '#b83232' }}>{fmtMXN(Math.abs(utilidad))}</div>
-              <div style={{ fontSize: 12, color: '#8a8278' }}>Margen: {((utilidad / ingresoMXN) * 100).toFixed(1)}%</div>
-            </>
-          ) : (
-            <div style={{ fontSize: 12, color: '#8a8278' }}>Captura el importe cobrado para ver la utilidad</div>
-          )}
+
+        {/* OPCIONAL */}
+        <div style={{background: hayIngOpc?(T.utilidadOpc>=0?'#f0f4ff':'#fff5f5'):'#fafafa', border:`1px solid ${hayIngOpc?(T.utilidadOpc>=0?'#93c5fd':'#fca5a5'):'#d8d2c8'}`, borderRadius:12, padding:'14px 18px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+            <div>
+              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'#1565a0',marginBottom:2}}>🔷 Opcionales</div>
+              <div style={{fontSize:10,color:'#8a8278'}}>{opc} servicios opcionales</div>
+            </div>
+            <div style={{textAlign:'right'}}>
+              {hayIngOpc ? <>{T.utilidadOpc>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA</span>}<br/><UtilBadge util={T.utilidadOpc}/>{T.ingresoOpcTotal>0&&<div style={{fontSize:10,color:'#8a8278'}}>Margen: {((T.utilidadOpc/T.ingresoOpcTotal)*100).toFixed(1)}%</div>}</> : <span style={{fontSize:11,color:'#8a8278'}}>Sin ingreso</span>}
+            </div>
+          </div>
+          <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Ingresos opcionales</div>
+              {editOpc ? (
+                <div>
+                  <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
+                    <input type="number" value={opcMXN} onChange={e=>setOpcMXN(e.target.value)} placeholder="0.00" style={{border:'1px solid #1565a0',borderRadius:5,padding:'3px 7px',fontSize:11,fontFamily:'inherit',width:90}}/>
+                    <span style={{fontSize:10,fontWeight:700,color:'#8a8278'}}>MXN</span>
+                  </div>
+                  <div style={{display:'flex',gap:5,alignItems:'center'}}>
+                    <input type="number" value={opcUSD} onChange={e=>setOpcUSD(e.target.value)} placeholder="0.00" style={{border:'1px solid #1565a0',borderRadius:5,padding:'3px 7px',fontSize:11,fontFamily:'inherit',width:90}}/>
+                    <span style={{fontSize:10,fontWeight:700,color:'#1565a0'}}>USD</span>
+                    <button onClick={confirmOpc} style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                    <button onClick={()=>setEditOpc(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                  </div>
+                </div>
+              ) : (
+                <div onClick={()=>setEditOpc(true)} style={{cursor:'pointer'}}>
+                  {hayIngOpc ? (
+                    <div>
+                      {T.ingresoOpcMXN>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>{fmtMXN(T.ingresoOpcMXN)} <span style={{fontSize:10,color:'#8a8278'}}>MXN</span></div>}
+                      {T.ingresoOpcUSD>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700,color:'#1565a0'}}>{fmtUSD(T.ingresoOpcUSD)} <span style={{fontSize:10}}>USD</span></div>}
+                      <span style={{fontSize:10,color:'#b8952a'}}>✎ editar</span>
+                    </div>
+                  ) : <span style={{fontSize:13,color:'#8a8278',borderBottom:'1px dotted #1565a0'}}>Clic para capturar <span style={{color:'#b8952a'}}>✎</span></span>}
+                </div>
+              )}
+            </div>
+            <div style={{width:1,background:'#d8d2c8'}}/>
+            <div>
+              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Costo Opcionales</div>
+              <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'#b83232'}}>{fmtMXN(T.costoOpcTotal)} MN</span>
+              {T.costoOpcUSD>0&&<div style={{fontSize:10,color:'#1565a0'}}>{fmtUSD(T.costoOpcUSD)}</div>}
+            </div>
+          </div>
         </div>
       </div>
 
       {/* KPIs */}
       <KPIGrid items={[
-        { cls: 'gold', label: 'Servicios', val: circ.rows.length, sub: `${lib} LIBERO · ${opc} OPCIONAL` },
-        { cls: 'forest', label: '✅ Pagado MXN', val: fmtMXN(paidMXN) },
-        { cls: 'sky', label: '✅ Pagado USD', val: fmtUSD(paidUSD) },
-        { cls: 'rust', label: '⏳ Pendiente MXN', val: fmtMXN(pendMXN) },
-        { cls: 'rust', label: '⏳ Pendiente USD', val: fmtUSD(pendUSD) },
-        { cls: 'violet', label: 'Tarifario', val: tarifario.length, sub: 'proveedores' },
+        { cls:'gold', label:'Servicios', val:circ.rows.length, sub:`${lib} LIBERO · ${opc} OPCIONAL` },
+        { cls:'forest', label:'✅ Pagado MXN', val:fmtMXN(T.paidMXN) },
+        { cls:'sky', label:'✅ Pagado USD', val:fmtUSD(T.paidUSD) },
+        { cls:'rust', label:'⏳ Pendiente MXN', val:fmtMXN(pendMXN) },
+        { cls:'rust', label:'⏳ Pendiente USD', val:fmtUSD(pendUSD) },
+        { cls:'violet', label:'Tarifario', val:tarifario.length, sub:'proveedores' },
       ]} />
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 3, background: '#ece7df', borderRadius: 10, padding: 3, marginBottom: 18, width: 'fit-content', flexWrap: 'wrap' }}>
-        {[['cxp', '💳 CxP'], ['proveedores', '🏢 Proveedores'], ['timeline', '📅 Timeline']].map(([id, label]) => (
-          <button key={id} onClick={() => setActiveTab(id)} style={{ padding: '7px 15px', border: 'none', background: activeTab === id ? '#fff' : 'transparent', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: activeTab === id ? 700 : 500, color: activeTab === id ? '#12151f' : '#8a8278', fontFamily: 'inherit' }}>{label}</button>
+      <div style={{display:'flex',gap:3,background:'#ece7df',borderRadius:10,padding:3,marginBottom:18,width:'fit-content',flexWrap:'wrap'}}>
+        {[['cxp','💳 CxP'],['proveedores','🏢 Proveedores'],['timeline','📅 Timeline']].map(([id,label]) => (
+          <button key={id} onClick={()=>setActiveTab(id)} style={{padding:'7px 15px',border:'none',background:activeTab===id?'#fff':'transparent',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:activeTab===id?700:500,color:activeTab===id?'#12151f':'#8a8278',fontFamily:'inherit'}}>{label}</button>
         ))}
       </div>
 
-      {activeTab === 'cxp' && <CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} saveFactura={saveFactura} />}
-      {activeTab === 'proveedores' && <ProvPanel circ={circ} tarifario={tarifario} TC={TC} />}
-      {activeTab === 'timeline' && <TimelinePanel circ={circ} tarifario={tarifario} />}
+      {activeTab==='cxp'&&<CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow}/>}
+      {activeTab==='proveedores'&&<ProvPanel circ={circ} tarifario={tarifario} TC={TC}/>}
+      {activeTab==='timeline'&&<TimelinePanel circ={circ} tarifario={tarifario}/>}
     </div>
   )
 }
-
 // ── CxP Panel ──
-function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveFactura }) {
+function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveFactura, saveRowField, addRow, deleteRow }) {
   const [editCell, setEditCell] = useState(null)
   const [editVal, setEditVal] = useState('')
+  const [editVal2, setEditVal2] = useState('')
   const [editMoneda, setEditMoneda] = useState('MXN')
   const [busqueda, setBusqueda] = useState('')
   const tableRef = useRef(null)
   const topScrollRef = useRef(null)
   const syncingRef = useRef(false)
 
-  // Sincronizar scroll horizontal superior ↔ tabla
   useEffect(() => {
-    const top = topScrollRef.current
-    const tbl = tableRef.current
+    const top = topScrollRef.current; const tbl = tableRef.current
     if (!top || !tbl) return
-    const onTopScroll = () => { if (syncingRef.current) return; syncingRef.current = true; tbl.scrollLeft = top.scrollLeft; setTimeout(() => { syncingRef.current = false }, 50) }
-    const onTblScroll = () => { if (syncingRef.current) return; syncingRef.current = true; top.scrollLeft = tbl.scrollLeft; setTimeout(() => { syncingRef.current = false }, 50) }
-    top.addEventListener('scroll', onTopScroll)
-    tbl.addEventListener('scroll', onTblScroll)
-    return () => { top.removeEventListener('scroll', onTopScroll); tbl.removeEventListener('scroll', onTblScroll) }
+    const sync = (src, dst) => () => { if (syncingRef.current) return; syncingRef.current = true; dst.scrollLeft = src.scrollLeft; requestAnimationFrame(() => { syncingRef.current = false }) }
+    const onTop = sync(top, tbl); const onTbl = sync(tbl, top)
+    top.addEventListener('scroll', onTop); tbl.addEventListener('scroll', onTbl)
+    return () => { top.removeEventListener('scroll', onTop); tbl.removeEventListener('scroll', onTbl) }
   }, [])
 
-  // Ancho interno de la tabla (para que la barra superior sepa cuánto desplazar)
   const [tableInnerW, setTableInnerW] = useState(0)
   useEffect(() => {
     if (!tableRef.current) return
-    const obs = new ResizeObserver(() => {
-      const inner = tableRef.current?.querySelector('table')
-      if (inner) setTableInnerW(inner.offsetWidth)
-    })
-    obs.observe(tableRef.current)
-    return () => obs.disconnect()
+    const obs = new ResizeObserver(() => { const t = tableRef.current?.querySelector('table'); if (t) setTableInnerW(t.scrollWidth) })
+    obs.observe(tableRef.current); return () => obs.disconnect()
   }, [])
 
   let rows = filteredRows(circ.rows)
-
-  // Filtro de búsqueda libre
   if (busqueda.trim()) {
     const q = busqueda.trim().toLowerCase()
-    rows = rows.filter((r) => {
+    rows = rows.filter(r => {
       const imp = getImporte(r, circ.info, tarifario)
-      return (
-        (r.prov_general || '').toLowerCase().includes(q) ||
-        (r.folio_factura || '').toLowerCase().includes(q) ||
-        (r.servicio || '').toLowerCase().includes(q) ||
-        (r.destino || '').toLowerCase().includes(q) ||
-        (r.clasificacion || '').toLowerCase().includes(q) ||
-        (imp.mxn > 0 && imp.mxn.toString().includes(q)) ||
-        (imp.usd > 0 && imp.usd.toString().includes(q))
-      )
+      return (r.prov_general||'').toLowerCase().includes(q)||(r.folio_factura||'').toLowerCase().includes(q)||
+        (r.servicio||'').toLowerCase().includes(q)||(r.destino||'').toLowerCase().includes(q)||
+        (r.clasificacion||'').toLowerCase().includes(q)||(r.tipo||'').toLowerCase().includes(q)||
+        (imp.mxn>0&&imp.mxn.toString().includes(q))||(imp.usd>0&&imp.usd.toString().includes(q))
     })
   }
+  let tMXN=0, tUSD=0
+  rows.forEach(r => { const {mxn,usd}=getImporte(r,circ.info,tarifario); tMXN+=mxn; tUSD+=usd })
 
-  let tMXN = 0, tUSD = 0
-  rows.forEach((r) => { const { mxn, usd } = getImporte(r, circ.info, tarifario); tMXN += mxn; tUSD += usd })
-
-  const proveedoresCircuito = [...new Set(circ.rows.map((r) => norm(r.prov_general)).filter(Boolean))].sort()
+  const proveedoresCircuito = [...new Set(circ.rows.map(r=>norm(r.prov_general)).filter(Boolean))].sort()
 
   const startEdit = (rowId, field, row) => {
-    setEditCell({ rowId, field })
-    if (field === 'prov') setEditVal(row.prov_general || '')
-    if (field === 'importe') {
-      const { mxn, usd } = getImporte(row, circ.info, tarifario)
-      setEditMoneda(row.moneda_custom || (usd > 0 ? 'USD' : 'MXN'))
-      setEditVal(row.precio_custom || (usd > 0 ? usd : mxn) || '')
+    setEditCell({rowId,field}); setEditVal2('')
+    if (field==='prov') setEditVal(row.prov_general||'')
+    else if (field==='importe') {
+      const {mxn,usd}=getImporte(row,circ.info,tarifario)
+      setEditMoneda(row.moneda_custom||(usd>0?'USD':'MXN'))
+      setEditVal(row.precio_custom||(usd>0?usd:mxn)||'')
     }
+    else if (field==='fecha') setEditVal(row.fecha?(row.fecha instanceof Date?row.fecha:new Date(row.fecha)).toISOString().slice(0,10):'')
+    else if (field==='destino') setEditVal(row.destino||'')
+    else if (field==='clasificacion') setEditVal(row.clasificacion||'HOSPEDAJE')
+    else if (field==='servicio') setEditVal(row.servicio||'')
+    else if (field==='tipo') setEditVal(row.tipo||'LIBERO')
   }
+
   const confirmEdit = (cid, rowId, field) => {
-    if (field === 'prov') saveProv(cid, rowId, editVal)
-    if (field === 'importe') saveImporte(cid, rowId, parseFloat(editVal) || 0, editMoneda)
+    if (field==='prov') saveProv(cid,rowId,editVal)
+    else if (field==='importe') saveImporte(cid,rowId,parseFloat(editVal)||0,editMoneda)
+    else if (field==='fecha') saveRowField(cid,rowId,{fecha:editVal||null})
+    else if (field==='destino') saveRowField(cid,rowId,{destino:editVal})
+    else if (field==='clasificacion') saveRowField(cid,rowId,{clasificacion:editVal})
+    else if (field==='servicio') saveRowField(cid,rowId,{servicio:editVal})
+    else if (field==='tipo') saveRowField(cid,rowId,{tipo:editVal})
     setEditCell(null)
   }
 
-  const FBtn = ({ fkey, val, label, activeColor }) => {
-    const isActive = F[fkey] === val
-    return (
-      <button onClick={() => setFilters((p) => ({ ...p, [fkey]: val }))}
-        style={{ padding: '4px 11px', borderRadius: 14, border: `1.5px solid ${isActive ? 'transparent' : '#d8d2c8'}`, background: isActive ? (activeColor || '#12151f') : '#f5f1eb', color: isActive ? (activeColor === '#b8952a' ? '#12151f' : '#fff') : '#8a8278', cursor: 'pointer', fontSize: 11, fontWeight: 500, fontFamily: 'inherit' }}>
-        {label}
-      </button>
-    )
+  const FBtn = ({fkey,val,label,activeColor}) => {
+    const isActive=F[fkey]===val
+    return <button onClick={()=>setFilters(p=>({...p,[fkey]:val}))}
+      style={{padding:'4px 11px',borderRadius:14,border:`1.5px solid ${isActive?'transparent':'#d8d2c8'}`,background:isActive?(activeColor||'#12151f'):'#f5f1eb',color:isActive?(activeColor==='#b8952a'?'#12151f':'#fff'):'#8a8278',cursor:'pointer',fontSize:11,fontWeight:500,fontFamily:'inherit'}}>{label}</button>
   }
 
-  const hayFiltros = F.tipo !== 'ALL' || F.cat !== 'ALL' || F.pago !== 'ALL' || F.fecha || F.proveedor !== 'ALL' || busqueda.trim()
+  const hayFiltros = F.tipo!=='ALL'||F.cat!=='ALL'||F.pago!=='ALL'||F.fecha||F.proveedor!=='ALL'||busqueda.trim()
+  const EditTD = ({children,onClick,style}) => <td onClick={onClick} style={{padding:'8px 10px',cursor:'pointer',...style}} title="Clic para editar">{children}</td>
+  const YesNo = ({val,onClick,small}) => (
+    <button onClick={onClick} style={{padding:small?'2px 8px':'3px 10px',borderRadius:12,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',background:val?'#d8f3dc':'#ffe0e0',color:val?'#1b4332':'#7f1d1d',whiteSpace:'nowrap'}}>
+      {val?'✅ Sí':'❌ No'}
+    </button>
+  )
 
   return (
     <div>
-      {/* ── Panel de filtros ── */}
-      <div style={{ background: '#fff', borderRadius: 12, padding: '12px 14px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', marginBottom: 14 }}>
-
-        {/* Buscador */}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #f0ebe3' }}>
-          <span style={{ fontSize: 15 }}>🔍</span>
-          <input
-            type="text"
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por proveedor, folio, servicio, importe…"
-            style={{ flex: 1, border: '1.5px solid #d8d2c8', borderRadius: 20, padding: '6px 14px', fontFamily: 'inherit', fontSize: 12, outline: 'none', background: busqueda ? '#fffdf5' : '#f5f1eb', transition: 'border-color .15s' }}
-            onFocus={(e) => e.target.style.borderColor = '#b8952a'}
-            onBlur={(e) => e.target.style.borderColor = '#d8d2c8'}
-          />
-          {busqueda && <button onClick={() => setBusqueda('')} style={{ background: 'none', border: 'none', color: '#8a8278', cursor: 'pointer', fontSize: 16 }}>✕</button>}
+      <div style={{background:'#fff',borderRadius:12,padding:'12px 14px',boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:14}}>
+        <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10,paddingBottom:10,borderBottom:'1px solid #f0ebe3'}}>
+          <span style={{fontSize:15}}>🔍</span>
+          <input type="text" value={busqueda} onChange={e=>setBusqueda(e.target.value)}
+            placeholder="Buscar por proveedor, folio, servicio, tipo, importe…"
+            style={{flex:1,border:'1.5px solid #d8d2c8',borderRadius:20,padding:'6px 14px',fontFamily:'inherit',fontSize:12,outline:'none',background:busqueda?'#fffdf5':'#f5f1eb'}}
+            onFocus={e=>e.target.style.borderColor='#b8952a'} onBlur={e=>e.target.style.borderColor='#d8d2c8'}/>
+          {busqueda&&<button onClick={()=>setBusqueda('')} style={{background:'none',border:'none',color:'#8a8278',cursor:'pointer',fontSize:16}}>✕</button>}
         </div>
-
         {[
-          { key: 'tipo', label: 'Tipo', opts: [['ALL', '#12151f', 'Todos'], ['LIBERO', '#1e5c3a', '🔵 LIBERO'], ['OPCIONAL', '#1565a0', '🔷 OPCIONAL']] },
-          { key: 'cat', label: 'Categoría', opts: [['ALL', '#b8952a', 'Todas'], ['HOSPEDAJE', '#b8952a', '🏨 Hospedaje'], ['TRANSPORTE', '#b8952a', '🚌 Transporte'], ['ACTIVIDADES', '#b8952a', '🎯 Actividades'], ['ALIMENTOS', '#b8952a', '🍽 Alimentos'], ['GUIA', '#b8952a', '🧭 Guía']] },
-          { key: 'pago', label: 'Estatus', opts: [['ALL', '#12151f', 'Todos'], ['PAID', '#1e5c3a', '✅ Pagado'], ['UNPAID', '#b83232', '⏳ Pendiente']] },
-        ].map(({ key, label, opts }) => (
-          <div key={key} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 7 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .6, minWidth: 64 }}>{label}</span>
-            {opts.map(([val, color, lbl]) => <FBtn key={val} fkey={key} val={val} label={lbl} activeColor={color} />)}
+          {key:'tipo',label:'Tipo',opts:[['ALL','#12151f','Todos'],['LIBERO','#1e5c3a','🔵 LIBERO'],['OPCIONAL','#1565a0','🔷 OPCIONAL']]},
+          {key:'cat',label:'Categoría',opts:[['ALL','#b8952a','Todas'],['HOSPEDAJE','#b8952a','🏨 Hospedaje'],['TRANSPORTE','#b8952a','🚌 Transporte'],['ACTIVIDADES','#b8952a','🎯 Actividades'],['ALIMENTOS','#b8952a','🍽 Alimentos'],['GUIA','#b8952a','🧭 Guía']]},
+          {key:'pago',label:'Estatus',opts:[['ALL','#12151f','Todos'],['PAID','#1e5c3a','✅ Pagado'],['UNPAID','#b83232','⏳ Pendiente']]},
+        ].map(({key,label,opts})=>(
+          <div key={key} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:7}}>
+            <span style={{fontSize:10,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>{label}</span>
+            {opts.map(([val,color,lbl])=><FBtn key={val} fkey={key} val={val} label={lbl} activeColor={color}/>)}
           </div>
         ))}
-
-        {/* Proveedor dropdown */}
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 7 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .6, minWidth: 64 }}>Proveedor</span>
-          <select value={F.proveedor} onChange={(e) => setFilters((p) => ({ ...p, proveedor: e.target.value }))}
-            style={{ border: `1.5px solid ${F.proveedor !== 'ALL' ? '#b8952a' : '#d8d2c8'}`, borderRadius: 14, padding: '4px 10px', fontFamily: 'inherit', fontSize: 11, background: F.proveedor !== 'ALL' ? '#fffdf5' : '#f5f1eb', color: '#12151f', cursor: 'pointer', outline: 'none', minWidth: 160 }}>
+        <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:7}}>
+          <span style={{fontSize:10,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>Proveedor</span>
+          <select value={F.proveedor} onChange={e=>setFilters(p=>({...p,proveedor:e.target.value}))}
+            style={{border:`1.5px solid ${F.proveedor!=='ALL'?'#b8952a':'#d8d2c8'}`,borderRadius:14,padding:'4px 10px',fontFamily:'inherit',fontSize:11,background:F.proveedor!=='ALL'?'#fffdf5':'#f5f1eb',color:'#12151f',cursor:'pointer',outline:'none',minWidth:160}}>
             <option value="ALL">Todos los proveedores</option>
-            {proveedoresCircuito.map((p) => <option key={p} value={p}>{p}</option>)}
+            {proveedoresCircuito.map(p=><option key={p} value={p}>{p}</option>)}
           </select>
-          {F.proveedor !== 'ALL' && <button onClick={() => setFilters((p) => ({ ...p, proveedor: 'ALL' }))} style={{ fontSize: 11, background: 'none', border: 'none', color: '#8a8278', cursor: 'pointer' }}>✕</button>}
+          {F.proveedor!=='ALL'&&<button onClick={()=>setFilters(p=>({...p,proveedor:'ALL'}))} style={{fontSize:11,background:'none',border:'none',color:'#8a8278',cursor:'pointer'}}>✕</button>}
         </div>
-
-        {/* Fecha pago */}
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .6, minWidth: 64 }}>Fecha Pago</span>
-          <input type="date" value={F.fecha} onChange={(e) => setFilters((p) => ({ ...p, fecha: e.target.value }))} style={{ border: '1.5px solid #d8d2c8', borderRadius: 14, padding: '4px 10px', fontFamily: 'inherit', fontSize: 11, background: '#f5f1eb' }} />
-          {F.fecha && <button onClick={() => setFilters((p) => ({ ...p, fecha: '' }))} style={{ fontSize: 11, background: 'none', border: 'none', color: '#8a8278', cursor: 'pointer' }}>✕</button>}
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          <span style={{fontSize:10,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>Fecha Pago</span>
+          <input type="date" value={F.fecha} onChange={e=>setFilters(p=>({...p,fecha:e.target.value}))} style={{border:'1.5px solid #d8d2c8',borderRadius:14,padding:'4px 10px',fontFamily:'inherit',fontSize:11,background:'#f5f1eb'}}/>
+          {F.fecha&&<button onClick={()=>setFilters(p=>({...p,fecha:''}))} style={{fontSize:11,background:'none',border:'none',color:'#8a8278',cursor:'pointer'}}>✕</button>}
         </div>
       </div>
 
-      {/* Contador de resultados */}
-      {hayFiltros && (
-        <div style={{ fontSize: 12, color: '#8a8278', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span>Mostrando <strong>{rows.length}</strong> de {circ.rows.length} servicios</span>
-          <button onClick={() => { setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }); setBusqueda('') }} style={{ fontSize: 11, background: 'none', border: '1px solid #d8d2c8', borderRadius: 10, padding: '2px 8px', color: '#8a8278', cursor: 'pointer' }}>Limpiar filtros</button>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+        <div style={{fontSize:12,color:'#8a8278',display:'flex',alignItems:'center',gap:10}}>
+          {hayFiltros&&<><span>Mostrando <strong>{rows.length}</strong> de {circ.rows.length} servicios</span><button onClick={()=>{setFilters({tipo:'ALL',cat:'ALL',pago:'ALL',fecha:'',proveedor:'ALL'});setBusqueda('')}} style={{fontSize:11,background:'none',border:'1px solid #d8d2c8',borderRadius:10,padding:'2px 8px',color:'#8a8278',cursor:'pointer'}}>Limpiar filtros</button></>}
         </div>
-      )}
+        <button onClick={()=>addRow(circ.id)} style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'7px 14px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>＋ Agregar servicio</button>
+      </div>
 
-      {rows.length === 0
-        ? <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8a8278', fontSize: 13 }}>🔍 Sin resultados</div>
+      {rows.length===0
+        ? <div style={{textAlign:'center',padding:'40px 20px',color:'#8a8278',fontSize:13}}>🔍 Sin resultados</div>
         : (
-          <div style={{ borderRadius: 12, boxShadow: '0 2px 16px rgba(18,21,31,.07)', overflow: 'hidden' }}>
-            {/* ── Barra de scroll SUPERIOR ── */}
-            <div ref={topScrollRef} style={{ overflowX: 'scroll', overflowY: 'hidden', height: 16, background: '#f0ebe3', borderBottom: '1px solid #e0d9d0' }}>
-              <div style={{ width: tableInnerW || '100%', height: 1 }} />
+          <div style={{borderRadius:12,boxShadow:'0 2px 16px rgba(18,21,31,.07)',overflow:'hidden'}}>
+            {/* Scroll superior — usa scrollWidth exacto */}
+            <div ref={topScrollRef} style={{overflowX:'scroll',overflowY:'hidden',height:16,background:'#f0ebe3',borderBottom:'1px solid #e0d9d0'}}>
+              <div style={{width:tableInnerW?tableInnerW+'px':'200%',height:1,minWidth:'100%'}}/>
             </div>
-
-            {/* ── Tabla ── */}
-            <div ref={tableRef} style={{ background: '#fff', overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 1380 }}>
+            <div ref={tableRef} style={{background:'#fff',overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:1700}}>
                 <thead>
-                  <tr style={{ background: '#12151f', color: '#fff' }}>
-                    {['Fecha', 'Destino', 'Cat.', 'Servicio', 'Tipo', 'Proveedor ✏️', 'MXN ✏️', 'USD ✏️', 'Factura\u00A0Recibida', 'Folio\u00A0Factura', 'Fecha\u00A0Pago', 'Estatus', 'Notas'].map((h) => (
-                      <th key={h} style={{ padding: '10px 10px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .6, whiteSpace: 'nowrap' }}>{h}</th>
+                  <tr style={{background:'#070a12',color:'#fff'}}>
+                    {['Fecha ✏','Destino ✏','Cat. ✏','Servicio ✏','Tipo ✏','Proveedor ✏','MXN ✏','USD ✏','VB Auditoria','Factura Rec.','Folio Factura','VB Pago','Fecha Pago','Estatus','Notas',''].map(h=>(
+                      <th key={h} style={{padding:'10px 8px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.5,whiteSpace:'nowrap'}}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => {
-                    const { mxn, usd, found, custom } = getImporte(r, circ.info, tarifario)
-                    const dc = getDC(r, tarifario)
-                    const isEditProv = editCell?.rowId === r.id && editCell?.field === 'prov'
-                    const isEditImp = editCell?.rowId === r.id && editCell?.field === 'importe'
-                    let dStr = '—'
-                    if (r.fecha) { const d = r.fecha instanceof Date ? r.fecha : new Date(r.fecha); dStr = d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) }
+                  {rows.map(r => {
+                    const {mxn,usd,found,custom}=getImporte(r,circ.info,tarifario)
+                    const dc=getDC(r,tarifario)
+                    const eC=(f)=>editCell?.rowId===r.id&&editCell?.field===f
+                    let dStr='—'
+                    if (r.fecha){const d=r.fecha instanceof Date?r.fecha:new Date(r.fecha);dStr=d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}
+                    const InlineBtn = ({f,display}) => eC(f)
+                      ? null
+                      : <span onClick={()=>startEdit(r.id,f,r)} style={{cursor:'pointer',borderBottom:'1px dotted #d8d2c8'}}>{display}</span>
+
                     return (
-                      <tr key={r.id} style={{ borderBottom: '1px solid #ece7df', background: r.paid ? '#f0faf4' : 'transparent' }}>
-                        <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontSize: 11 }}>{dStr}</td>
-                        <td style={{ padding: '8px 10px', fontSize: 11, maxWidth: 100 }}>{r.destino || '—'}</td>
-                        <td style={{ padding: '8px 10px' }}><Badge text={r.clasificacion} /></td>
-                        <td style={{ padding: '8px 10px', fontWeight: 500, maxWidth: 130 }}>{r.servicio || '—'}</td>
-                        <td style={{ padding: '8px 10px' }}><TipoBadge tipo={r.tipo} /></td>
+                      <tr key={r.id} style={{borderBottom:'1px solid #ece7df',background:r.paid?'#f0faf4':'transparent'}}>
+
+                        {/* Fecha */}
+                        <td style={{padding:'8px 8px',whiteSpace:'nowrap',minWidth:90}}>
+                          {eC('fecha')
+                            ? <div style={{display:'flex',gap:3}}><input type="date" autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:110}}/><button onClick={()=>confirmEdit(circ.id,r.id,'fecha')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'fecha',r)} style={{cursor:'pointer',fontSize:11,borderBottom:'1px dotted #d8d2c8'}}>{dStr}</span>}
+                        </td>
+
+                        {/* Destino */}
+                        <td style={{padding:'8px 8px',minWidth:90}}>
+                          {eC('destino')
+                            ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:90}}/><button onClick={()=>confirmEdit(circ.id,r.id,'destino')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'destino',r)} style={{cursor:'pointer',fontSize:11,borderBottom:'1px dotted #d8d2c8'}}>{r.destino||'—'}</span>}
+                        </td>
+
+                        {/* Categoría */}
+                        <td style={{padding:'8px 8px',minWidth:110}}>
+                          {eC('clasificacion')
+                            ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'#fff'}}>
+                                {['HOSPEDAJE','TRANSPORTE','ACTIVIDADES','ALIMENTOS','GUIA','OTRO'].map(o=><option key={o}>{o}</option>)}
+                              </select><button onClick={()=>confirmEdit(circ.id,r.id,'clasificacion')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'clasificacion',r)} style={{cursor:'pointer'}}><Badge text={r.clasificacion}/></span>}
+                        </td>
+
+                        {/* Servicio */}
+                        <td style={{padding:'8px 8px',minWidth:130}}>
+                          {eC('servicio')
+                            ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:120}}/><button onClick={()=>confirmEdit(circ.id,r.id,'servicio')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'servicio',r)} style={{cursor:'pointer',fontWeight:500,fontSize:11,borderBottom:'1px dotted #d8d2c8'}}>{r.servicio||'—'}</span>}
+                        </td>
+
+                        {/* Tipo */}
+                        <td style={{padding:'8px 8px',minWidth:90}}>
+                          {eC('tipo')
+                            ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'#fff'}}>
+                                <option>LIBERO</option><option>OPCIONAL</option>
+                              </select><button onClick={()=>confirmEdit(circ.id,r.id,'tipo')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'tipo',r)} style={{cursor:'pointer'}}><TipoBadge tipo={r.tipo}/></span>}
+                        </td>
 
                         {/* Proveedor */}
-                        <td style={{ padding: '8px 10px', minWidth: 160 }}>
-                          {isEditProv ? (
-                            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                              <select value={editVal} onChange={(e) => setEditVal(e.target.value)} autoFocus style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '3px 7px', fontSize: 12, fontFamily: 'inherit', background: '#fff', maxWidth: 160 }}>
-                                <option value="">— Sin proveedor —</option>
-                                {tarifario.map((t) => <option key={t.id || t.proveedor} value={t.proveedor}>{t.proveedor}</option>)}
-                              </select>
-                              <button onClick={() => confirmEdit(circ.id, r.id, 'prov')} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '3px 8px', fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>✓</button>
-                              <button onClick={() => setEditCell(null)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
-                            </div>
-                          ) : (
-                            <div>
-                              <span onClick={() => startEdit(r.id, 'prov', r)} style={{ fontWeight: 600, fontSize: 12, cursor: 'pointer', borderBottom: '1px dotted #b8952a' }} title="Clic para cambiar">
-                                {r.prov_general || <span style={{ color: '#ccc' }}>Sin proveedor</span>}
-                                {!found && tarifario.length > 0 && <span style={{ color: '#b83232', fontSize: 10 }}> ⚠</span>}
-                              </span>
-                              {dc > 0 && !r.paid && <div style={{ fontSize: 9, color: '#8a8278' }}>{dc}d crédito</div>}
-                            </div>
-                          )}
+                        <td style={{padding:'8px 8px',minWidth:155}}>
+                          {eC('prov')
+                            ? <div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'3px 6px',fontSize:11,fontFamily:'inherit',background:'#fff',maxWidth:150}}><option value="">— Sin proveedor —</option>{tarifario.map(t=><option key={t.id||t.proveedor} value={t.proveedor}>{t.proveedor}</option>)}</select><button onClick={()=>confirmEdit(circ.id,r.id,'prov')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <div><span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:'pointer',borderBottom:'1px dotted #b8952a'}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'#b83232',fontSize:10}}> ⚠</span>}</span>{dc>0&&!r.paid&&<div style={{fontSize:9,color:'#8a8278'}}>{dc}d crédito</div>}</div>}
                         </td>
 
-                        {/* Importe MXN */}
-                        <td style={{ padding: '8px 10px', minWidth: 110 }}>
-                          {isEditImp ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                              <input type="number" value={editVal} onChange={(e) => setEditVal(e.target.value)} placeholder="Importe" autoFocus style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '3px 7px', fontSize: 12, fontFamily: 'inherit', width: 100 }} />
-                              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                                <select value={editMoneda} onChange={(e) => setEditMoneda(e.target.value)} style={{ border: '1px solid #b8952a', borderRadius: 5, padding: '2px 5px', fontSize: 11, fontFamily: 'inherit', background: '#fff' }}>
-                                  <option>MXN</option><option>USD</option>
-                                </select>
-                                <button onClick={() => confirmEdit(circ.id, r.id, 'importe')} style={{ background: '#b8952a', color: '#12151f', border: 'none', borderRadius: 5, padding: '3px 8px', fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>✓</button>
-                                <button onClick={() => setEditCell(null)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>✕</button>
-                              </div>
-                            </div>
-                          ) : (
-                            <span onClick={() => startEdit(r.id, 'importe', r)} style={{ fontWeight: 700, cursor: 'pointer', borderBottom: `1px dotted ${custom ? '#b8952a' : '#ddd'}`, color: custom ? '#b8952a' : '#12151f' }} title="Clic para editar">
-                              {mxn > 0 ? fmtMXN(mxn) : <span style={{ color: '#ccc' }}>—</span>}
-                              {custom && mxn > 0 && <span style={{ fontSize: 9, marginLeft: 2 }}>✎</span>}
-                            </span>
-                          )}
+                        {/* MXN */}
+                        <td style={{padding:'8px 8px',minWidth:105}}>
+                          {eC('importe')
+                            ? <div style={{display:'flex',flexDirection:'column',gap:3}}><input type="number" value={editVal} onChange={e=>setEditVal(e.target.value)} placeholder="Importe" autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 6px',fontSize:11,fontFamily:'inherit',width:90}}/><div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editMoneda} onChange={e=>setEditMoneda(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 4px',fontSize:11,fontFamily:'inherit',background:'#fff'}}><option>MXN</option><option>USD</option></select><button onClick={()=>confirmEdit(circ.id,r.id,'importe')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div></div>
+                            : <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:'pointer',borderBottom:`1px dotted ${custom?'#b8952a':'#ddd'}`,color:custom?'#b8952a':'#12151f'}}>{mxn>0?fmtMXN(mxn):<span style={{color:'#ccc'}}>—</span>}{custom&&mxn>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>}
                         </td>
 
-                        {/* Importe USD */}
-                        <td style={{ padding: '8px 10px', minWidth: 90 }}>
-                          <span onClick={() => startEdit(r.id, 'importe', r)} style={{ fontWeight: 700, cursor: 'pointer', borderBottom: `1px dotted ${custom ? '#b8952a' : '#ddd'}`, color: usd > 0 ? (custom ? '#b8952a' : '#1565a0') : '#ccc' }} title="Clic para editar">
-                            {usd > 0 ? fmtUSD(usd) : '—'}
-                            {custom && usd > 0 && <span style={{ fontSize: 9, marginLeft: 2 }}>✎</span>}
-                          </span>
+                        {/* USD */}
+                        <td style={{padding:'8px 8px',minWidth:85}}>
+                          <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:'pointer',borderBottom:`1px dotted ${custom?'#b8952a':'#ddd'}`,color:usd>0?(custom?'#b8952a':'#1565a0'):'#ccc'}}>{usd>0?fmtUSD(usd):'—'}{custom&&usd>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>
                         </td>
 
-                        {/* ── Factura Recibida ── */}
-                        <td style={{ padding: '8px 10px', textAlign: 'center', minWidth: 100 }}>
-                          <button
-                            onClick={() => saveFactura(circ.id, r.id, 'factura_recibida', !r.factura_recibida)}
-                            style={{ padding: '3px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', background: r.factura_recibida ? '#d8f3dc' : '#ffe0e0', color: r.factura_recibida ? '#1b4332' : '#7f1d1d', whiteSpace: 'nowrap' }}>
-                            {r.factura_recibida ? '✅ Sí' : '❌ No'}
-                          </button>
+                        {/* VB Auditoria */}
+                        <td style={{padding:'8px 8px',textAlign:'center',minWidth:100}}>
+                          <YesNo val={r.visto_bueno_auditoria} onClick={()=>saveFactura(circ.id,r.id,'visto_bueno_auditoria',!r.visto_bueno_auditoria)}/>
                         </td>
 
-                        {/* ── Folio Factura ── */}
-                        <td style={{ padding: '8px 10px', minWidth: 120 }}>
-                          <input
-                            type="text"
-                            defaultValue={r.folio_factura || ''}
-                            placeholder="Folio…"
-                            onBlur={(e) => { if (e.target.value !== (r.folio_factura || '')) saveFactura(circ.id, r.id, 'folio_factura', e.target.value) }}
-                            style={{ width: '100%', fontSize: 11, border: '1px solid transparent', borderRadius: 5, padding: '3px 6px', fontFamily: 'inherit', background: r.folio_factura ? '#fffdf5' : 'transparent', color: '#12151f', outline: 'none', transition: 'border-color .15s' }}
-                            onFocus={(e) => { e.target.style.borderColor = '#b8952a'; e.target.style.background = '#fffdf5' }}
-                            onBlurCapture={(e) => { e.target.style.borderColor = 'transparent'; if (!r.folio_factura) e.target.style.background = 'transparent' }}
-                          />
+                        {/* Factura Recibida */}
+                        <td style={{padding:'8px 8px',textAlign:'center',minWidth:95}}>
+                          <YesNo val={r.factura_recibida} onClick={()=>saveFactura(circ.id,r.id,'factura_recibida',!r.factura_recibida)}/>
                         </td>
 
-                        {/* Fecha pago */}
-                        <td style={{ padding: '8px 10px' }}>
-                          <input type="date" value={r.fecha_pago || ''} onChange={(e) => setFechaPago(circ.id, r.id, e.target.value)} style={{ border: '1px solid #d8d2c8', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontFamily: 'inherit', width: 118 }} />
+                        {/* Folio Factura */}
+                        <td style={{padding:'8px 8px',minWidth:115}}>
+                          <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…"
+                            onBlur={e=>{if(e.target.value!==(r.folio_factura||''))saveFactura(circ.id,r.id,'folio_factura',e.target.value)}}
+                            style={{width:'100%',fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 6px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'transparent',color:'#12151f',outline:'none'}}
+                            onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+                            onBlurCapture={e=>{e.target.style.borderColor='transparent';if(!r.folio_factura)e.target.style.background='transparent'}}/>
+                        </td>
+
+                        {/* VB Pago */}
+                        <td style={{padding:'8px 8px',textAlign:'center',minWidth:100}}>
+                          <YesNo val={r.visto_bueno_pago} onClick={()=>saveFactura(circ.id,r.id,'visto_bueno_pago',!r.visto_bueno_pago)}/>
+                        </td>
+
+                        {/* Fecha Pago */}
+                        <td style={{padding:'8px 8px',minWidth:118}}>
+                          <input type="date" value={r.fecha_pago||''} onChange={e=>setFechaPago(circ.id,r.id,e.target.value)} style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 6px',fontSize:11,fontFamily:'inherit',width:115}}/>
                         </td>
 
                         {/* Estatus */}
-                        <td style={{ padding: '8px 10px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
-                            <button onClick={() => togglePaid(circ.id, r.id, r.paid)} style={{ width: 34, height: 18, borderRadius: 9, border: 'none', background: r.paid ? '#52b788' : '#ccc', cursor: 'pointer', position: 'relative', flexShrink: 0 }}>
-                              <div style={{ position: 'absolute', top: 2, left: r.paid ? 16 : 2, width: 14, height: 14, borderRadius: '50%', background: '#fff', transition: 'left .25s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
+                        <td style={{padding:'8px 8px'}}>
+                          <div style={{display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
+                            <button onClick={()=>togglePaid(circ.id,r.id,r.paid)} style={{width:32,height:17,borderRadius:9,border:'none',background:r.paid?'#52b788':'#ccc',cursor:'pointer',position:'relative',flexShrink:0}}>
+                              <div style={{position:'absolute',top:2,left:r.paid?15:2,width:13,height:13,borderRadius:'50%',background:'#fff',transition:'left .2s',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}/>
                             </button>
-                            <span style={{ fontSize: 10, fontWeight: 700, color: r.paid ? '#1e5c3a' : '#b83232' }}>{r.paid ? 'PAGADO' : 'PENDIENTE'}</span>
+                            <span style={{fontSize:10,fontWeight:700,color:r.paid?'#1e5c3a':'#b83232'}}>{r.paid?'PAGADO':'PENDIENTE'}</span>
                           </div>
                         </td>
 
                         {/* Notas */}
-                        <td style={{ padding: '8px 10px' }}>
-                          <textarea defaultValue={r.nota || ''} placeholder="Nota…" rows={1} onBlur={(e) => setNota(circ.id, r.id, e.target.value)}
-                            style={{ width: 120, fontSize: 11, border: '1px solid transparent', borderRadius: 5, padding: '3px 5px', fontFamily: 'inherit', resize: 'none', background: 'transparent', lineHeight: 1.4 }}
-                            onFocus={(e) => { e.target.style.borderColor = '#b8952a'; e.target.style.background = '#fffdf5' }}
-                            onBlurCapture={(e) => { e.target.style.borderColor = 'transparent'; e.target.style.background = 'transparent' }} />
+                        <td style={{padding:'8px 8px'}}>
+                          <textarea defaultValue={r.nota||''} placeholder="Nota…" rows={1} onBlur={e=>setNota(circ.id,r.id,e.target.value)}
+                            style={{width:110,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',resize:'none',background:'transparent',lineHeight:1.4}}
+                            onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+                            onBlurCapture={e=>{e.target.style.borderColor='transparent';e.target.style.background='transparent'}}/>
+                        </td>
+
+                        {/* Eliminar */}
+                        <td style={{padding:'8px 8px',textAlign:'center',minWidth:30}}>
+                          <button onClick={()=>deleteRow(circ.id,r.id)} style={{background:'none',border:'none',color:'#e0b8b8',cursor:'pointer',fontSize:14,lineHeight:1}} title="Eliminar fila">🗑</button>
                         </td>
                       </tr>
                     )
                   })}
                 </tbody>
                 <tfoot>
-                  <tr style={{ background: '#ece7df' }}>
-                    <td colSpan={6} style={{ padding: '8px 10px', fontSize: 11, color: '#8a8278' }}>{rows.length} servicio{rows.length !== 1 ? 's' : ''}</td>
-                    <td style={{ padding: '8px 10px', fontWeight: 700 }}>{tMXN > 0 ? fmtMXN(tMXN) : '—'}</td>
-                    <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1565a0' }}>{tUSD > 0 ? fmtUSD(tUSD) : '—'}</td>
-                    <td colSpan={5} />
+                  <tr style={{background:'#ece7df'}}>
+                    <td colSpan={6} style={{padding:'8px 10px',fontSize:11,color:'#8a8278'}}>{rows.length} servicio{rows.length!==1?'s':''}</td>
+                    <td style={{padding:'8px 10px',fontWeight:700}}>{tMXN>0?fmtMXN(tMXN):'—'}</td>
+                    <td style={{padding:'8px 10px',fontWeight:700,color:'#1565a0'}}>{tUSD>0?fmtUSD(tUSD):'—'}</td>
+                    <td colSpan={8}/>
                   </tr>
                 </tfoot>
               </table>
@@ -1200,7 +1278,6 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
     </div>
   )
 }
-
 // ── Proveedores ──
 function ProvPanel({ circ, tarifario, TC }) {
   const pm = {}
