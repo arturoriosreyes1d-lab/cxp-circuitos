@@ -803,29 +803,34 @@ function UploadZone({ xlsxReady, onFile, pending, fileRef }) {
 
 function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, onCancel, saving }) {
   const TEMPORADAS = ['General','Temporada Alta','Temporada Baja','Temporada Media','Temporada Navideña','Semana Santa']
-  // Convert DD/MM <-> input[type=date] value (YYYY-MM-DD, using year 2000 as neutral)
-  const ddmmToInput = (v) => {
-    if (!v) return ''
-    const [d, m] = v.split('/').map(Number)
-    if (!d || !m) return ''
-    return `2000-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+  const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+  const DIAS = Array.from({length:31},(_,i)=>i+1)
+
+  // DD/MM picker — two selects (day + month), no year confusion
+  const DayMonthPicker = ({ value, onChange, placeholder }) => {
+    const [d, m] = value ? value.split('/').map(Number) : [0, 0]
+    return (
+      <div style={{display:'flex',gap:3,alignItems:'center'}}>
+        <select
+          value={d||''}
+          onChange={e => { const nd=e.target.value; if(nd&&m) onChange(nd.padStart(2,'0')+'/'+String(m).padStart(2,'0')); else if(nd) onChange(nd.padStart(2,'0')+'/'+(m?String(m).padStart(2,'0'):'01')) }}
+          style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',fontSize:11,background:'#fff',cursor:'pointer',outline:'none',width:52}}
+        >
+          <option value="">Día</option>
+          {DIAS.map(n=><option key={n} value={n}>{n}</option>)}
+        </select>
+        <select
+          value={m||''}
+          onChange={e => { const nm=e.target.value; if(nm&&d) onChange(String(d).padStart(2,'0')+'/'+String(nm).padStart(2,'0')); else if(nm) onChange((d?String(d).padStart(2,'0'):'01')+'/'+String(nm).padStart(2,'0')) }}
+          style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',fontSize:11,background:'#fff',cursor:'pointer',outline:'none',width:60}}
+        >
+          <option value="">Mes</option>
+          {MESES.map((mn,i)=><option key={i+1} value={i+1}>{mn}</option>)}
+        </select>
+      </div>
+    )
   }
-  const inputToDdmm = (v) => {
-    if (!v) return ''
-    const [, m, d] = v.split('-')
-    return `${d}/${m}`
-  }
-  const DatePicker = ({ value, onChange, placeholder }) => (
-    <input
-      type="date"
-      value={ddmmToInput(value)}
-      onChange={e => onChange(inputToDdmm(e.target.value))}
-      title={value || placeholder}
-      style={{ border:'1px solid #d8d2c8', borderRadius:5, padding:'3px 5px', fontFamily:'inherit', fontSize:11, background:'#fff', cursor:'pointer', outline:'none', width:130 }}
-      onFocus={e => e.target.style.borderColor='#b8952a'}
-      onBlur={e => e.target.style.borderColor='#d8d2c8'}
-    />
-  )
+  const [busqueda, setBusqueda] = useState('')
   const [rows, setRows] = useState(() => {
     if (tarifario.length > 0) return tarifario.map(t => ({
       proveedor: t.proveedor || '',
@@ -858,28 +863,45 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
   const hotelRows = rows.filter(r => (r.tipo_servicio||'').toUpperCase() === 'HOSPEDAJE')
   const otherRows = rows.filter(r => (r.tipo_servicio||'').toUpperCase() !== 'HOSPEDAJE')
 
+  const q = busqueda.trim().toLowerCase()
+  const rowsVis = q ? rows.map((r,i)=>({...r,_i:i})).filter(r=>(r.proveedor||'').toLowerCase().includes(q)||(r.temporada||'').toLowerCase().includes(q)||(r.notas||'').toLowerCase().includes(q)) : rows.map((r,i)=>({...r,_i:i}))
+  const hoteles = rowsVis.filter(r=>(r.tipo_servicio||'').toUpperCase()==='HOSPEDAJE')
+  const otros   = rowsVis.filter(r=>(r.tipo_servicio||'').toUpperCase()!=='HOSPEDAJE')
+
   return (
     <div>
-      <div style={{display:'flex',gap:8,marginBottom:14,alignItems:'center'}}>
+      {/* Toolbar */}
+      <div style={{display:'flex',gap:8,marginBottom:14,alignItems:'center',flexWrap:'wrap'}}>
         <Btn outline small onClick={()=>tarFileRef.current?.click()}>📥 Importar Excel</Btn>
         <input ref={tarFileRef} type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={e=>{if(e.target.files[0])onTarFile(e.target.files[0])}}/>
+        {/* Buscador */}
+        <div style={{display:'flex',alignItems:'center',gap:6,flex:1,maxWidth:320,marginLeft:'auto',background:'#f5f1eb',border:'1.5px solid #d8d2c8',borderRadius:20,padding:'4px 12px'}}>
+          <span style={{fontSize:13,color:'#8a8278'}}>🔍</span>
+          <input
+            type="text" value={busqueda} onChange={e=>setBusqueda(e.target.value)}
+            placeholder="Buscar proveedor, temporada…"
+            style={{flex:1,border:'none',background:'transparent',fontFamily:'inherit',fontSize:12,outline:'none',color:'#12151f'}}
+          />
+          {busqueda&&<button onClick={()=>setBusqueda('')} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14,lineHeight:1}}>✕</button>}
+        </div>
+        {busqueda&&<span style={{fontSize:11,color:'#8a8278'}}>{rowsVis.length} resultado{rowsVis.length!==1?'s':''}</span>}
       </div>
 
       {/* ── SECCIÓN HOSPEDAJE ── */}
       <div style={{marginBottom:24}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-          <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>🏨 Hospedaje</div>
+          <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>🏨 Hospedaje <span style={{fontSize:12,fontWeight:400,color:'#8a8278'}}>({hoteles.length})</span></div>
           <button onClick={()=>add('HOSPEDAJE')} style={{background:'transparent',border:'1.5px dashed #d8d2c8',color:'#8a8278',padding:'4px 12px',borderRadius:7,cursor:'pointer',fontSize:11}}>+ Agregar hotel</button>
         </div>
         <div style={{overflowX:'auto'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
             <thead><tr style={{background:'#12151f',color:'#fff'}}>
-              {['Hotel','Temporada','Precio Single','Precio Doble','Moneda','Cortesía (cada N hab)','Días Crédito','Notas',''].map(h=>(
+              {['Hotel','Temporada / Vigencia','Precio Single','Precio Doble','Moneda','Cortesía (cada N hab)','Días Crédito','Notas',''].map(h=>(
                 <th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.6,whiteSpace:'nowrap'}}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {rows.map((r,i) => {
+              {hoteles.map(({_i:i,...r}) => {
                 if ((r.tipo_servicio||'').toUpperCase() !== 'HOSPEDAJE') return null
                 return (
                   <tr key={i} style={{borderBottom:'1px solid #ece7df',background:i%2===0?'#fafaf8':'#fff'}}>
@@ -894,9 +916,9 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
                           style={{background:'#ece7df',border:'none',borderRadius:5,padding:'3px 7px',cursor:'pointer',fontSize:11,color:'#8a8278',fontWeight:700}}>+T</button>
                       </div>
                       {r.temporada!=='General'&&<div style={{display:'flex',gap:4,alignItems:'center',marginTop:4}}>
-                        <DatePicker value={r.temp_inicio} onChange={v=>update(i,'temp_inicio',v)} placeholder="Inicio"/>
+                        <DayMonthPicker value={r.temp_inicio} onChange={v=>update(i,'temp_inicio',v)} placeholder="Inicio"/>
                         <span style={{fontSize:11,color:'#8a8278',flexShrink:0}}>→</span>
-                        <DatePicker value={r.temp_fin} onChange={v=>update(i,'temp_fin',v)} placeholder="Fin"/>
+                        <DayMonthPicker value={r.temp_fin} onChange={v=>update(i,'temp_fin',v)} placeholder="Fin"/>
                       </div>}
                     </td>
                     <td style={{padding:'5px 7px',minWidth:100}}>
@@ -925,14 +947,14 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
           </table>
         </div>
         <div style={{fontSize:11,color:'#8a8278',marginTop:6,padding:'6px 10px',background:'#f5f1eb',borderRadius:6}}>
-          💡 <strong>Precio Doble</strong> vacío = usa el mismo que Single. <strong>Cortesía</strong>: escribe 10 para "por cada 10 hab, 1 gratis". <strong>+T</strong> duplica el hotel para otra temporada — luego captura la vigencia en formato DD/MM (ej: 15/12 → 18/01). General = aplica cuando ninguna vigencia coincide.
+          💡 <strong>Precio Doble</strong> vacío = usa el mismo que Single. <strong>Cortesía</strong>: escribe 10 para "1 hab gratis c/10". <strong>+T</strong> duplica el hotel para otra temporada, luego selecciona Día/Mes de inicio y fin. <strong>General</strong> aplica cuando ninguna vigencia coincide con la fecha del servicio.
         </div>
       </div>
 
       {/* ── OTROS SERVICIOS ── */}
       <div style={{marginBottom:16}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-          <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>🚌 Otros proveedores</div>
+          <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>🚌 Otros proveedores <span style={{fontSize:12,fontWeight:400,color:'#8a8278'}}>({otros.length})</span></div>
           <button onClick={()=>add('TRANSPORTE')} style={{background:'transparent',border:'1.5px dashed #d8d2c8',color:'#8a8278',padding:'4px 12px',borderRadius:7,cursor:'pointer',fontSize:11}}>+ Agregar proveedor</button>
         </div>
         <div style={{overflowX:'auto'}}>
@@ -943,7 +965,7 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
               ))}
             </tr></thead>
             <tbody>
-              {rows.map((r,i) => {
+              {otros.map(({_i:i,...r}) => {
                 if ((r.tipo_servicio||'').toUpperCase() === 'HOSPEDAJE') return null
                 return (
                   <tr key={i} style={{borderBottom:'1px solid #ece7df'}}>
