@@ -22,11 +22,65 @@ function getImporte(row, circInfo, tarifario) {
     return m === 'USD' ? { mxn: 0, usd: row.precio_custom, found: true, custom: true } : { mxn: row.precio_custom, usd: 0, found: true, custom: true }
   }
   const pKey = norm(row.prov_general)
-  const match = tarifario.find((t) => norm(t.proveedor) === pKey)
-  if (!match || match.precio === 0) return { mxn: 0, usd: 0, found: false, custom: false }
-  const unidades = norm(row.clasificacion) === 'HOSPEDAJE' ? (parseInt(circInfo?.habs) || 1) : 1
-  const total = match.precio * unidades
-  return match.moneda === 'USD' ? { mxn: 0, usd: total, found: true, custom: false } : { mxn: total, usd: 0, found: true, custom: false }
+  const esHosp = norm(row.clasificacion) === 'HOSPEDAJE'
+
+  let match
+  if (esHosp) {
+    const provEntries = tarifario.filter(t => norm(t.proveedor) === pKey)
+    if (provEntries.length === 0) return { mxn: 0, usd: 0, found: false, custom: false }
+    if (provEntries.length === 1) {
+      match = provEntries[0]
+    } else {
+      // Auto-detect temporada by service date vs fecha_inicio/fecha_fin ranges
+      // Ranges are stored as "DD/MM" strings (year-agnostic)
+      const svcDate = row.fecha ? (row.fecha instanceof Date ? row.fecha : new Date(row.fecha)) : null
+      if (svcDate) {
+        const svcMD = svcDate.getMonth() * 100 + svcDate.getDate() // e.g. 1215 for Dec-15
+        match = provEntries.find(t => {
+          if (!t.temp_inicio || !t.temp_fin) return false
+          const [dI, mI] = (t.temp_inicio).split('/').map(Number) // DD/MM
+          const [dF, mF] = (t.temp_fin).split('/').map(Number)
+          if (!dI || !mI || !dF || !mF) return false
+          const start = (mI - 1) * 100 + dI
+          const end   = (mF - 1) * 100 + dF
+          if (start <= end) return svcMD >= start && svcMD <= end
+          // Wrap-around (e.g. 15/12 → 18/01)
+          return svcMD >= start || svcMD <= end
+        })
+      }
+      // Fallback: General entry, then first
+      if (!match) match = provEntries.find(t => (t.temporada || 'General') === 'General' && !t.temp_inicio)
+      if (!match) match = provEntries.find(t => !t.temp_inicio)
+      if (!match) match = provEntries[0]
+    }
+  } else {
+    match = tarifario.find(t => norm(t.proveedor) === pKey)
+  }
+  if (!match) return { mxn: 0, usd: 0, found: false, custom: false }
+
+  let totalAmt = 0
+  if (esHosp) {
+    const single = parseInt(circInfo?.habs_single) || 0
+    const doble  = parseInt(circInfo?.habs_doble)  || 0
+    const totalHabs = single + doble
+    if (totalHabs === 0) return { mxn: 0, usd: 0, found: true, custom: false }
+    // Cortesía: cada X hab se regala 1
+    const cortCada = parseInt(match.cortesia_cada) || 0
+    const cortesia = cortCada > 0 ? Math.floor(totalHabs / cortCada) : 0
+    const cortSingle = totalHabs > 0 ? Math.round(cortesia * single / totalHabs) : 0
+    const cortDoble  = cortesia - cortSingle
+    const sF = Math.max(0, single - cortSingle)
+    const dF = Math.max(0, doble  - cortDoble)
+    const pS = parseFloat(match.precio_single) || parseFloat(match.precio) || 0
+    const pD = parseFloat(match.precio_doble)  || pS
+    totalAmt = sF * pS + dF * pD
+  } else {
+    totalAmt = parseFloat(match.precio_single) || parseFloat(match.precio) || 0
+    if (totalAmt === 0) return { mxn: 0, usd: 0, found: false, custom: false }
+  }
+  return (match.moneda === 'USD')
+    ? { mxn: 0, usd: totalAmt, found: true, custom: false }
+    : { mxn: totalAmt, usd: 0, found: true, custom: false }
 }
 
 // Calcular totales LIBERO y OPCIONAL por separado
@@ -169,7 +223,17 @@ function Dashboard({ session }) {
     setSaving(true)
     try {
       await supabase.from('tarifario').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-      if (rows.length > 0) await supabase.from('tarifario').insert(rows.map((r) => ({ proveedor: r.proveedor, tipo_servicio: r.tipo_servicio, precio: r.precio, moneda: r.moneda, dias_credito: r.dias_credito || 0, notas: r.notas })))
+      if (rows.length > 0) await supabase.from('tarifario').insert(rows.map(r => ({
+          proveedor: r.proveedor, tipo_servicio: r.tipo_servicio,
+          precio: r.precio_single || 0,
+          precio_single: r.precio_single || 0,
+          precio_doble: r.precio_doble || r.precio_single || 0,
+          moneda: r.moneda, temporada: r.temporada || 'General',
+          temp_inicio: r.temp_inicio || null,
+          temp_fin: r.temp_fin || null,
+          cortesia_cada: r.cortesia_cada || 0,
+          dias_credito: r.dias_credito || 0, notas: r.notas || ''
+        })))
       const { data } = await supabase.from('tarifario').select('*').order('proveedor')
       if (data) setTarifario(data)
     } catch (e) { console.error(e) }
@@ -233,6 +297,13 @@ function Dashboard({ session }) {
     await supabase.from('circuits').update({ [field]: parseFloat(val) || 0 }).eq('id', cid)
     setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, [field]: parseFloat(val) || 0 }))
   }
+  const saveCircInfo = async (cid, infoChanges) => {
+    const circ = circuits.find(c => c.id === cid)
+    if (!circ) return
+    const newInfo = { ...circ.info, ...infoChanges }
+    await supabase.from('circuits').update({ info: newInfo }).eq('id', cid)
+    setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, info: newInfo }))
+  }
   const saveImporteCobrado = async (cid, valor, moneda) => {
     await supabase.from('circuits').update({ importe_cobrado: valor || null, moneda_cobrado: moneda }).eq('id', cid)
     setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, importe_cobrado: valor || null, moneda_cobrado: moneda }))
@@ -269,7 +340,7 @@ function Dashboard({ session }) {
   )
 
   return (
-    <div style={{ fontFamily: "'Outfit', sans-serif", background: '#f5f1eb', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ fontFamily: "'Outfit', sans-serif", fontVariantNumeric: 'lining-nums tabular-nums', fontFeatureSettings: '"tnum","lnum"', background: '#f5f1eb', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
       {/* ── HEADER ── */}
       <header style={{ background: '#070a12', borderBottom: '2px solid #b8952a', padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200 }}>
@@ -357,7 +428,7 @@ function Dashboard({ session }) {
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows}
               togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
-              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional}
+              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional} saveCircInfo={saveCircInfo}
               onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
           )}
         </main>
@@ -447,7 +518,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
   const DRow = ({label,val,color,bold,big}) => (
     <div style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid #f0ebe3',fontSize:big?15:13}}>
       <span style={{color:bold?'#12151f':'#8a8278',fontWeight:bold?700:400}}>{label}</span>
-      <span style={{fontWeight:bold?800:600,color:color||'#12151f'}}>{val}</span>
+      <span className='num' style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:bold?700:600,color:color||'#12151f',fontSize:bold?14:13}}>{val}</span>
     </div>
   )
   const selStyle = {border:'1.5px solid #d8d2c8',borderRadius:8,padding:'6px 12px',fontFamily:'inherit',fontSize:12,background:'#fff',cursor:'pointer',outline:'none',color:'#12151f',minWidth:180}
@@ -651,8 +722,8 @@ function KPICard({ label, val, sub, cls }) {
   return (
     <div style={{ background: '#fff', borderRadius: 12, padding: '14px 16px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderLeft: `3px solid ${colors[cls] || '#d8d2c8'}` }}>
       <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: .8, color: '#8a8278', fontWeight: 600, marginBottom: 5 }}>{label}</div>
-      <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 19, fontWeight: 700, lineHeight: 1.2 }}>{val}</div>
-      {sub && <div style={{ fontSize: 11, color: '#8a8278', marginTop: 3 }}>{sub}</div>}
+      <div className="num" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 18, fontWeight: 600, lineHeight: 1.2, color: colors[cls] || '#12151f' }}>{val}</div>
+      {sub && <div className="num" style={{ fontSize: 11, color: '#8a8278', marginTop: 3 }}>{sub}</div>}
     </div>
   )
 }
@@ -703,47 +774,146 @@ function UploadZone({ xlsxReady, onFile, pending, fileRef }) {
 }
 
 function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, onCancel, saving }) {
+  const TEMPORADAS = ['General','Temporada Alta','Temporada Baja','Temporada Media']
   const [rows, setRows] = useState(() => {
-    if (tarifario.length > 0) return tarifario.map((t) => ({ ...t, tipo_servicio: t.tipo_servicio || 'HOSPEDAJE', dias_credito: t.dias_credito || 0 }))
+    if (tarifario.length > 0) return tarifario.map(t => ({
+      proveedor: t.proveedor || '',
+      tipo_servicio: t.tipo_servicio || 'HOSPEDAJE',
+      precio_single: t.precio_single || t.precio || 0,
+      precio_doble: t.precio_doble || t.precio_single || t.precio || 0,
+      moneda: t.moneda || 'MXN',
+      temporada: t.temporada || 'General',
+      cortesia_cada: t.cortesia_cada || 0,
+      dias_credito: t.dias_credito || 0,
+      notas: t.notas || '',
+    }))
     const seen = new Set(); const out = []
-    circuits.forEach((c) => c.rows.forEach((r) => { const p = r.prov_general; if (p && !seen.has(p.toUpperCase())) { seen.add(p.toUpperCase()); out.push({ proveedor: p, tipo_servicio: r.clasificacion || 'HOSPEDAJE', precio: 0, moneda: 'MXN', dias_credito: 30, notas: '' }) } }))
+    circuits.forEach(c => c.rows.forEach(r => {
+      const p = r.prov_general; if (p && !seen.has(p.toUpperCase())) {
+        seen.add(p.toUpperCase())
+        out.push({ proveedor: p, tipo_servicio: r.clasificacion||'HOSPEDAJE', precio_single: 0, precio_doble: 0, moneda: 'MXN', temporada: 'General', cortesia_cada: 0, dias_credito: 30, notas: '' })
+      }
+    }))
     return out
   })
-  const update = (i, k, v) => setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, [k]: v } : r))
-  const del = (i) => setRows((prev) => prev.filter((_, idx) => idx !== i))
-  const add = () => setRows((prev) => [...prev, { proveedor: '', tipo_servicio: 'HOSPEDAJE', precio: 0, moneda: 'MXN', dias_credito: 30, notas: '' }])
-  const inp = { border: '1px solid #d8d2c8', borderRadius: 5, padding: '4px 7px', fontFamily: 'inherit', fontSize: 12, width: '100%', outline: 'none' }
-  const sel = { border: '1px solid #d8d2c8', borderRadius: 5, padding: '4px 7px', fontFamily: 'inherit', fontSize: 12, background: '#fff', cursor: 'pointer', outline: 'none' }
+  const update = (i, k, v) => setRows(prev => prev.map((r, idx) => idx===i ? {...r,[k]:v} : r))
+  const del = (i) => setRows(prev => prev.filter((_, idx) => idx!==i))
+  const add = (tipo) => setRows(prev => [...prev, { proveedor:'', tipo_servicio: tipo||'HOSPEDAJE', precio_single:0, precio_doble:0, moneda:'MXN', temporada:'General', cortesia_cada:0, dias_credito:30, notas:'' }])
+  const dupRow = (i) => setRows(prev => { const r={...prev[i], temporada:'Nueva temporada'}; const arr=[...prev]; arr.splice(i+1,0,r); return arr })
+  const inp = { border:'1px solid #d8d2c8',borderRadius:5,padding:'4px 7px',fontFamily:'inherit',fontSize:12,width:'100%',outline:'none' }
+  const sel = { border:'1px solid #d8d2c8',borderRadius:5,padding:'4px 7px',fontFamily:'inherit',fontSize:12,background:'#fff',cursor:'pointer',outline:'none' }
+
+  // Group by proveedor for display
+  const hotelRows = rows.filter(r => (r.tipo_servicio||'').toUpperCase() === 'HOSPEDAJE')
+  const otherRows = rows.filter(r => (r.tipo_servicio||'').toUpperCase() !== 'HOSPEDAJE')
+
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' }}>
-        <Btn outline small onClick={() => tarFileRef.current?.click()}>📥 Importar Excel</Btn>
-        <input ref={tarFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={(e) => { if (e.target.files[0]) onTarFile(e.target.files[0]) }} />
+      <div style={{display:'flex',gap:8,marginBottom:14,alignItems:'center'}}>
+        <Btn outline small onClick={()=>tarFileRef.current?.click()}>📥 Importar Excel</Btn>
+        <input ref={tarFileRef} type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={e=>{if(e.target.files[0])onTarFile(e.target.files[0])}}/>
       </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead><tr style={{ background: '#12151f', color: '#fff' }}>
-            {['Proveedor', 'Tipo', 'Precio', 'Moneda', 'Días Crédito', 'Notas', ''].map((h) => <th key={h} style={{ padding: '9px 10px', textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: .7 }}>{h}</th>)}
-          </tr></thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid #ece7df' }}>
-                <td style={{ padding: '6px 8px' }}><input style={{ ...inp, width: 150 }} value={r.proveedor} onChange={(e) => update(i, 'proveedor', e.target.value)} /></td>
-                <td style={{ padding: '6px 8px' }}><select style={sel} value={r.tipo_servicio} onChange={(e) => update(i, 'tipo_servicio', e.target.value)}>{['HOSPEDAJE', 'TRANSPORTE', 'ACTIVIDADES', 'ALIMENTOS', 'GUIA', 'OTRO'].map((t) => <option key={t}>{t}</option>)}</select></td>
-                <td style={{ padding: '6px 8px' }}><input style={{ ...inp, width: 90 }} type="number" value={r.precio || ''} onChange={(e) => update(i, 'precio', parseFloat(e.target.value) || 0)} /></td>
-                <td style={{ padding: '6px 8px' }}><select style={sel} value={r.moneda} onChange={(e) => update(i, 'moneda', e.target.value)}><option>MXN</option><option>USD</option></select></td>
-                <td style={{ padding: '6px 8px' }}><input style={{ ...inp, width: 60 }} type="number" value={r.dias_credito || ''} onChange={(e) => update(i, 'dias_credito', parseInt(e.target.value) || 0)} /></td>
-                <td style={{ padding: '6px 8px' }}><input style={inp} value={r.notas || ''} onChange={(e) => update(i, 'notas', e.target.value)} /></td>
-                <td style={{ padding: '6px 8px' }}><button onClick={() => del(i)} style={{ background: 'none', border: 'none', color: '#ccc', cursor: 'pointer', fontSize: 15 }}>✕</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      {/* ── SECCIÓN HOSPEDAJE ── */}
+      <div style={{marginBottom:24}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>🏨 Hospedaje</div>
+          <button onClick={()=>add('HOSPEDAJE')} style={{background:'transparent',border:'1.5px dashed #d8d2c8',color:'#8a8278',padding:'4px 12px',borderRadius:7,cursor:'pointer',fontSize:11}}>+ Agregar hotel</button>
+        </div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+            <thead><tr style={{background:'#12151f',color:'#fff'}}>
+              {['Hotel','Temporada','Precio Single','Precio Doble','Moneda','Cortesía (cada N hab)','Días Crédito','Notas',''].map(h=>(
+                <th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.6,whiteSpace:'nowrap'}}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rows.map((r,i) => {
+                if ((r.tipo_servicio||'').toUpperCase() !== 'HOSPEDAJE') return null
+                return (
+                  <tr key={i} style={{borderBottom:'1px solid #ece7df',background:i%2===0?'#fafaf8':'#fff'}}>
+                    <td style={{padding:'5px 7px',minWidth:150}}><input style={{...inp,width:140}} value={r.proveedor} onChange={e=>update(i,'proveedor',e.target.value)} placeholder="Nombre del hotel"/></td>
+                    <td style={{padding:'5px 7px',minWidth:160}}>
+                      <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
+                        <select style={{...sel,flex:1}} value={r.temporada} onChange={e=>update(i,'temporada',e.target.value)}>
+                          {TEMPORADAS.map(t=><option key={t}>{t}</option>)}
+                          {!TEMPORADAS.includes(r.temporada)&&<option value={r.temporada}>{r.temporada}</option>}
+                        </select>
+                        <button onClick={()=>dupRow(i)} title="Duplicar con otra temporada"
+                          style={{background:'#ece7df',border:'none',borderRadius:5,padding:'3px 7px',cursor:'pointer',fontSize:11,color:'#8a8278',fontWeight:700}}>+T</button>
+                      </div>
+                      {r.temporada!=='General'&&<div style={{display:'flex',gap:4,alignItems:'center'}}>
+                        <input style={{...inp,width:60,fontSize:11}} value={r.temp_inicio||''} onChange={e=>update(i,'temp_inicio',e.target.value)} placeholder="15/12"/>
+                        <span style={{fontSize:11,color:'#8a8278'}}>→</span>
+                        <input style={{...inp,width:60,fontSize:11}} value={r.temp_fin||''} onChange={e=>update(i,'temp_fin',e.target.value)} placeholder="18/01"/>
+                      </div>}
+                    </td>
+                    <td style={{padding:'5px 7px',minWidth:100}}>
+                      <div style={{display:'flex',gap:3,alignItems:'center'}}>
+                        <input style={{...inp,width:85}} type="number" value={r.precio_single||''} onChange={e=>update(i,'precio_single',parseFloat(e.target.value)||0)} placeholder="0"/>
+                      </div>
+                    </td>
+                    <td style={{padding:'5px 7px',minWidth:100}}>
+                      <input style={{...inp,width:85}} type="number" value={r.precio_doble||''} onChange={e=>update(i,'precio_doble',parseFloat(e.target.value)||0)} placeholder="= Single si vacío"/>
+                    </td>
+                    <td style={{padding:'5px 7px'}}><select style={sel} value={r.moneda} onChange={e=>update(i,'moneda',e.target.value)}><option>MXN</option><option>USD</option></select></td>
+                    <td style={{padding:'5px 7px',minWidth:140}}>
+                      <div style={{display:'flex',gap:5,alignItems:'center'}}>
+                        <input style={{...inp,width:55}} type="number" min="0" value={r.cortesia_cada||''} onChange={e=>update(i,'cortesia_cada',parseInt(e.target.value)||0)} placeholder="0"/>
+                        {r.cortesia_cada>0&&<span style={{fontSize:10,color:'#1e5c3a',fontWeight:600,whiteSpace:'nowrap'}}>1 cortesía c/{r.cortesia_cada} hab</span>}
+                        {!r.cortesia_cada&&<span style={{fontSize:10,color:'#ccc'}}>Sin cortesía</span>}
+                      </div>
+                    </td>
+                    <td style={{padding:'5px 7px'}}><input style={{...inp,width:55}} type="number" value={r.dias_credito||''} onChange={e=>update(i,'dias_credito',parseInt(e.target.value)||0)}/></td>
+                    <td style={{padding:'5px 7px'}}><input style={inp} value={r.notas||''} onChange={e=>update(i,'notas',e.target.value)}/></td>
+                    <td style={{padding:'5px 7px'}}><button onClick={()=>del(i)} style={{background:'none',border:'none',color:'#ccc',cursor:'pointer',fontSize:15}}>✕</button></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{fontSize:11,color:'#8a8278',marginTop:6,padding:'6px 10px',background:'#f5f1eb',borderRadius:6}}>
+          💡 <strong>Precio Doble</strong> vacío = usa el mismo que Single. <strong>Cortesía</strong>: escribe 10 para "por cada 10 hab, 1 gratis". <strong>+T</strong> duplica el hotel para otra temporada — luego captura la vigencia en formato DD/MM (ej: 15/12 → 18/01). General = aplica cuando ninguna vigencia coincide.
+        </div>
       </div>
-      <button onClick={add} style={{ marginTop: 10, background: 'transparent', border: '1.5px dashed #d8d2c8', color: '#8a8278', padding: '6px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 12 }}>+ Agregar proveedor</button>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20, paddingTop: 14, borderTop: '1px solid #ece7df' }}>
+
+      {/* ── OTROS SERVICIOS ── */}
+      <div style={{marginBottom:16}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>🚌 Otros proveedores</div>
+          <button onClick={()=>add('TRANSPORTE')} style={{background:'transparent',border:'1.5px dashed #d8d2c8',color:'#8a8278',padding:'4px 12px',borderRadius:7,cursor:'pointer',fontSize:11}}>+ Agregar proveedor</button>
+        </div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+            <thead><tr style={{background:'#12151f',color:'#fff'}}>
+              {['Proveedor','Tipo','Precio','Moneda','Días Crédito','Notas',''].map(h=>(
+                <th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.6}}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rows.map((r,i) => {
+                if ((r.tipo_servicio||'').toUpperCase() === 'HOSPEDAJE') return null
+                return (
+                  <tr key={i} style={{borderBottom:'1px solid #ece7df'}}>
+                    <td style={{padding:'5px 7px'}}><input style={{...inp,width:150}} value={r.proveedor} onChange={e=>update(i,'proveedor',e.target.value)}/></td>
+                    <td style={{padding:'5px 7px'}}><select style={sel} value={r.tipo_servicio} onChange={e=>update(i,'tipo_servicio',e.target.value)}>{['TRANSPORTE','ACTIVIDADES','ALIMENTOS','GUIA','OTRO'].map(t=><option key={t}>{t}</option>)}</select></td>
+                    <td style={{padding:'5px 7px'}}><input style={{...inp,width:90}} type="number" value={r.precio_single||''} onChange={e=>update(i,'precio_single',parseFloat(e.target.value)||0)}/></td>
+                    <td style={{padding:'5px 7px'}}><select style={sel} value={r.moneda} onChange={e=>update(i,'moneda',e.target.value)}><option>MXN</option><option>USD</option></select></td>
+                    <td style={{padding:'5px 7px'}}><input style={{...inp,width:60}} type="number" value={r.dias_credito||''} onChange={e=>update(i,'dias_credito',parseInt(e.target.value)||0)}/></td>
+                    <td style={{padding:'5px 7px'}}><input style={inp} value={r.notas||''} onChange={e=>update(i,'notas',e.target.value)}/></td>
+                    <td style={{padding:'5px 7px'}}><button onClick={()=>del(i)} style={{background:'none',border:'none',color:'#ccc',cursor:'pointer',fontSize:15}}>✕</button></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20,paddingTop:14,borderTop:'1px solid #ece7df'}}>
         <Btn outline onClick={onCancel}>Cancelar</Btn>
-        <Btn disabled={saving} onClick={() => onSave(rows)}>{saving ? 'Guardando...' : 'Guardar tarifario ✓'}</Btn>
+        <Btn disabled={saving} onClick={()=>onSave(rows)}>{saving?'Guardando...':'Guardar tarifario ✓'}</Btn>
       </div>
     </div>
   )
@@ -833,12 +1003,15 @@ function CircuitCards({ circs, tarifario, TC, onSelect }) {
 }
 
 // ── Circuit Detail ──
-function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, onDelete }) {
+function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, onDelete }) {
   const [editIC, setEditIC] = useState(false)
   const [icVal, setIcVal] = useState(circ.importe_cobrado || '')
   const [editOpc, setEditOpc] = useState(false)
   const [opcMXN, setOpcMXN] = useState(circ.ingreso_opcional_mxn || '')
   const [opcUSD, setOpcUSD] = useState(circ.ingreso_opcional_usd || '')
+  const [editHabs, setEditHabs] = useState(false)
+  const [habSingle, setHabSingle] = useState(circ.info?.habs_single || '')
+  const [habDoble, setHabDoble] = useState(circ.info?.habs_doble || '')
 
   const fi = circ.info?.fecha_inicio
   const fStr = fi ? (fi instanceof Date ? fi : new Date(fi)).toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' }) : 'N/D'
@@ -859,8 +1032,8 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
     </button>
   )
   const UtilBadge = ({util}) => util >= 0
-    ? <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:24,fontWeight:800,color:'#1e5c3a'}}>{fmtMXN(util)} MN</span>
-    : <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:24,fontWeight:800,color:'#b83232'}}>{fmtMXN(Math.abs(util))} MN</span>
+    ? <span className="num" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:'#1e5c3a'}}>{fmtMXN(util)} MN</span>
+    : <span className="num" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:'#b83232'}}>{fmtMXN(Math.abs(util))} MN</span>
 
   return (
     <div>
@@ -868,10 +1041,45 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
       <div style={{display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:12,marginBottom:16}}>
         <div>
           <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:22,marginBottom:6}}>{circ.id}</h2>
-          <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
-            {[['Fecha',fStr],['Tour Leader',circ.info?.tl],['PAX',circ.info?.pax],['HAB',circ.info?.habs],['Operador',circ.info?.operador]].map(([l,v]) => (
+          <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-start'}}>
+            {[['Fecha',fStr],['Tour Leader',circ.info?.tl],['PAX',circ.info?.pax],['Operador',circ.info?.operador]].map(([l,v]) => (
               <div key={l}><div style={{fontSize:11,color:'#8a8278'}}>{l}</div><div style={{fontSize:13,fontWeight:600}}>{v||'—'}</div></div>
             ))}
+            {/* Habitaciones Single + Doble */}
+            <div style={{borderLeft:'1px solid #d8d2c8',paddingLeft:16}}>
+              <div style={{fontSize:11,color:'#8a8278',marginBottom:4}}>Número de habitaciones</div>
+              {editHabs ? (
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <div>
+                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278',marginBottom:2}}>SINGLE</div>
+                    <input type="number" min="0" value={habSingle} onChange={e=>setHabSingle(e.target.value)} autoFocus
+                      style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:56}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278',marginBottom:2}}>DOBLE</div>
+                    <input type="number" min="0" value={habDoble} onChange={e=>setHabDoble(e.target.value)}
+                      style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:56}}/>
+                  </div>
+                  <div style={{display:'flex',gap:4,marginTop:14}}>
+                    <button onClick={()=>{saveCircInfo(circ.id,{habs_single:parseInt(habSingle)||0,habs_doble:parseInt(habDoble)||0});setEditHabs(false)}}
+                      style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:5,padding:'3px 9px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                    <button onClick={()=>setEditHabs(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                  </div>
+                </div>
+              ) : (
+                <div onClick={()=>setEditHabs(true)} style={{cursor:'pointer',display:'flex',gap:10}}>
+                  <div style={{textAlign:'center'}}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278'}}>SINGLE</div>
+                    <div style={{fontSize:15,fontWeight:700,borderBottom:'1px dotted #b8952a',minWidth:28,textAlign:'center'}}>{circ.info?.habs_single||'—'}</div>
+                  </div>
+                  <div style={{textAlign:'center'}}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278'}}>DOBLE</div>
+                    <div style={{fontSize:15,fontWeight:700,borderBottom:'1px dotted #b8952a',minWidth:28,textAlign:'center'}}>{circ.info?.habs_doble||'—'}</div>
+                  </div>
+                  <span style={{fontSize:10,color:'#b8952a',marginTop:14}}>✎</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <button onClick={() => onDelete(circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12}}>🗑 Eliminar</button>
@@ -1192,7 +1400,27 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
                         <td style={{padding:'8px 8px',minWidth:155}}>
                           {eC('prov')
                             ? <div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'3px 6px',fontSize:11,fontFamily:'inherit',background:'#fff',maxWidth:150}}><option value="">— Sin proveedor —</option>{tarifario.map(t=><option key={t.id||t.proveedor} value={t.proveedor}>{t.proveedor}</option>)}</select><button onClick={()=>confirmEdit(circ.id,r.id,'prov')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <div><span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:'pointer',borderBottom:'1px dotted #b8952a'}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'#b83232',fontSize:10}}> ⚠</span>}</span>{dc>0&&!r.paid&&<div style={{fontSize:9,color:'#8a8278'}}>{dc}d crédito</div>}</div>}
+                            : <div>
+                                <span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:'pointer',borderBottom:'1px dotted #b8952a'}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'#b83232',fontSize:10}}> ⚠</span>}</span>
+                                {dc>0&&!r.paid&&<div style={{fontSize:9,color:'#8a8278'}}>{dc}d crédito</div>}
+                                {/* Temporada detectada automáticamente por fecha */}
+                                {(r.clasificacion||'').toUpperCase()==='HOSPEDAJE'&&(()=>{
+                                  const svcDate = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
+                                  const provEntries = tarifario.filter(t=>(t.proveedor||'').toUpperCase().trim()===(r.prov_general||'').toUpperCase().trim())
+                                  if(provEntries.length < 2 || !svcDate) return null
+                                  const svcMD = svcDate.getMonth()*100 + svcDate.getDate()
+                                  const matched = provEntries.find(t=>{
+                                    if(!t.temp_inicio||!t.temp_fin) return false
+                                    const [dI,mI]=(t.temp_inicio).split('/').map(Number)
+                                    const [dF,mF]=(t.temp_fin).split('/').map(Number)
+                                    if(!dI||!mI||!dF||!mF) return false
+                                    const start=(mI-1)*100+dI, end=(mF-1)*100+dF
+                                    return start<=end ? svcMD>=start&&svcMD<=end : svcMD>=start||svcMD<=end
+                                  })
+                                  if(!matched || (matched.temporada||'General')==='General') return null
+                                  return <div style={{fontSize:9,color:'#1565a0',fontWeight:600,marginTop:2}}>📅 {matched.temporada} ({matched.temp_inicio}→{matched.temp_fin})</div>
+                                })()}
+                              </div>}
                         </td>
 
                         {/* MXN */}

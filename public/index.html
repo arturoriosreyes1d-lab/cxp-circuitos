@@ -4,10 +4,27 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CxP Circuitos</title>
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Outfit', sans-serif; background: #f5f1eb; }
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: #f5f1eb;
+      font-variant-numeric: lining-nums tabular-nums;
+      font-feature-settings: "tnum", "lnum";
+    }
+    /* Números financieros siempre con dígitos alineados y misma altura */
+    td, th, input[type="number"], input[type="text"] {
+      font-variant-numeric: lining-nums tabular-nums;
+      font-feature-settings: "tnum", "lnum";
+    }
+    /* Clase utilitaria para importes grandes */
+    .num {
+      font-family: 'IBM Plex Mono', monospace;
+      font-variant-numeric: lining-nums tabular-nums;
+      font-feature-settings: "tnum", "lnum";
+      letter-spacing: -0.02em;
+    }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #ece7df; }
     ::-webkit-scrollbar-thumb { background: #d8d2c8; border-radius: 3px; }
