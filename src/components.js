@@ -50,7 +50,7 @@ export function Modal({ title, children, onClose, wide }) {
   return (
     <div onClick={(e) => e.target === e.currentTarget && onClose()}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-      <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: `min(${wide ? '900px' : '500px'}, 95vw)`, maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 40px rgba(0,0,0,.2)' }}>
+      <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: `min(${wide ? '1200px' : '500px'}, 96vw)`, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 8px 40px rgba(0,0,0,.2)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20 }}>{title}</h2>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#aaa' }}>✕</button>

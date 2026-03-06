@@ -222,22 +222,50 @@ function Dashboard({ session }) {
   const saveTarifario = async (rows) => {
     setSaving(true)
     try {
-      await supabase.from('tarifario').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-      if (rows.length > 0) await supabase.from('tarifario').insert(rows.map(r => ({
-          proveedor: r.proveedor, tipo_servicio: r.tipo_servicio,
-          precio: r.precio_single || 0,
-          precio_single: r.precio_single || 0,
-          precio_doble: r.precio_doble || r.precio_single || 0,
-          moneda: r.moneda, temporada: r.temporada || 'General',
-          temp_inicio: r.temp_inicio || null,
-          temp_fin: r.temp_fin || null,
-          cortesia_cada: r.cortesia_cada || 0,
-          dias_credito: r.dias_credito || 0, notas: r.notas || ''
-        })))
-      const { data } = await supabase.from('tarifario').select('*').order('proveedor')
-      if (data) setTarifario(data)
-    } catch (e) { console.error(e) }
-    setSaving(false); setModal(null)
+      // Step 1: get all existing IDs
+      const { data: existing, error: selErr } = await supabase.from('tarifario').select('id')
+      if (selErr) throw new Error('No se pudo leer el tarifario: ' + selErr.message)
+
+      // Step 2: delete by ID (most reliable way, respects RLS)
+      if (existing && existing.length > 0) {
+        const ids = existing.map(r => r.id)
+        // Delete in batches of 50 to avoid URL length limits
+        for (let i = 0; i < ids.length; i += 50) {
+          const { error: delErr } = await supabase.from('tarifario').delete().in('id', ids.slice(i, i + 50))
+          if (delErr) throw new Error('Error al eliminar registros: ' + delErr.message)
+        }
+      }
+
+      // Step 3: insert new rows (skip blank proveedores)
+      const toInsert = rows.filter(r => (r.proveedor || '').trim()).map(r => ({
+        proveedor:    r.proveedor.trim(),
+        tipo_servicio: r.tipo_servicio || 'HOSPEDAJE',
+        precio:        parseFloat(r.precio_single) || 0,
+        precio_single: parseFloat(r.precio_single) || 0,
+        precio_doble:  parseFloat(r.precio_doble)  || parseFloat(r.precio_single) || 0,
+        moneda:        r.moneda       || 'MXN',
+        temporada:     r.temporada    || 'General',
+        temp_inicio:   r.temp_inicio  || null,
+        temp_fin:      r.temp_fin     || null,
+        cortesia_cada: parseInt(r.cortesia_cada) || 0,
+        dias_credito:  parseInt(r.dias_credito)  || 0,
+        notas:         r.notas || ''
+      }))
+
+      if (toInsert.length > 0) {
+        const { error: insErr } = await supabase.from('tarifario').insert(toInsert)
+        if (insErr) throw new Error('Error al guardar tarifario: ' + insErr.message)
+      }
+
+      // Step 4: reload and close
+      const { data: fresh } = await supabase.from('tarifario').select('*').order('proveedor')
+      if (fresh) setTarifario(fresh)
+      setModal(null)
+    } catch (e) {
+      console.error('saveTarifario:', e)
+      alert('⚠️ ' + (e.message || 'Error desconocido al guardar'))
+    }
+    setSaving(false)
   }
 
   const updateRow = useCallback((cid, rowId, changes) => {
@@ -774,7 +802,30 @@ function UploadZone({ xlsxReady, onFile, pending, fileRef }) {
 }
 
 function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, onCancel, saving }) {
-  const TEMPORADAS = ['General','Temporada Alta','Temporada Baja','Temporada Media']
+  const TEMPORADAS = ['General','Temporada Alta','Temporada Baja','Temporada Media','Temporada Navideña','Semana Santa']
+  // Convert DD/MM <-> input[type=date] value (YYYY-MM-DD, using year 2000 as neutral)
+  const ddmmToInput = (v) => {
+    if (!v) return ''
+    const [d, m] = v.split('/').map(Number)
+    if (!d || !m) return ''
+    return `2000-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+  }
+  const inputToDdmm = (v) => {
+    if (!v) return ''
+    const [, m, d] = v.split('-')
+    return `${d}/${m}`
+  }
+  const DatePicker = ({ value, onChange, placeholder }) => (
+    <input
+      type="date"
+      value={ddmmToInput(value)}
+      onChange={e => onChange(inputToDdmm(e.target.value))}
+      title={value || placeholder}
+      style={{ border:'1px solid #d8d2c8', borderRadius:5, padding:'3px 5px', fontFamily:'inherit', fontSize:11, background:'#fff', cursor:'pointer', outline:'none', width:130 }}
+      onFocus={e => e.target.style.borderColor='#b8952a'}
+      onBlur={e => e.target.style.borderColor='#d8d2c8'}
+    />
+  )
   const [rows, setRows] = useState(() => {
     if (tarifario.length > 0) return tarifario.map(t => ({
       proveedor: t.proveedor || '',
@@ -842,10 +893,10 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
                         <button onClick={()=>dupRow(i)} title="Duplicar con otra temporada"
                           style={{background:'#ece7df',border:'none',borderRadius:5,padding:'3px 7px',cursor:'pointer',fontSize:11,color:'#8a8278',fontWeight:700}}>+T</button>
                       </div>
-                      {r.temporada!=='General'&&<div style={{display:'flex',gap:4,alignItems:'center'}}>
-                        <input style={{...inp,width:60,fontSize:11}} value={r.temp_inicio||''} onChange={e=>update(i,'temp_inicio',e.target.value)} placeholder="15/12"/>
-                        <span style={{fontSize:11,color:'#8a8278'}}>→</span>
-                        <input style={{...inp,width:60,fontSize:11}} value={r.temp_fin||''} onChange={e=>update(i,'temp_fin',e.target.value)} placeholder="18/01"/>
+                      {r.temporada!=='General'&&<div style={{display:'flex',gap:4,alignItems:'center',marginTop:4}}>
+                        <DatePicker value={r.temp_inicio} onChange={v=>update(i,'temp_inicio',v)} placeholder="Inicio"/>
+                        <span style={{fontSize:11,color:'#8a8278',flexShrink:0}}>→</span>
+                        <DatePicker value={r.temp_fin} onChange={v=>update(i,'temp_fin',v)} placeholder="Fin"/>
                       </div>}
                     </td>
                     <td style={{padding:'5px 7px',minWidth:100}}>
@@ -913,7 +964,8 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
 
       <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20,paddingTop:14,borderTop:'1px solid #ece7df'}}>
         <Btn outline onClick={onCancel}>Cancelar</Btn>
-        <Btn disabled={saving} onClick={()=>onSave(rows)}>{saving?'Guardando...':'Guardar tarifario ✓'}</Btn>
+        <span style={{fontSize:11,color:'#8a8278',marginRight:'auto'}}>{rows.filter(r=>(r.proveedor||'').trim()).length} proveedores a guardar</span>
+        <Btn disabled={saving} onClick={()=>onSave(rows)}>{saving?'⏳ Guardando...':'💾 Guardar tarifario'}</Btn>
       </div>
     </div>
   )
