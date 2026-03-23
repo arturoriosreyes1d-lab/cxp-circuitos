@@ -1077,14 +1077,21 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
           })}
         </div>
 
-        {/* Panel de día seleccionado */}
+        {/* Panel de día seleccionado — agrupado por circuito, pendientes+pagados juntos */}
         {diaSeleccionado && (()=>{
           const pendDia = porFecha[diaSeleccionado] || []
           const pagDia  = porFechaPagado[diaSeleccionado] || []
           if(pendDia.length===0 && pagDia.length===0) return null
-          // Agrupar pendientes por circuito
-          const agPend={}; pendDia.forEach(r=>{const k=r._circ.id;if(!agPend[k])agPend[k]={circ:r._circ,rows:[]};agPend[k].rows.push(r)})
-          const agPag={};  pagDia.forEach(r=>{const k=r._circ.id;if(!agPag[k])agPag[k]={circ:r._circ,rows:[]};agPag[k].rows.push(r)})
+
+          // Unir todo y agrupar por circuito
+          const agCirc = {}
+          ;[...pendDia, ...pagDia].forEach(r => {
+            const k = r._circ.id
+            if(!agCirc[k]) agCirc[k] = { circ: r._circ, pend: [], pag: [] }
+            if(r.paid) agCirc[k].pag.push(r)
+            else       agCirc[k].pend.push(r)
+          })
+
           return (
             <div style={{marginTop:20,borderTop:'2px solid #ece7df',paddingTop:16}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
@@ -1093,46 +1100,37 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
                     {new Date(diaSeleccionado+'T12:00:00').toLocaleDateString('es-MX',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
                   </h4>
                   <div style={{display:'flex',gap:12,fontSize:12}}>
-                    {pendDia.length>0&&<span style={{color:'#b83232',fontWeight:600}}>⏳ {pendDia.length} pendiente{pendDia.length!==1?'s':''} · {fmtMXN(sumMXN(pendDia))} MN{sumUSD(pendDia)>0?' / '+fmtUSD(sumUSD(pendDia))+' USD':''}</span>}
-                    {pagDia.length>0&&<span style={{color:'#1e5c3a',fontWeight:600}}>✅ {pagDia.length} pagado{pagDia.length!==1?'s':''} · {fmtMXN(sumMXN(pagDia))} MN{sumUSD(pagDia)>0?' / '+fmtUSD(sumUSD(pagDia))+' USD':''}</span>}
+                    {pendDia.length>0&&<span style={{color:'#b83232',fontWeight:600}}>⏳ {pendDia.length} pendiente{pendDia.length!==1?'s':''} · {fmtMXN(sumMXN(pendDia))} MN{sumUSD(pendDia)>0?' · '+fmtUSD(sumUSD(pendDia))+' USD':''}</span>}
+                    {pagDia.length>0&&<span style={{color:'#1e5c3a',fontWeight:600}}>✅ {pagDia.length} pagado{pagDia.length!==1?'s':''} · {fmtMXN(sumMXN(pagDia))} MN{sumUSD(pagDia)>0?' · '+fmtUSD(sumUSD(pagDia))+' USD':''}</span>}
                   </div>
                 </div>
                 <button onClick={()=>setDiaSeleccionado(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:18}}>✕</button>
               </div>
 
-              {/* Pendientes del día */}
-              {pendDia.length>0&&<>
-                <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,color:'#b83232',marginBottom:8}}>⏳ Por pagar</div>
-                {Object.values(agPend).map(({circ,rows})=>(
-                  <div key={circ.id} style={{background:'#fafaf8',borderRadius:10,border:'1px solid #ece7df',marginBottom:10,overflow:'hidden'}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 12px',background:'#12151f',color:'#fff'}}>
+              {Object.values(agCirc).map(({circ, pend, pag})=>{
+                const totPendMXN = sumMXN(pend), totPendUSD = sumUSD(pend)
+                const totPagMXN  = sumMXN(pag),  totPagUSD  = sumUSD(pag)
+                return (
+                  <div key={circ.id} style={{borderRadius:10,border:'1px solid #ece7df',marginBottom:12,overflow:'hidden'}}>
+                    {/* Header del circuito */}
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 14px',background:'#12151f',color:'#fff'}}>
                       <div>
-                        <span style={{fontSize:11,fontWeight:700,color:'#e0c96a'}}>{circ.id.split('-').slice(-3).join('-')}</span>
+                        <span style={{fontSize:12,fontWeight:700,color:'#e0c96a'}}>{circ.id.split('-').slice(-3).join('-')}</span>
                         {circ.info?.tl&&<span style={{fontSize:10,color:'rgba(255,255,255,.5)',marginLeft:8}}>TL: {circ.info.tl}</span>}
                       </div>
-                      <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid rgba(255,255,255,.2)',color:'rgba(255,255,255,.7)',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver circuito →</button>
-                    </div>
-                    {rows.map(r=><RowPendiente key={r.id} r={r} showDate={false}/>)}
-                  </div>
-                ))}
-              </>}
-
-              {/* Pagados del día */}
-              {pagDia.length>0&&<>
-                <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,color:'#1e5c3a',marginBottom:8,marginTop:pendDia.length>0?14:0}}>✅ Pagados</div>
-                {Object.values(agPag).map(({circ,rows})=>(
-                  <div key={circ.id} style={{background:'#f9fef9',borderRadius:10,border:'1px solid #d8f3dc',marginBottom:10,overflow:'hidden'}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 12px',background:'#1e5c3a',color:'#fff'}}>
-                      <div>
-                        <span style={{fontSize:11,fontWeight:700,color:'#d8f3dc'}}>{circ.id.split('-').slice(-3).join('-')}</span>
-                        {circ.info?.tl&&<span style={{fontSize:10,color:'rgba(255,255,255,.5)',marginLeft:8}}>TL: {circ.info.tl}</span>}
+                      <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                        {pend.length>0&&<span style={{fontSize:10,color:'#fca5a5',fontFamily:"'IBM Plex Mono',monospace"}}>⏳ {fmtMXN(totPendMXN)} MN{totPendUSD>0?' / '+fmtUSD(totPendUSD)+' USD':''}</span>}
+                        {pag.length>0&&<span style={{fontSize:10,color:'#86efac',fontFamily:"'IBM Plex Mono',monospace"}}>✅ {fmtMXN(totPagMXN)} MN{totPagUSD>0?' / '+fmtUSD(totPagUSD)+' USD':''}</span>}
+                        <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid rgba(255,255,255,.2)',color:'rgba(255,255,255,.7)',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver →</button>
                       </div>
-                      <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid rgba(255,255,255,.2)',color:'rgba(255,255,255,.7)',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver circuito →</button>
                     </div>
-                    {rows.map(r=><RowPagado key={r.id} r={r} showDate={false}/>)}
+                    {/* Pendientes primero */}
+                    {pend.map(r=><RowPendiente key={r.id} r={r} showDate={false}/>)}
+                    {/* Pagados debajo con fondo diferenciado */}
+                    {pag.map(r=><RowPagado key={r.id} r={r} showDate={false}/>)}
                   </div>
-                ))}
-              </>}
+                )
+              })}
             </div>
           )
         })()}
