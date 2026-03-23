@@ -310,10 +310,12 @@ function Dashboard({ session }) {
       factura_recibida: false, folio_factura: null, visto_bueno_auditoria: false, visto_bueno_pago: false
     }).select().single()
     if (!error && data) {
-      setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, rows: [...c.rows, { ...data, fecha: null }].sort((a,b) => {
-        if (!a.fecha && !b.fecha) return (a.idx||0)-(b.idx||0)
-        if (!a.fecha) return 1; if (!b.fecha) return -1
-        return new Date(a.fecha)-new Date(b.fecha)
+      setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, rows: [...c.rows, { ...data, fecha: data.fecha ? new Date(data.fecha) : null }].sort((a,b) => {
+        const fa = a.fecha ? (a.fecha instanceof Date ? a.fecha : new Date(a.fecha)) : null
+        const fb = b.fecha ? (b.fecha instanceof Date ? b.fecha : new Date(b.fecha)) : null
+        if (!fa && !fb) return (a.idx||0)-(b.idx||0)
+        if (!fa) return 1; if (!fb) return -1
+        return fa - fb
       })}))
     }
   }
@@ -368,10 +370,10 @@ function Dashboard({ session }) {
   )
 
   return (
-    <div style={{ fontFamily: "'Outfit', sans-serif", fontVariantNumeric: 'lining-nums tabular-nums', fontFeatureSettings: '"tnum","lnum"', background: '#f5f1eb', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ fontFamily: "'Outfit', sans-serif", fontVariantNumeric: 'lining-nums tabular-nums', fontFeatureSettings: '"tnum","lnum"', background: '#f5f1eb', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
       {/* ── HEADER ── */}
-      <header style={{ background: '#070a12', borderBottom: '2px solid #b8952a', padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200 }}>
+      <header style={{ background: '#000000', borderBottom: '2px solid #b8952a', padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,.5)', cursor: 'pointer', fontSize: 18 }}>☰</button>
           <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: '#fff' }}>CxP <span style={{ color: '#e0c96a' }}>Circuitos</span></span>
@@ -391,11 +393,11 @@ function Dashboard({ session }) {
         </div>
       </header>
 
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
 
         {/* ── SIDEBAR ── */}
         {sidebarOpen && (
-          <aside style={{ width: 272, background: '#090c18', borderRight: '1px solid rgba(255,255,255,.07)', overflowY: 'auto', flexShrink: 0, position: 'sticky', top: 54, height: 'calc(100vh - 54px)' }}>
+          <aside style={{ width: 272, background: '#000000', borderRight: '1px solid rgba(255,255,255,.07)', overflowY: 'auto', flexShrink: 0 }}>
 
             <SbItem label="📊 Todos los circuitos" count={circuits.length} active={view.type === 'all'} onClick={() => setView({ type: 'all' })} />
             <SbItem label="📈 Estado de Resultados" count="" active={view.type === 'resultados_all'} onClick={() => setView({ type: 'resultados_all' })} />
@@ -406,7 +408,7 @@ function Dashboard({ session }) {
                 <div onClick={() => setView({ type: 'pagos' })} style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: isActive ? 'rgba(184,149,42,.15)' : 'transparent', borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
                   <span style={{ fontSize: 12, fontWeight: isActive ? 700 : 400, color: isActive ? '#fff' : 'rgba(255,255,255,.65)' }}>💳 Pagos</span>
                   <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
-                    {sinFecha > 0 && <span style={{ background: '#b83232', color: '#fff', borderRadius: 9, fontSize: 9, fontWeight: 800, padding: '1px 6px', minWidth: 16, textAlign: 'center' }}>{sinFecha} sin fecha</span>}
+  
                   </div>
                 </div>
               )
@@ -786,17 +788,20 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
   const [diaSeleccionado, setDiaSeleccionado] = useState(null) // 'YYYY-MM-DD'
   const [filtro, setFiltro] = useState('todos') // todos | semana | vencidos | sin_fecha
 
-  // Recopilar TODOS los servicios pendientes de pago con info del circuito
-  const pendientes = []
+  const [kpiModal, setKpiModal] = useState(null) // null | 'pendiente' | 'semana' | 'vencidos' | 'sin_fecha' | 'pagado'
+
+  // Recopilar TODOS los servicios (pagados y pendientes)
+  const todos = []
   circuits.forEach(circ => {
     circ.rows.forEach(r => {
-      if (r.paid) return
       const { mxn, usd } = getImporte(r, circ.info, tarifario)
-      pendientes.push({ ...r, _circ: circ, _mxn: mxn, _usd: usd })
+      todos.push({ ...r, _circ: circ, _mxn: mxn, _usd: usd })
     })
   })
+  const pendientes = todos.filter(r => !r.paid)
+  const pagados    = todos.filter(r => r.paid)
 
-  // Clasificar
+  // Clasificar pendientes
   const inicioSemana = new Date(today); inicioSemana.setDate(today.getDate() - today.getDay() + 1)
   const finSemana = new Date(inicioSemana); finSemana.setDate(inicioSemana.getDate() + 6)
   const sinFecha   = pendientes.filter(r => !r.fecha_pago)
@@ -804,20 +809,27 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
   const vencidos   = conFecha.filter(r => { const d=new Date(r.fecha_pago); d.setHours(0,0,0,0); return d < today })
   const estaSemana = conFecha.filter(r => { const d=new Date(r.fecha_pago); d.setHours(0,0,0,0); return d >= inicioSemana && d <= finSemana })
 
-  // KPI totals
   const sumMXN = arr => arr.reduce((a,r)=>a+r._mxn,0)
   const sumUSD = arr => arr.reduce((a,r)=>a+r._usd,0)
   const totMXN = sumMXN(conFecha); const totUSD = sumUSD(conFecha)
   const vMXN   = sumMXN(vencidos); const vUSD   = sumUSD(vencidos)
   const sMXN   = sumMXN(sinFecha); const sUSD   = sumUSD(sinFecha)
   const wMXN   = sumMXN(estaSemana); const wUSD  = sumUSD(estaSemana)
+  const pMXN   = sumMXN(pagados);    const pUSD  = sumUSD(pagados)
 
-  // Mapa fecha -> servicios (para calendario)
+  // Mapa fecha -> servicios pendientes (para calendario)
   const porFecha = {}
   conFecha.forEach(r => {
     const k = r.fecha_pago
     if (!porFecha[k]) porFecha[k] = []
     porFecha[k].push(r)
+  })
+  // Mapa fecha -> servicios pagados (para calendario)
+  const porFechaPagado = {}
+  pagados.filter(r=>r.fecha_pago).forEach(r => {
+    const k = r.fecha_pago
+    if (!porFechaPagado[k]) porFechaPagado[k] = []
+    porFechaPagado[k].push(r)
   })
 
   // Días del mes en vista
@@ -893,9 +905,9 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
             </div>
           )}
         </div>
-        <div style={{textAlign:'right',minWidth:90}}>
-          {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12}}>{fmtMXN(r._mxn)}</div>}
-          {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,color:'#1565a0'}}>{fmtUSD(r._usd)}</div>}
+        <div style={{textAlign:'right',minWidth:110}}>
+          {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13}}>{fmtMXN(r._mxn)} <span style={{fontSize:10,color:'#8a8278',fontWeight:600}}>MN</span></div>}
+          {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13,color:'#1565a0'}}>{fmtUSD(r._usd)} <span style={{fontSize:10,fontWeight:600}}>USD</span></div>}
           {r._mxn===0&&r._usd===0&&<span style={{fontSize:10,color:'#ccc'}}>Sin tarifa</span>}
         </div>
         <button onClick={()=>togglePaid(r._circ.id,r.id,false)}
@@ -914,15 +926,80 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
       <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,marginBottom:4}}>💳 Programación de Pagos</h2>
       <p style={{fontSize:12,color:'#8a8278',marginBottom:20}}>Vista centralizada de todos los servicios pendientes de pago en todos los circuitos.</p>
 
-      {/* KPIs */}
+      {/* KPIs — clic para desglose */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:12,marginBottom:24}}>
         {[
-          {label:'⏳ Total pendiente MXN', val:fmtMXN(totMXN), sub:fmtUSD(totUSD)+' USD', cls:'rust'},
-          {label:'📅 Esta semana MXN', val:fmtMXN(wMXN), sub:fmtUSD(wUSD)+' USD', cls:'sky'},
-          {label:'🚨 Vencidos MXN', val:fmtMXN(vMXN), sub:fmtUSD(vUSD)+' USD', cls:'rust'},
-          {label:'⚠️ Sin fecha asignada', val:sinFecha.length+' servicios', sub:fmtMXN(sMXN)+(sUSD>0?' · '+fmtUSD(sUSD)+' USD':''), cls:'gold'},
-        ].map((k,i)=><KPICard key={i} {...k}/>)}
+          {id:'pendiente', label:'⏳ Por pagar MXN',    val:fmtMXN(totMXN)+' MN', sub:totUSD>0?fmtUSD(totUSD)+' USD':undefined, cls:'rust'},
+          {id:'semana',    label:'📅 Esta semana',       val:fmtMXN(wMXN)+' MN',   sub:wUSD>0?fmtUSD(wUSD)+' USD':undefined,    cls:'sky'},
+          {id:'vencidos',  label:'🚨 Vencidos',          val:fmtMXN(vMXN)+' MN',   sub:vUSD>0?fmtUSD(vUSD)+' USD':undefined,    cls:'rust'},
+          {id:'sin_fecha', label:'⚠️ Sin fecha',         val:sinFecha.length+' servicios', sub:fmtMXN(sMXN)+' MN'+(sUSD>0?' · '+fmtUSD(sUSD)+' USD':''), cls:'gold'},
+          {id:'pagado',    label:'✅ Pagado',             val:fmtMXN(pMXN)+' MN',   sub:pUSD>0?fmtUSD(pUSD)+' USD':undefined,    cls:'forest'},
+        ].map((k)=>(
+          <div key={k.id} onClick={()=>setKpiModal(k.id)} style={{cursor:'pointer'}}>
+            <KPICard label={k.label} val={k.val} sub={k.sub} cls={k.cls}/>
+          </div>
+        ))}
       </div>
+
+      {/* Modal desglose KPI */}
+      {kpiModal && (()=>{
+        const lista = kpiModal==='pendiente' ? conFecha
+          : kpiModal==='semana'    ? estaSemana
+          : kpiModal==='vencidos'  ? vencidos
+          : kpiModal==='sin_fecha' ? sinFecha
+          : pagados
+        const titulo = kpiModal==='pendiente'?'⏳ Por pagar':kpiModal==='semana'?'📅 Esta semana':kpiModal==='vencidos'?'🚨 Vencidos':kpiModal==='sin_fecha'?'⚠️ Sin fecha asignada':'✅ Pagado'
+        const agrup = {}
+        lista.forEach(r=>{ const k=r._circ.id; if(!agrup[k]) agrup[k]={circ:r._circ,rows:[]}; agrup[k].rows.push(r) })
+        return (
+          <div onClick={e=>e.target===e.currentTarget&&setKpiModal(null)}
+            style={{position:'fixed',inset:0,background:'rgba(0,0,0,.55)',zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+            <div style={{background:'#fff',borderRadius:16,width:'min(760px,95vw)',maxHeight:'85vh',overflowY:'auto',boxShadow:'0 8px 40px rgba(0,0,0,.2)'}}>
+              <div style={{padding:'20px 24px',borderBottom:'1px solid #ece7df',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'#fff',zIndex:1}}>
+                <div>
+                  <h3 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700}}>{titulo}</h3>
+                  <div style={{fontSize:12,color:'#8a8278',marginTop:2}}>
+                    {lista.length} servicio{lista.length!==1?'s':''} · {fmtMXN(sumMXN(lista))} MN{sumUSD(lista)>0?' · '+fmtUSD(sumUSD(lista))+' USD':''}
+                  </div>
+                </div>
+                <button onClick={()=>setKpiModal(null)} style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:'#aaa'}}>✕</button>
+              </div>
+              {lista.length===0
+                ? <div style={{padding:40,textAlign:'center',color:'#8a8278'}}>Sin servicios en esta categoría</div>
+                : Object.values(agrup).map(({circ,rows})=>(
+                  <div key={circ.id}>
+                    <div style={{padding:'8px 24px',background:'#f5f1eb',borderBottom:'1px solid #ece7df',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                      <div>
+                        <span style={{fontSize:12,fontWeight:700}}>{circ.id.split('-').slice(-3).join('-')}</span>
+                        {circ.info?.tl&&<span style={{fontSize:11,color:'#8a8278',marginLeft:8}}>{circ.info.tl}</span>}
+                      </div>
+                      <span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:'#b83232'}}>
+                        {fmtMXN(sumMXN(rows))+' MN'}{sumUSD(rows)>0&&' · '+fmtUSD(sumUSD(rows))+' USD'}
+                      </span>
+                    </div>
+                    {rows.map(r=>(
+                      <div key={r.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 24px',borderBottom:'1px solid #f5f1eb'}}>
+                        <div>
+                          <div style={{fontWeight:600,fontSize:13}}>{r.prov_general||'—'} <span style={{fontWeight:400,color:'#8a8278',fontSize:12}}>· {r.servicio||'—'}</span></div>
+                          <div style={{display:'flex',gap:6,marginTop:3,alignItems:'center',flexWrap:'wrap'}}>
+                            <Badge text={r.clasificacion}/>
+                            {r.fecha_pago&&<span style={{fontSize:10,color:'#1565a0',fontWeight:600}}>📅 {r.fecha_pago}</span>}
+                            {r.folio_factura&&<span style={{fontSize:10,color:'#8a8278'}}>Folio: {r.folio_factura}</span>}
+                          </div>
+                        </div>
+                        <div style={{textAlign:'right',minWidth:100}}>
+                          {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13}}>{fmtMXN(r._mxn)} <span style={{fontSize:10,color:'#8a8278'}}>MN</span></div>}
+                          {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13,color:'#1565a0'}}>{fmtUSD(r._usd)} <span style={{fontSize:10}}>USD</span></div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Calendario */}
       <div style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:24}}>
@@ -947,24 +1024,27 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
             if (!d) return <div key={i}/>
             const k = diaKey(d)
             const pagos = porFecha[k] || []
+            const pagadosDia = porFechaPagado[k] || []
             const mxnDia = pagos.reduce((a,r)=>a+r._mxn,0)
             const usdDia = pagos.reduce((a,r)=>a+r._usd,0)
             const esHoy = k === today.toISOString().slice(0,10)
             const esSel = k === diaSeleccionado
             const vencido = pagos.length>0 && new Date(k)<today
             const hayPagos = pagos.length > 0
+            const hayPagadosDia = pagadosDia.length > 0
             return (
               <div key={i} onClick={()=>setDiaSeleccionado(esSel?null:k)}
                 style={{
-                  minHeight:70, padding:5, borderRadius:8, cursor:hayPagos?'pointer':'default',
+                  minHeight:85, padding:6, borderRadius:8, cursor:hayPagos?'pointer':'default',
                   border: esSel?'2px solid #b8952a': esHoy?'2px solid #52b788':'1px solid #ece7df',
                   background: esSel?'#fffbf0': vencido&&hayPagos?'#fff5f5': hayPagos?'#f0f6ff':'#fafaf8',
                   transition:'all .15s'
                 }}>
-                <div style={{fontSize:11,fontWeight:esHoy?800:600,color:esHoy?'#1e5c3a':vencido&&hayPagos?'#b83232':'#12151f',marginBottom:3}}>{d}</div>
-                {mxnDia>0&&<div style={{fontSize:9,fontWeight:700,color:'#12151f',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.3}}>{fmtMXN(mxnDia)}</div>}
-                {usdDia>0&&<div style={{fontSize:9,fontWeight:700,color:'#1565a0',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.3}}>{fmtUSD(usdDia)}</div>}
-                {hayPagos&&<div style={{fontSize:8,color:vencido?'#b83232':'#8a8278',marginTop:2}}>{pagos.length} pago{pagos.length!==1?'s':''}</div>}
+                <div style={{fontSize:13,fontWeight:esHoy?800:700,color:esHoy?'#1e5c3a':vencido&&hayPagos?'#b83232':'#12151f',marginBottom:4}}>{d}</div>
+                {mxnDia>0&&<div style={{fontSize:10,fontWeight:700,color:'#b83232',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.4}}>{fmtMXN(mxnDia)} <span style={{fontSize:8,fontWeight:600}}>MN</span></div>}
+                {usdDia>0&&<div style={{fontSize:10,fontWeight:700,color:'#1565a0',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.4}}>{fmtUSD(usdDia)} <span style={{fontSize:8,fontWeight:600}}>USD</span></div>}
+                {hayPagadosDia&&<div style={{fontSize:9,color:'#52b788',fontWeight:600,marginTop:2}}>✅ {pagadosDia.length} pag.</div>}
+                {hayPagos&&<div style={{fontSize:8,color:vencido?'#b83232':'#8a8278',marginTop:1}}>{pagos.length} pend.</div>}
               </div>
             )
           })}
@@ -1353,6 +1433,33 @@ function CircuitCards({ circs, tarifario, TC, onSelect }) {
   )
 }
 
+
+// ── EditableInfoField — campo editable inline en header ──
+function EditableInfoField({ label, value, type, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(value || '')
+  if (editing) return (
+    <div>
+      <div style={{fontSize:11,color:'#8a8278',marginBottom:2}}>{label}</div>
+      <div style={{display:'flex',gap:4,alignItems:'center'}}>
+        <input autoFocus type={type||'text'} value={val} onChange={e=>setVal(e.target.value)}
+          onKeyDown={e=>{if(e.key==='Enter'){onSave(val);setEditing(false)}if(e.key==='Escape')setEditing(false)}}
+          style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:type==='number'?60:120,outline:'none'}}/>
+        <button onClick={()=>{onSave(val);setEditing(false)}} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'3px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+        <button onClick={()=>setEditing(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+      </div>
+    </div>
+  )
+  return (
+    <div onClick={()=>{setVal(value||'');setEditing(true)}} style={{cursor:'pointer'}}>
+      <div style={{fontSize:11,color:'#8a8278',marginBottom:2}}>{label}</div>
+      <div style={{fontSize:13,fontWeight:600,borderBottom:'1px dotted #b8952a',display:'inline-block',minWidth:24}}>
+        {value||<span style={{color:'#ccc'}}>—</span>} <span style={{fontSize:10,color:'#b8952a'}}>✎</span>
+      </div>
+    </div>
+  )
+}
+
 // ── Circuit Detail ──
 function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, onDelete }) {
   const [editIC, setEditIC] = useState(false)
@@ -1393,8 +1500,12 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
         <div>
           <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:22,marginBottom:6}}>{circ.id}</h2>
           <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-start'}}>
-            {[['Fecha',fStr],['Tour Leader',circ.info?.tl],['PAX',circ.info?.pax],['Operador',circ.info?.operador]].map(([l,v]) => (
-              <div key={l}><div style={{fontSize:11,color:'#8a8278'}}>{l}</div><div style={{fontSize:13,fontWeight:600}}>{v||'—'}</div></div>
+            {/* Fecha (solo lectura) */}
+            <div><div style={{fontSize:11,color:'#8a8278'}}>Fecha</div><div style={{fontSize:13,fontWeight:600}}>{fStr}</div></div>
+            {/* TL, PAX, Operador — editables inline */}
+            {[['tl','Tour Leader','text'],['pax','PAX','number'],['operador','Operador','text']].map(([field,label,type]) => (
+              <EditableInfoField key={field} label={label} value={circ.info?.[field]} type={type}
+                onSave={v => saveCircInfo(circ.id, {[field]: type==='number'?parseInt(v)||0:v})}/>
             ))}
             {/* Habitaciones Single + Doble */}
             <div style={{borderLeft:'1px solid #d8d2c8',paddingLeft:16}}>
