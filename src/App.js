@@ -863,7 +863,8 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
   const listaFiltrada = filtro==='sin_fecha' ? sinFecha
     : filtro==='vencidos' ? vencidos
     : filtro==='semana' ? estaSemana
-    : conFecha.sort((a,b)=>a.fecha_pago?.localeCompare(b.fecha_pago||'')||0)
+    : filtro==='pagados' ? [...pagados].sort((a,b)=>(a.fecha_pago||'').localeCompare(b.fecha_pago||''))
+    : [...conFecha].sort((a,b)=>(a.fecha_pago||'').localeCompare(b.fecha_pago||''))
 
   const porCircuitoLista = {}
   listaFiltrada.forEach(r => {
@@ -878,41 +879,52 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
     </button>
   )
 
-  const RowPago = ({r, showDate}) => {
+  // Fila info compartida
+  const InfoRow = ({r, showDate}) => (
+    <div>
+      <div style={{fontWeight:600,fontSize:12}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>} <span style={{fontWeight:400,color:'#8a8278',fontSize:11}}>· {r.servicio||'—'}</span></div>
+      <div style={{display:'flex',gap:6,marginTop:2,flexWrap:'wrap',alignItems:'center'}}>
+        <Badge text={r.clasificacion}/>
+        {showDate && r.fecha_pago && <span style={{fontSize:10,color:'#1565a0',fontWeight:600}}>📅 {r.fecha_pago}</span>}
+        {r.visto_bueno_auditoria ? <span style={{fontSize:9,color:'#1e5c3a',fontWeight:700}}>✅ VB Aud.</span> : <span style={{fontSize:9,color:'#b83232',fontWeight:600}}>⏳ VB Aud.</span>}
+        {r.visto_bueno_pago ? <span style={{fontSize:9,color:'#1e5c3a',fontWeight:700}}>✅ VB Pago</span> : <span style={{fontSize:9,color:'#b83232',fontWeight:600}}>⏳ VB Pago</span>}
+        {r.folio_factura && <span style={{fontSize:9,color:'#8a8278'}}>Folio: {r.folio_factura}</span>}
+      </div>
+    </div>
+  )
+  const MontoRow = ({r}) => (
+    <div style={{textAlign:'right',minWidth:110}}>
+      {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13}}>{fmtMXN(r._mxn)} <span style={{fontSize:10,color:'#8a8278',fontWeight:600}}>MN</span></div>}
+      {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13,color:'#1565a0'}}>{fmtUSD(r._usd)} <span style={{fontSize:10,fontWeight:600}}>USD</span></div>}
+      {r._mxn===0&&r._usd===0&&<span style={{fontSize:10,color:'#ccc'}}>Sin tarifa</span>}
+    </div>
+  )
+
+  // Fila PENDIENTE — botón "Marcar como pagado" (distinto a la etiqueta de pagado)
+  const RowPendiente = ({r, showDate}) => {
     const [editFecha, setEditFecha] = useState(false)
     return (
-      <div style={{display:'grid',gridTemplateColumns:'1fr auto auto auto',gap:8,alignItems:'center',padding:'8px 12px',borderBottom:'1px solid #f0ebe3',background:r._mxn+r._usd===0?'#fffbf0':'transparent'}}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr auto auto auto',gap:8,alignItems:'center',padding:'10px 14px',borderBottom:'1px solid #f0ebe3'}}>
         <div>
-          <div style={{fontWeight:600,fontSize:12}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>} <span style={{fontWeight:400,color:'#8a8278',fontSize:11}}>· {r.servicio||'—'}</span></div>
-          <div style={{display:'flex',gap:6,marginTop:2,flexWrap:'wrap',alignItems:'center'}}>
-            <Badge text={r.clasificacion}/>
-            {showDate && r.fecha_pago && <span style={{fontSize:10,color:'#1565a0',fontWeight:600}}>📅 {r.fecha_pago}</span>}
-            {r.visto_bueno_auditoria ? <span style={{fontSize:9,color:'#1e5c3a',fontWeight:700}}>✅ VB Aud.</span> : <span style={{fontSize:9,color:'#b83232',fontWeight:600}}>⏳ VB Aud.</span>}
-            {r.visto_bueno_pago ? <span style={{fontSize:9,color:'#1e5c3a',fontWeight:700}}>✅ VB Pago</span> : <span style={{fontSize:9,color:'#b83232',fontWeight:600}}>⏳ VB Pago</span>}
-            {r.folio_factura && <span style={{fontSize:9,color:'#8a8278'}}>Folio: {r.folio_factura}</span>}
-          </div>
+          <InfoRow r={r} showDate={showDate}/>
           {!r.fecha_pago && (
             <div style={{marginTop:4}}>
               {editFecha
                 ? <div style={{display:'flex',gap:4,alignItems:'center'}}>
                     <input type="date" autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 6px',fontSize:11,fontFamily:'inherit'}}
-                      onChange={e=>{if(e.target.value){setFechaPago(r._circ.id,r.id,e.target.value);setEditFecha(false)}}}
-                    />
+                      onChange={e=>{if(e.target.value){setFechaPago(r._circ.id,r.id,e.target.value);setEditFecha(false)}}}/>
                     <button onClick={()=>setEditFecha(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer'}}>✕</button>
                   </div>
-                : <button onClick={()=>setEditFecha(true)} style={{background:'none',border:'1px dashed #b8952a',color:'#b8952a',borderRadius:4,padding:'2px 8px',fontSize:10,cursor:'pointer',fontWeight:600}}>+ Asignar fecha de pago</button>
+                : <button onClick={()=>setEditFecha(true)} style={{background:'none',border:'1px dashed #b8952a',color:'#b8952a',borderRadius:4,padding:'2px 8px',fontSize:10,cursor:'pointer',fontWeight:600}}>+ Asignar fecha</button>
               }
             </div>
           )}
         </div>
-        <div style={{textAlign:'right',minWidth:110}}>
-          {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13}}>{fmtMXN(r._mxn)} <span style={{fontSize:10,color:'#8a8278',fontWeight:600}}>MN</span></div>}
-          {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13,color:'#1565a0'}}>{fmtUSD(r._usd)} <span style={{fontSize:10,fontWeight:600}}>USD</span></div>}
-          {r._mxn===0&&r._usd===0&&<span style={{fontSize:10,color:'#ccc'}}>Sin tarifa</span>}
-        </div>
+        <MontoRow r={r}/>
+        {/* Botón claro y diferenciado: fondo azul oscuro, texto blanco */}
         <button onClick={()=>togglePaid(r._circ.id,r.id,false)}
-          style={{background:'#f0faf4',border:'1px solid #95d5b2',color:'#1e5c3a',borderRadius:6,padding:'4px 10px',fontSize:11,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap'}}>
-          ✓ Pagar
+          style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:6,padding:'5px 12px',fontSize:11,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap',letterSpacing:.3}}>
+          Marcar pagado ✓
         </button>
         <button onClick={()=>onGoCircuit(r._circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:6,padding:'4px 8px',fontSize:10,cursor:'pointer',whiteSpace:'nowrap'}}>
           Ver →
@@ -920,6 +932,21 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
       </div>
     )
   }
+
+  // Fila PAGADO — etiqueta verde + botón pequeño gris para revertir
+  const RowPagado = ({r, showDate}) => (
+    <div style={{display:'grid',gridTemplateColumns:'1fr auto auto auto',gap:8,alignItems:'center',padding:'10px 14px',borderBottom:'1px solid #f0ebe3',background:'#f9fef9'}}>
+      <div><InfoRow r={r} showDate={showDate}/></div>
+      <MontoRow r={r}/>
+      <span style={{background:'#d8f3dc',color:'#1b4332',borderRadius:6,padding:'5px 10px',fontSize:11,fontWeight:700,whiteSpace:'nowrap',textAlign:'center'}}>
+        ✅ Liquidado
+      </span>
+      <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'center'}}>
+        <button onClick={()=>onGoCircuit(r._circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:5,padding:'3px 7px',fontSize:10,cursor:'pointer',whiteSpace:'nowrap'}}>Ver →</button>
+        <button onClick={()=>togglePaid(r._circ.id,r.id,true)} style={{background:'none',border:'1px solid #e0d0d0',color:'#b83232',borderRadius:5,padding:'2px 7px',fontSize:9,cursor:'pointer',whiteSpace:'nowrap'}}>↩ Revertir</button>
+      </div>
+    </div>
+  )
 
   return (
     <div>
@@ -1035,82 +1062,116 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCirc
             return (
               <div key={i} onClick={()=>setDiaSeleccionado(esSel?null:k)}
                 style={{
-                  minHeight:85, padding:6, borderRadius:8, cursor:hayPagos?'pointer':'default',
+                  minHeight:100, padding:7, borderRadius:8, cursor:(hayPagos||hayPagadosDia)?'pointer':'default',
                   border: esSel?'2px solid #b8952a': esHoy?'2px solid #52b788':'1px solid #ece7df',
                   background: esSel?'#fffbf0': vencido&&hayPagos?'#fff5f5': hayPagos?'#f0f6ff':'#fafaf8',
                   transition:'all .15s'
                 }}>
-                <div style={{fontSize:13,fontWeight:esHoy?800:700,color:esHoy?'#1e5c3a':vencido&&hayPagos?'#b83232':'#12151f',marginBottom:4}}>{d}</div>
-                {mxnDia>0&&<div style={{fontSize:10,fontWeight:700,color:'#b83232',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.4}}>{fmtMXN(mxnDia)} <span style={{fontSize:8,fontWeight:600}}>MN</span></div>}
-                {usdDia>0&&<div style={{fontSize:10,fontWeight:700,color:'#1565a0',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.4}}>{fmtUSD(usdDia)} <span style={{fontSize:8,fontWeight:600}}>USD</span></div>}
-                {hayPagadosDia&&<div style={{fontSize:9,color:'#52b788',fontWeight:600,marginTop:2}}>✅ {pagadosDia.length} pag.</div>}
-                {hayPagos&&<div style={{fontSize:8,color:vencido?'#b83232':'#8a8278',marginTop:1}}>{pagos.length} pend.</div>}
+                <div style={{fontSize:16,fontWeight:esHoy?800:700,color:esHoy?'#1e5c3a':vencido&&hayPagos?'#b83232':'#12151f',marginBottom:5}}>{d}</div>
+                {mxnDia>0&&<div style={{fontSize:11,fontWeight:700,color:'#b83232',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.5}}>{fmtMXN(mxnDia)} <span style={{fontSize:9,fontWeight:700}}>MN</span></div>}
+                {usdDia>0&&<div style={{fontSize:11,fontWeight:700,color:'#1565a0',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.5}}>{fmtUSD(usdDia)} <span style={{fontSize:9,fontWeight:700}}>USD</span></div>}
+                {hayPagadosDia&&<div style={{fontSize:10,color:'#52b788',fontWeight:700,marginTop:3}}>✅ {pagadosDia.length} pag.</div>}
+                {hayPagos&&<div style={{fontSize:10,color:vencido?'#b83232':'#8a8278',fontWeight:600,marginTop:1}}>{pagos.length} pend.</div>}
               </div>
             )
           })}
         </div>
 
         {/* Panel de día seleccionado */}
-        {diaSeleccionado && serviciosDia.length>0 && (
-          <div style={{marginTop:20,borderTop:'2px solid #ece7df',paddingTop:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-              <div>
-                <h4 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:16,fontWeight:700,marginBottom:2}}>
-                  {new Date(diaSeleccionado+'T12:00:00').toLocaleDateString('es-MX',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
-                </h4>
-                <span style={{fontSize:12,color:'#8a8278'}}>
-                  Total: {sumMXN(serviciosDia)>0&&<strong style={{color:'#12151f'}}>{fmtMXN(sumMXN(serviciosDia))} MN</strong>}{sumMXN(serviciosDia)>0&&sumUSD(serviciosDia)>0&&' · '}{sumUSD(serviciosDia)>0&&<strong style={{color:'#1565a0'}}>{fmtUSD(sumUSD(serviciosDia))} USD</strong>}
-                  {' — '}{serviciosDia.length} pago{serviciosDia.length!==1?'s':''}
-                </span>
-              </div>
-              <button onClick={()=>setDiaSeleccionado(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:18}}>✕</button>
-            </div>
-            {Object.values(porCircuito).map(({circ,rows})=>(
-              <div key={circ.id} style={{background:'#fafaf8',borderRadius:10,border:'1px solid #ece7df',marginBottom:10,overflow:'hidden'}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#12151f',color:'#fff'}}>
-                  <div>
-                    <span style={{fontSize:11,fontWeight:700,color:'#e0c96a'}}>{circ.id.split('-').slice(-3).join('-')}</span>
-                    {circ.info?.tl&&<span style={{fontSize:10,color:'rgba(255,255,255,.5)',marginLeft:8}}>TL: {circ.info.tl}</span>}
+        {diaSeleccionado && (()=>{
+          const pendDia = porFecha[diaSeleccionado] || []
+          const pagDia  = porFechaPagado[diaSeleccionado] || []
+          if(pendDia.length===0 && pagDia.length===0) return null
+          // Agrupar pendientes por circuito
+          const agPend={}; pendDia.forEach(r=>{const k=r._circ.id;if(!agPend[k])agPend[k]={circ:r._circ,rows:[]};agPend[k].rows.push(r)})
+          const agPag={};  pagDia.forEach(r=>{const k=r._circ.id;if(!agPag[k])agPag[k]={circ:r._circ,rows:[]};agPag[k].rows.push(r)})
+          return (
+            <div style={{marginTop:20,borderTop:'2px solid #ece7df',paddingTop:16}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+                <div>
+                  <h4 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:16,fontWeight:700,marginBottom:3}}>
+                    {new Date(diaSeleccionado+'T12:00:00').toLocaleDateString('es-MX',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
+                  </h4>
+                  <div style={{display:'flex',gap:12,fontSize:12}}>
+                    {pendDia.length>0&&<span style={{color:'#b83232',fontWeight:600}}>⏳ {pendDia.length} pendiente{pendDia.length!==1?'s':''} · {fmtMXN(sumMXN(pendDia))} MN{sumUSD(pendDia)>0?' / '+fmtUSD(sumUSD(pendDia))+' USD':''}</span>}
+                    {pagDia.length>0&&<span style={{color:'#1e5c3a',fontWeight:600}}>✅ {pagDia.length} pagado{pagDia.length!==1?'s':''} · {fmtMXN(sumMXN(pagDia))} MN{sumUSD(pagDia)>0?' / '+fmtUSD(sumUSD(pagDia))+' USD':''}</span>}
                   </div>
-                  <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid rgba(255,255,255,.2)',color:'rgba(255,255,255,.7)',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver circuito →</button>
                 </div>
-                {rows.map(r=><RowPago key={r.id} r={r} showDate={false}/>)}
+                <button onClick={()=>setDiaSeleccionado(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:18}}>✕</button>
               </div>
-            ))}
-          </div>
-        )}
+
+              {/* Pendientes del día */}
+              {pendDia.length>0&&<>
+                <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,color:'#b83232',marginBottom:8}}>⏳ Por pagar</div>
+                {Object.values(agPend).map(({circ,rows})=>(
+                  <div key={circ.id} style={{background:'#fafaf8',borderRadius:10,border:'1px solid #ece7df',marginBottom:10,overflow:'hidden'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 12px',background:'#12151f',color:'#fff'}}>
+                      <div>
+                        <span style={{fontSize:11,fontWeight:700,color:'#e0c96a'}}>{circ.id.split('-').slice(-3).join('-')}</span>
+                        {circ.info?.tl&&<span style={{fontSize:10,color:'rgba(255,255,255,.5)',marginLeft:8}}>TL: {circ.info.tl}</span>}
+                      </div>
+                      <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid rgba(255,255,255,.2)',color:'rgba(255,255,255,.7)',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver circuito →</button>
+                    </div>
+                    {rows.map(r=><RowPendiente key={r.id} r={r} showDate={false}/>)}
+                  </div>
+                ))}
+              </>}
+
+              {/* Pagados del día */}
+              {pagDia.length>0&&<>
+                <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,color:'#1e5c3a',marginBottom:8,marginTop:pendDia.length>0?14:0}}>✅ Pagados</div>
+                {Object.values(agPag).map(({circ,rows})=>(
+                  <div key={circ.id} style={{background:'#f9fef9',borderRadius:10,border:'1px solid #d8f3dc',marginBottom:10,overflow:'hidden'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 12px',background:'#1e5c3a',color:'#fff'}}>
+                      <div>
+                        <span style={{fontSize:11,fontWeight:700,color:'#d8f3dc'}}>{circ.id.split('-').slice(-3).join('-')}</span>
+                        {circ.info?.tl&&<span style={{fontSize:10,color:'rgba(255,255,255,.5)',marginLeft:8}}>TL: {circ.info.tl}</span>}
+                      </div>
+                      <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid rgba(255,255,255,.2)',color:'rgba(255,255,255,.7)',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver circuito →</button>
+                    </div>
+                    {rows.map(r=><RowPagado key={r.id} r={r} showDate={false}/>)}
+                  </div>
+                ))}
+              </>}
+            </div>
+          )
+        })()}
       </div>
 
-      {/* Lista filtrable de pendientes */}
+      {/* Lista de servicios */}
       <div style={{background:'#fff',borderRadius:12,boxShadow:'0 2px 16px rgba(18,21,31,.07)',overflow:'hidden'}}>
         <div style={{padding:'16px 20px',borderBottom:'1px solid #ece7df'}}>
-          <h3 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:17,fontWeight:700,marginBottom:12}}>Servicios Pendientes</h3>
+          <h3 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:17,fontWeight:700,marginBottom:12}}>Todos los servicios</h3>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-            <FBtn id="todos"     lbl="Todos"         cnt={conFecha.length}    color="#12151f"/>
-            <FBtn id="semana"    lbl="Esta semana"   cnt={estaSemana.length}  color="#1565a0"/>
-            <FBtn id="vencidos"  lbl="🚨 Vencidos"   cnt={vencidos.length}    color="#b83232"/>
-            <FBtn id="sin_fecha" lbl="⚠️ Sin fecha"  cnt={sinFecha.length}    color="#b8952a"/>
+            <FBtn id="todos"     lbl="Por pagar"      cnt={conFecha.length}    color="#12151f"/>
+            <FBtn id="semana"    lbl="Esta semana"    cnt={estaSemana.length}  color="#1565a0"/>
+            <FBtn id="vencidos"  lbl="🚨 Vencidos"    cnt={vencidos.length}    color="#b83232"/>
+            <FBtn id="sin_fecha" lbl="⚠️ Sin fecha"   cnt={sinFecha.length}    color="#b8952a"/>
+            <FBtn id="pagados"   lbl="✅ Pagados"      cnt={pagados.length}     color="#1e5c3a"/>
           </div>
         </div>
 
         {listaFiltrada.length===0
           ? <div style={{padding:40,textAlign:'center',color:'#8a8278',fontSize:13}}>
-              {filtro==='sin_fecha' ? '✅ Todos los servicios tienen fecha de pago asignada' : '✅ Sin pagos en esta categoría'}
+              {filtro==='sin_fecha' ? '✅ Todos los servicios tienen fecha asignada' : '✅ Sin registros en esta categoría'}
             </div>
           : <div>
               {Object.values(porCircuitoLista).map(({circ,rows})=>(
                 <div key={circ.id}>
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 16px',background:'#f5f1eb',borderBottom:'1px solid #ece7df'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 16px',background: filtro==='pagados'?'#f0faf4':'#f5f1eb',borderBottom:'1px solid #ece7df'}}>
                     <div>
                       <span style={{fontSize:11,fontWeight:700,color:'#12151f'}}>{circ.id.split('-').slice(-3).join('-')}</span>
                       {circ.info?.tl&&<span style={{fontSize:10,color:'#8a8278',marginLeft:8}}>{circ.info.tl}</span>}
                     </div>
                     <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                      {(()=>{const m=rows.reduce((a,r)=>a+r._mxn,0);const u=rows.reduce((a,r)=>a+r._usd,0);return<span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:'#b83232',fontWeight:700}}>{m>0&&fmtMXN(m)+' MN'}{m>0&&u>0&&' · '}{u>0&&fmtUSD(u)+' USD'}</span>})()}
+                      {(()=>{const m=rows.reduce((a,r)=>a+r._mxn,0);const u=rows.reduce((a,r)=>a+r._usd,0);const col=filtro==='pagados'?'#1e5c3a':'#b83232';return<span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:col,fontWeight:700}}>{m>0&&fmtMXN(m)+' MN'}{m>0&&u>0&&' · '}{u>0&&fmtUSD(u)+' USD'}</span>})()}
                       <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver →</button>
                     </div>
                   </div>
-                  {rows.map(r=><RowPago key={r.id} r={r} showDate={filtro!=='sin_fecha'}/>)}
+                  {rows.map(r => filtro==='pagados'
+                    ? <RowPagado   key={r.id} r={r} showDate={true}/>
+                    : <RowPendiente key={r.id} r={r} showDate={filtro!=='sin_fecha'}/>
+                  )}
                 </div>
               ))}
             </div>
