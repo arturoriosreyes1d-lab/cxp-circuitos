@@ -399,6 +399,18 @@ function Dashboard({ session }) {
 
             <SbItem label="📊 Todos los circuitos" count={circuits.length} active={view.type === 'all'} onClick={() => setView({ type: 'all' })} />
             <SbItem label="📈 Estado de Resultados" count="" active={view.type === 'resultados_all'} onClick={() => setView({ type: 'resultados_all' })} />
+            {(() => {
+              const sinFecha = circuits.reduce((acc,c) => acc + c.rows.filter(r=>!r.paid&&!r.fecha_pago).length, 0)
+              const isActive = view.type === 'pagos'
+              return (
+                <div onClick={() => setView({ type: 'pagos' })} style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: isActive ? 'rgba(184,149,42,.15)' : 'transparent', borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
+                  <span style={{ fontSize: 12, fontWeight: isActive ? 700 : 400, color: isActive ? '#fff' : 'rgba(255,255,255,.65)' }}>💳 Pagos</span>
+                  <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+                    {sinFecha > 0 && <span style={{ background: '#b83232', color: '#fff', borderRadius: 9, fontSize: 9, fontWeight: 800, padding: '1px 6px', minWidth: 16, textAlign: 'center' }}>{sinFecha} sin fecha</span>}
+                  </div>
+                </div>
+              )
+            })()}
             <SbDivider />
 
             {sortedMonths.map((mk) => {
@@ -452,6 +464,7 @@ function Dashboard({ session }) {
           {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'resultados_all' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} />}
           {view.type === 'resultados_mes' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} initModo="mes" initMes={view.monthKey} />}
+          {view.type === 'pagos' && <PagosView circuits={circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
           {view.type === 'circuit' && activeCircuit && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows}
@@ -763,6 +776,270 @@ function KPICard({ label, val, sub, cls }) {
 function HBtn({ children, onClick }) {
   return <button onClick={onClick} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,.25)', color: 'rgba(255,255,255,.75)', padding: '5px 13px', borderRadius: 7, cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', fontWeight: 500 }}>{children}</button>
 }
+
+// ═══════════════════════════════════════════════
+//  PAGOS VIEW
+// ═══════════════════════════════════════════════
+function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, onGoCircuit }) {
+  const today = new Date(); today.setHours(0,0,0,0)
+  const [mesVista, setMesVista] = useState(() => { const d=new Date(); return {y:d.getFullYear(),m:d.getMonth()} })
+  const [diaSeleccionado, setDiaSeleccionado] = useState(null) // 'YYYY-MM-DD'
+  const [filtro, setFiltro] = useState('todos') // todos | semana | vencidos | sin_fecha
+
+  // Recopilar TODOS los servicios pendientes de pago con info del circuito
+  const pendientes = []
+  circuits.forEach(circ => {
+    circ.rows.forEach(r => {
+      if (r.paid) return
+      const { mxn, usd } = getImporte(r, circ.info, tarifario)
+      pendientes.push({ ...r, _circ: circ, _mxn: mxn, _usd: usd })
+    })
+  })
+
+  // Clasificar
+  const inicioSemana = new Date(today); inicioSemana.setDate(today.getDate() - today.getDay() + 1)
+  const finSemana = new Date(inicioSemana); finSemana.setDate(inicioSemana.getDate() + 6)
+  const sinFecha   = pendientes.filter(r => !r.fecha_pago)
+  const conFecha   = pendientes.filter(r => !!r.fecha_pago)
+  const vencidos   = conFecha.filter(r => { const d=new Date(r.fecha_pago); d.setHours(0,0,0,0); return d < today })
+  const estaSemana = conFecha.filter(r => { const d=new Date(r.fecha_pago); d.setHours(0,0,0,0); return d >= inicioSemana && d <= finSemana })
+
+  // KPI totals
+  const sumMXN = arr => arr.reduce((a,r)=>a+r._mxn,0)
+  const sumUSD = arr => arr.reduce((a,r)=>a+r._usd,0)
+  const totMXN = sumMXN(conFecha); const totUSD = sumUSD(conFecha)
+  const vMXN   = sumMXN(vencidos); const vUSD   = sumUSD(vencidos)
+  const sMXN   = sumMXN(sinFecha); const sUSD   = sumUSD(sinFecha)
+  const wMXN   = sumMXN(estaSemana); const wUSD  = sumUSD(estaSemana)
+
+  // Mapa fecha -> servicios (para calendario)
+  const porFecha = {}
+  conFecha.forEach(r => {
+    const k = r.fecha_pago
+    if (!porFecha[k]) porFecha[k] = []
+    porFecha[k].push(r)
+  })
+
+  // Días del mes en vista
+  const primerDia = new Date(mesVista.y, mesVista.m, 1)
+  const ultimoDia = new Date(mesVista.y, mesVista.m+1, 0)
+  const offsetInicio = (primerDia.getDay()+6)%7 // Lunes=0
+  const diasEnMes = ultimoDia.getDate()
+  const celdas = []
+  for (let i=0; i<offsetInicio; i++) celdas.push(null)
+  for (let d=1; d<=diasEnMes; d++) celdas.push(d)
+  while (celdas.length % 7 !== 0) celdas.push(null)
+
+  const diaKey = (d) => {
+    const y = mesVista.y, m = String(mesVista.m+1).padStart(2,'0'), dd = String(d).padStart(2,'0')
+    return y+'-'+m+'-'+dd
+  }
+
+  const DIAS_SEM = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom']
+  const MESES_NOM = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+
+  // Servicios del día seleccionado agrupados por circuito
+  const serviciosDia = diaSeleccionado ? (porFecha[diaSeleccionado] || []) : []
+  const porCircuito = {}
+  serviciosDia.forEach(r => {
+    const k = r._circ.id
+    if (!porCircuito[k]) porCircuito[k] = { circ: r._circ, rows: [] }
+    porCircuito[k].rows.push(r)
+  })
+
+  // Lista filtrada para sección pendientes
+  const listaFiltrada = filtro==='sin_fecha' ? sinFecha
+    : filtro==='vencidos' ? vencidos
+    : filtro==='semana' ? estaSemana
+    : conFecha.sort((a,b)=>a.fecha_pago?.localeCompare(b.fecha_pago||'')||0)
+
+  const porCircuitoLista = {}
+  listaFiltrada.forEach(r => {
+    const k = r._circ.id
+    if (!porCircuitoLista[k]) porCircuitoLista[k] = { circ: r._circ, rows: [] }
+    porCircuitoLista[k].rows.push(r)
+  })
+
+  const FBtn = ({id,lbl,cnt,color}) => (
+    <button onClick={()=>setFiltro(id)} style={{padding:'5px 12px',borderRadius:14,border:'none',cursor:'pointer',fontSize:11,fontWeight:filtro===id?700:500,fontFamily:'inherit',background:filtro===id?(color||'#12151f'):'#f5f1eb',color:filtro===id?'#fff':'#8a8278',display:'flex',alignItems:'center',gap:5}}>
+      {lbl}{cnt>0&&<span style={{background:filtro===id?'rgba(255,255,255,.25)':'#d8d2c8',borderRadius:8,fontSize:9,padding:'1px 5px',fontWeight:800}}>{cnt}</span>}
+    </button>
+  )
+
+  const RowPago = ({r, showDate}) => {
+    const [editFecha, setEditFecha] = useState(false)
+    return (
+      <div style={{display:'grid',gridTemplateColumns:'1fr auto auto auto',gap:8,alignItems:'center',padding:'8px 12px',borderBottom:'1px solid #f0ebe3',background:r._mxn+r._usd===0?'#fffbf0':'transparent'}}>
+        <div>
+          <div style={{fontWeight:600,fontSize:12}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>} <span style={{fontWeight:400,color:'#8a8278',fontSize:11}}>· {r.servicio||'—'}</span></div>
+          <div style={{display:'flex',gap:6,marginTop:2,flexWrap:'wrap',alignItems:'center'}}>
+            <Badge text={r.clasificacion}/>
+            {showDate && r.fecha_pago && <span style={{fontSize:10,color:'#1565a0',fontWeight:600}}>📅 {r.fecha_pago}</span>}
+            {r.visto_bueno_auditoria ? <span style={{fontSize:9,color:'#1e5c3a',fontWeight:700}}>✅ VB Aud.</span> : <span style={{fontSize:9,color:'#b83232',fontWeight:600}}>⏳ VB Aud.</span>}
+            {r.visto_bueno_pago ? <span style={{fontSize:9,color:'#1e5c3a',fontWeight:700}}>✅ VB Pago</span> : <span style={{fontSize:9,color:'#b83232',fontWeight:600}}>⏳ VB Pago</span>}
+            {r.folio_factura && <span style={{fontSize:9,color:'#8a8278'}}>Folio: {r.folio_factura}</span>}
+          </div>
+          {!r.fecha_pago && (
+            <div style={{marginTop:4}}>
+              {editFecha
+                ? <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                    <input type="date" autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 6px',fontSize:11,fontFamily:'inherit'}}
+                      onChange={e=>{if(e.target.value){setFechaPago(r._circ.id,r.id,e.target.value);setEditFecha(false)}}}
+                    />
+                    <button onClick={()=>setEditFecha(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer'}}>✕</button>
+                  </div>
+                : <button onClick={()=>setEditFecha(true)} style={{background:'none',border:'1px dashed #b8952a',color:'#b8952a',borderRadius:4,padding:'2px 8px',fontSize:10,cursor:'pointer',fontWeight:600}}>+ Asignar fecha de pago</button>
+              }
+            </div>
+          )}
+        </div>
+        <div style={{textAlign:'right',minWidth:90}}>
+          {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12}}>{fmtMXN(r._mxn)}</div>}
+          {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,color:'#1565a0'}}>{fmtUSD(r._usd)}</div>}
+          {r._mxn===0&&r._usd===0&&<span style={{fontSize:10,color:'#ccc'}}>Sin tarifa</span>}
+        </div>
+        <button onClick={()=>togglePaid(r._circ.id,r.id,false)}
+          style={{background:'#f0faf4',border:'1px solid #95d5b2',color:'#1e5c3a',borderRadius:6,padding:'4px 10px',fontSize:11,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap'}}>
+          ✓ Pagar
+        </button>
+        <button onClick={()=>onGoCircuit(r._circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:6,padding:'4px 8px',fontSize:10,cursor:'pointer',whiteSpace:'nowrap'}}>
+          Ver →
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,marginBottom:4}}>💳 Programación de Pagos</h2>
+      <p style={{fontSize:12,color:'#8a8278',marginBottom:20}}>Vista centralizada de todos los servicios pendientes de pago en todos los circuitos.</p>
+
+      {/* KPIs */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:12,marginBottom:24}}>
+        {[
+          {label:'⏳ Total pendiente MXN', val:fmtMXN(totMXN), sub:fmtUSD(totUSD)+' USD', cls:'rust'},
+          {label:'📅 Esta semana MXN', val:fmtMXN(wMXN), sub:fmtUSD(wUSD)+' USD', cls:'sky'},
+          {label:'🚨 Vencidos MXN', val:fmtMXN(vMXN), sub:fmtUSD(vUSD)+' USD', cls:'rust'},
+          {label:'⚠️ Sin fecha asignada', val:sinFecha.length+' servicios', sub:fmtMXN(sMXN)+(sUSD>0?' · '+fmtUSD(sUSD)+' USD':''), cls:'gold'},
+        ].map((k,i)=><KPICard key={i} {...k}/>)}
+      </div>
+
+      {/* Calendario */}
+      <div style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:24}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+          <h3 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:17,fontWeight:700}}>
+            {MESES_NOM[mesVista.m]} {mesVista.y}
+          </h3>
+          <div style={{display:'flex',gap:6}}>
+            <button onClick={()=>setMesVista(p=>{const d=new Date(p.y,p.m-1,1);return{y:d.getFullYear(),m:d.getMonth()}})}
+              style={{background:'#f5f1eb',border:'none',borderRadius:6,padding:'4px 10px',cursor:'pointer',fontSize:14}}>‹</button>
+            <button onClick={()=>setMesVista(p=>{const d=new Date(p.y,p.m+1,1);return{y:d.getFullYear(),m:d.getMonth()}})}
+              style={{background:'#f5f1eb',border:'none',borderRadius:6,padding:'4px 10px',cursor:'pointer',fontSize:14}}>›</button>
+          </div>
+        </div>
+
+        {/* Grid del calendario */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4}}>
+          {DIAS_SEM.map(d=>(
+            <div key={d} style={{textAlign:'center',fontSize:10,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.6,padding:'4px 0'}}>{d}</div>
+          ))}
+          {celdas.map((d,i)=>{
+            if (!d) return <div key={i}/>
+            const k = diaKey(d)
+            const pagos = porFecha[k] || []
+            const mxnDia = pagos.reduce((a,r)=>a+r._mxn,0)
+            const usdDia = pagos.reduce((a,r)=>a+r._usd,0)
+            const esHoy = k === today.toISOString().slice(0,10)
+            const esSel = k === diaSeleccionado
+            const vencido = pagos.length>0 && new Date(k)<today
+            const hayPagos = pagos.length > 0
+            return (
+              <div key={i} onClick={()=>setDiaSeleccionado(esSel?null:k)}
+                style={{
+                  minHeight:70, padding:5, borderRadius:8, cursor:hayPagos?'pointer':'default',
+                  border: esSel?'2px solid #b8952a': esHoy?'2px solid #52b788':'1px solid #ece7df',
+                  background: esSel?'#fffbf0': vencido&&hayPagos?'#fff5f5': hayPagos?'#f0f6ff':'#fafaf8',
+                  transition:'all .15s'
+                }}>
+                <div style={{fontSize:11,fontWeight:esHoy?800:600,color:esHoy?'#1e5c3a':vencido&&hayPagos?'#b83232':'#12151f',marginBottom:3}}>{d}</div>
+                {mxnDia>0&&<div style={{fontSize:9,fontWeight:700,color:'#12151f',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.3}}>{fmtMXN(mxnDia)}</div>}
+                {usdDia>0&&<div style={{fontSize:9,fontWeight:700,color:'#1565a0',fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.3}}>{fmtUSD(usdDia)}</div>}
+                {hayPagos&&<div style={{fontSize:8,color:vencido?'#b83232':'#8a8278',marginTop:2}}>{pagos.length} pago{pagos.length!==1?'s':''}</div>}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Panel de día seleccionado */}
+        {diaSeleccionado && serviciosDia.length>0 && (
+          <div style={{marginTop:20,borderTop:'2px solid #ece7df',paddingTop:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+              <div>
+                <h4 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:16,fontWeight:700,marginBottom:2}}>
+                  {new Date(diaSeleccionado+'T12:00:00').toLocaleDateString('es-MX',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
+                </h4>
+                <span style={{fontSize:12,color:'#8a8278'}}>
+                  Total: {sumMXN(serviciosDia)>0&&<strong style={{color:'#12151f'}}>{fmtMXN(sumMXN(serviciosDia))} MN</strong>}{sumMXN(serviciosDia)>0&&sumUSD(serviciosDia)>0&&' · '}{sumUSD(serviciosDia)>0&&<strong style={{color:'#1565a0'}}>{fmtUSD(sumUSD(serviciosDia))} USD</strong>}
+                  {' — '}{serviciosDia.length} pago{serviciosDia.length!==1?'s':''}
+                </span>
+              </div>
+              <button onClick={()=>setDiaSeleccionado(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:18}}>✕</button>
+            </div>
+            {Object.values(porCircuito).map(({circ,rows})=>(
+              <div key={circ.id} style={{background:'#fafaf8',borderRadius:10,border:'1px solid #ece7df',marginBottom:10,overflow:'hidden'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#12151f',color:'#fff'}}>
+                  <div>
+                    <span style={{fontSize:11,fontWeight:700,color:'#e0c96a'}}>{circ.id.split('-').slice(-3).join('-')}</span>
+                    {circ.info?.tl&&<span style={{fontSize:10,color:'rgba(255,255,255,.5)',marginLeft:8}}>TL: {circ.info.tl}</span>}
+                  </div>
+                  <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid rgba(255,255,255,.2)',color:'rgba(255,255,255,.7)',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver circuito →</button>
+                </div>
+                {rows.map(r=><RowPago key={r.id} r={r} showDate={false}/>)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Lista filtrable de pendientes */}
+      <div style={{background:'#fff',borderRadius:12,boxShadow:'0 2px 16px rgba(18,21,31,.07)',overflow:'hidden'}}>
+        <div style={{padding:'16px 20px',borderBottom:'1px solid #ece7df'}}>
+          <h3 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:17,fontWeight:700,marginBottom:12}}>Servicios Pendientes</h3>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            <FBtn id="todos"     lbl="Todos"         cnt={conFecha.length}    color="#12151f"/>
+            <FBtn id="semana"    lbl="Esta semana"   cnt={estaSemana.length}  color="#1565a0"/>
+            <FBtn id="vencidos"  lbl="🚨 Vencidos"   cnt={vencidos.length}    color="#b83232"/>
+            <FBtn id="sin_fecha" lbl="⚠️ Sin fecha"  cnt={sinFecha.length}    color="#b8952a"/>
+          </div>
+        </div>
+
+        {listaFiltrada.length===0
+          ? <div style={{padding:40,textAlign:'center',color:'#8a8278',fontSize:13}}>
+              {filtro==='sin_fecha' ? '✅ Todos los servicios tienen fecha de pago asignada' : '✅ Sin pagos en esta categoría'}
+            </div>
+          : <div>
+              {Object.values(porCircuitoLista).map(({circ,rows})=>(
+                <div key={circ.id}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 16px',background:'#f5f1eb',borderBottom:'1px solid #ece7df'}}>
+                    <div>
+                      <span style={{fontSize:11,fontWeight:700,color:'#12151f'}}>{circ.id.split('-').slice(-3).join('-')}</span>
+                      {circ.info?.tl&&<span style={{fontSize:10,color:'#8a8278',marginLeft:8}}>{circ.info.tl}</span>}
+                    </div>
+                    <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                      {(()=>{const m=rows.reduce((a,r)=>a+r._mxn,0);const u=rows.reduce((a,r)=>a+r._usd,0);return<span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:'#b83232',fontWeight:700}}>{m>0&&fmtMXN(m)+' MN'}{m>0&&u>0&&' · '}{u>0&&fmtUSD(u)+' USD'}</span>})()}
+                      <button onClick={()=>onGoCircuit(circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:5,padding:'2px 8px',fontSize:10,cursor:'pointer'}}>Ver →</button>
+                    </div>
+                  </div>
+                  {rows.map(r=><RowPago key={r.id} r={r} showDate={filtro!=='sin_fecha'}/>)}
+                </div>
+              ))}
+            </div>
+        }
+      </div>
+    </div>
+  )
+}
+
 function SbItem({ label, count, active, onClick, indent }) {
   return (
     <div onClick={onClick} style={{ padding: `6px ${indent ? 24 : 16}px`, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: `3px solid ${active ? '#e0c96a' : 'transparent'}`, background: active ? 'rgba(184,149,42,.1)' : 'transparent', transition: 'all .15s' }}>
