@@ -351,6 +351,16 @@ function Dashboard({ session }) {
 
   const monthMap = {}
   circuits.forEach((c) => { const mk = c.month_key || 'Sin mes'; if (!monthMap[mk]) monthMap[mk] = []; monthMap[mk].push(c) })
+  // Ordenar circuitos dentro de cada mes por fecha_inicio ascendente
+  Object.keys(monthMap).forEach(mk => {
+    monthMap[mk].sort((a, b) => {
+      const fa = a.info?.fecha_inicio ? new Date(a.info.fecha_inicio) : null
+      const fb = b.info?.fecha_inicio ? new Date(b.info.fecha_inicio) : null
+      if (!fa && !fb) return (a.id || '').localeCompare(b.id || '')
+      if (!fa) return 1; if (!fb) return -1
+      return fa - fb
+    })
+  })
   const sortedMonths = Object.keys(monthMap).sort((a, b) => a.localeCompare(b))
 
   const filteredRows = (rows) => rows.filter((r) => {
