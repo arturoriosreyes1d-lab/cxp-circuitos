@@ -1032,12 +1032,12 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveFact
                         </div>
                       </div>
                       {/* Tabla de servicios */}
-                      <div style={{border:'1px solid #ece7df',borderTop:'none',borderRadius:'0 0 8px 8px',overflow:'hidden'}}>
-                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                      <div style={{border:'1px solid #ece7df',borderTop:'none',borderRadius:'0 0 8px 8px',overflowX:'auto'}}>
+                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:1100}}>
                           <thead>
                             <tr style={{background:'#f5f1eb'}}>
-                              {['Circuito','TL','Fecha svc','Servicio','Importe','Folio Factura','Fecha Pago','VB Aud.','VB Pago','Estatus',''].map(h=>(
-                                <th key={h} style={{padding:'7px 10px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#8a8278',whiteSpace:'nowrap'}}>{h}</th>
+                              {['Circuito','Fecha svc','Servicio','PAX','HAB','Importe','Fact. Rec.','Folio','Fecha Pago','VB Aud.','VB Pago','Estatus',''].map(h=>(
+                                <th key={h} style={{padding:'7px 8px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#8a8278',whiteSpace:'nowrap'}}>{h}</th>
                               ))}
                             </tr>
                           </thead>
@@ -1045,59 +1045,74 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveFact
                             {filas.map(r=>{
                               const fi = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
                               const fStr = fi ? fi.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—'
+                              const pax = r._circ.info?.pax || '—'
+                              const habs = ((parseInt(r._circ.info?.habs_single)||0)+(parseInt(r._circ.info?.habs_doble)||0)) || '—'
+                              const [editImp, setEditImp] = [false, ()=>{}] // placeholder — handled via FilaImporte
                               return (
                                 <tr key={r.id} style={{borderBottom:'1px solid #f0ebe3',background:r.paid?'#f9fef9':'#fff'}}>
-                                  <td style={{padding:'7px 10px',fontWeight:600,fontSize:11,whiteSpace:'nowrap'}}>
-                                    <div style={{color:'#b8952a'}}>{r._circ.id.split('-').slice(-4).join('-')}</div>
-                                    {r._circ.info?.tl&&<div style={{fontSize:9,color:'#8a8278'}}>{r._circ.info.tl}</div>}
+                                  {/* Circuito completo */}
+                                  <td style={{padding:'6px 8px',fontWeight:700,fontSize:10,whiteSpace:'nowrap',maxWidth:220}}>
+                                    <div style={{color:'#b8952a',fontSize:10,lineHeight:1.3}}>{r._circ.id}</div>
                                   </td>
-                                  <td style={{padding:'7px 10px',fontSize:11,color:'#8a8278'}}>{r._circ.info?.tl||'—'}</td>
-                                  <td style={{padding:'7px 10px',fontSize:11,whiteSpace:'nowrap'}}>{fStr}</td>
-                                  <td style={{padding:'7px 10px',fontSize:11}}>{r.servicio||'—'}</td>
-                                  <td style={{padding:'7px 10px',whiteSpace:'nowrap'}}>
-                                    {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12}}>{fmtMXN(r._mxn)} <span style={{fontSize:9,color:'#8a8278'}}>MN</span></div>}
-                                    {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,color:'#1565a0'}}>{fmtUSD(r._usd)} <span style={{fontSize:9}}>USD</span></div>}
+                                  {/* Fecha servicio */}
+                                  <td style={{padding:'6px 8px',fontSize:11,whiteSpace:'nowrap'}}>{fStr}</td>
+                                  {/* Servicio */}
+                                  <td style={{padding:'6px 8px',fontSize:11,maxWidth:130}}>{r.servicio||'—'}</td>
+                                  {/* PAX */}
+                                  <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{pax}</td>
+                                  {/* HAB */}
+                                  <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{habs}</td>
+                                  {/* Importe editable */}
+                                  <td style={{padding:'4px 6px',minWidth:130}}>
+                                    <FilaImporte r={r} saveImporte={saveImporte} tarifario={tarifario}/>
                                   </td>
-                                  {/* Folio editable */}
-                                  <td style={{padding:'4px 8px',minWidth:110}}>
+                                  {/* Factura Recibida */}
+                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
+                                    <button onClick={()=>saveFactura(r._circ.id,r.id,'factura_recibida',!r.factura_recibida)}
+                                      style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.factura_recibida?'#d8f3dc':'#ffe0e0',color:r.factura_recibida?'#1b4332':'#7f1d1d',whiteSpace:'nowrap'}}>
+                                      {r.factura_recibida?'✅':'❌'}
+                                    </button>
+                                  </td>
+                                  {/* Folio — más compacto */}
+                                  <td style={{padding:'4px 6px',minWidth:80}}>
                                     <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…"
                                       onBlur={e=>{if(e.target.value!==(r.folio_factura||''))saveFactura(r._circ.id,r.id,'folio_factura',e.target.value)}}
-                                      style={{width:'100%',fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 6px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'#f5f1eb',outline:'none'}}
+                                      style={{width:78,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'#f5f1eb',outline:'none'}}
                                       onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
                                       onBlurCapture={e=>{e.target.style.borderColor='transparent';if(!r.folio_factura)e.target.style.background='#f5f1eb'}}/>
                                   </td>
-                                  {/* Fecha pago editable */}
-                                  <td style={{padding:'4px 8px',minWidth:120}}>
+                                  {/* Fecha pago */}
+                                  <td style={{padding:'4px 6px',minWidth:118}}>
                                     <input type="date" defaultValue={r.fecha_pago||''}
                                       onBlur={e=>{if(e.target.value!==(r.fecha_pago||''))setFechaPago(r._circ.id,r.id,e.target.value)}}
-                                      style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 6px',fontSize:11,fontFamily:'inherit',width:115,background:'#fff'}}/>
+                                      style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 5px',fontSize:11,fontFamily:'inherit',width:115,background:'#fff'}}/>
                                   </td>
                                   {/* VB Auditoria */}
-                                  <td style={{padding:'4px 8px',textAlign:'center'}}>
+                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
                                     <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_auditoria',!r.visto_bueno_auditoria)}
-                                      style={{padding:'2px 8px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_auditoria?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_auditoria?'#1b4332':'#7f1d1d'}}>
+                                      style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_auditoria?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_auditoria?'#1b4332':'#7f1d1d'}}>
                                       {r.visto_bueno_auditoria?'✅ Sí':'❌ No'}
                                     </button>
                                   </td>
                                   {/* VB Pago */}
-                                  <td style={{padding:'4px 8px',textAlign:'center'}}>
+                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
                                     <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_pago',!r.visto_bueno_pago)}
-                                      style={{padding:'2px 8px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_pago?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_pago?'#1b4332':'#7f1d1d'}}>
+                                      style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_pago?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_pago?'#1b4332':'#7f1d1d'}}>
                                       {r.visto_bueno_pago?'✅ Sí':'❌ No'}
                                     </button>
                                   </td>
                                   {/* Estatus */}
-                                  <td style={{padding:'4px 8px',textAlign:'center'}}>
+                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
                                     {r.paid
-                                      ? <span style={{background:'#d8f3dc',color:'#1b4332',borderRadius:8,padding:'3px 8px',fontSize:10,fontWeight:700}}>✅ Pagado</span>
+                                      ? <span style={{background:'#d8f3dc',color:'#1b4332',borderRadius:8,padding:'3px 7px',fontSize:10,fontWeight:700,whiteSpace:'nowrap'}}>✅ Pagado</span>
                                       : <button onClick={()=>togglePaid(r._circ.id,r.id,false)}
-                                          style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:6,padding:'3px 9px',fontSize:10,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap'}}>
+                                          style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:6,padding:'3px 8px',fontSize:10,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap'}}>
                                           Marcar pagado ✓
                                         </button>
                                     }
                                   </td>
-                                  <td style={{padding:'4px 8px'}}>
-                                    <button onClick={()=>onGoCircuit(r._circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:5,padding:'2px 7px',fontSize:10,cursor:'pointer',whiteSpace:'nowrap'}}>Ver →</button>
+                                  <td style={{padding:'4px 6px'}}>
+                                    <button onClick={()=>onGoCircuit(r._circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:5,padding:'2px 6px',fontSize:10,cursor:'pointer',whiteSpace:'nowrap'}}>Ver →</button>
                                   </td>
                                 </tr>
                               )
@@ -2322,3 +2337,52 @@ function TimelinePanel({ circ, tarifario }) {
     </div>
   )
 }
+
+// ── FilaImporte — importe editable en tabla de búsqueda de Pagos ──
+function FilaImporte({ r, saveImporte, tarifario }) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState('')
+  const [mon, setMon] = useState('MXN')
+
+  const startEdit = () => {
+    setEditing(true)
+    if (r.precio_custom != null && r.precio_custom > 0) {
+      setVal(r.precio_custom); setMon(r.moneda_custom || 'MXN')
+    } else {
+      setVal(r._mxn > 0 ? r._mxn : r._usd); setMon(r._usd > 0 ? 'USD' : 'MXN')
+    }
+  }
+  const confirm = () => {
+    saveImporte(r._circ.id, r.id, parseFloat(val) || 0, mon)
+    setEditing(false)
+  }
+  const custom = r.precio_custom != null && r.precio_custom > 0
+
+  if (editing) return (
+    <div style={{display:'flex',flexDirection:'column',gap:3}}>
+      <input type="number" autoFocus value={val} onChange={e=>setVal(e.target.value)}
+        style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:90,outline:'none'}}/>
+      <div style={{display:'flex',gap:3,alignItems:'center'}}>
+        <select value={mon} onChange={e=>setMon(e.target.value)}
+          style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 4px',fontSize:11,fontFamily:'inherit',background:'#fff'}}>
+          <option>MXN</option><option>USD</option>
+        </select>
+        <button onClick={confirm} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 6px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+        <button onClick={()=>setEditing(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:13}}>✕</button>
+      </div>
+    </div>
+  )
+
+  return (
+    <div onClick={startEdit} style={{cursor:'pointer',minWidth:110}}>
+      {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,borderBottom:'1px dotted '+(custom?'#b8952a':'#ddd'),color:custom?'#b8952a':'#12151f',display:'inline-block'}}>
+        {fmtMXN(r._mxn)} <span style={{fontSize:9,color:'#8a8278'}}>MN</span>{custom&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}
+      </div>}
+      {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,borderBottom:'1px dotted '+(custom?'#b8952a':'#ddd'),color:custom?'#b8952a':'#1565a0',display:'inline-block'}}>
+        {fmtUSD(r._usd)} <span style={{fontSize:9}}>USD</span>{custom&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}
+      </div>}
+      {r._mxn===0&&r._usd===0&&<span style={{fontSize:10,color:'#ccc',borderBottom:'1px dotted #ddd'}}>— ✎</span>}
+    </div>
+  )
+}
+
