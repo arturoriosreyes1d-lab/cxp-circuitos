@@ -494,7 +494,7 @@ function Dashboard({ session }) {
           {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'resultados_all' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} />}
           {view.type === 'resultados_mes' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} initModo="mes" initMes={view.monthKey} />}
-          {view.type === 'pagos' && <PagosView circuits={circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
+          {view.type === 'pagos' && <PagosView circuits={circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
           {view.type === 'circuit' && activeCircuit && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows}
@@ -810,7 +810,7 @@ function HBtn({ children, onClick }) {
 // ═══════════════════════════════════════════════
 //  PAGOS VIEW
 // ═══════════════════════════════════════════════
-function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveFactura, saveRowField, onGoCircuit }) {
+function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveImporte, saveFactura, saveRowField, onGoCircuit }) {
   const today = new Date(); today.setHours(0,0,0,0)
   const [mesVista, setMesVista] = useState(() => { const d=new Date(); return {y:d.getFullYear(),m:d.getMonth()} })
   const [diaSeleccionado, setDiaSeleccionado] = useState(null) // 'YYYY-MM-DD'
@@ -1047,7 +1047,6 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveFact
                               const fStr = fi ? fi.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—'
                               const pax = r._circ.info?.pax || '—'
                               const habs = ((parseInt(r._circ.info?.habs_single)||0)+(parseInt(r._circ.info?.habs_doble)||0)) || '—'
-                              const [editImp, setEditImp] = [false, ()=>{}] // placeholder — handled via FilaImporte
                               return (
                                 <tr key={r.id} style={{borderBottom:'1px solid #f0ebe3',background:r.paid?'#f9fef9':'#fff'}}>
                                   {/* Circuito completo */}
