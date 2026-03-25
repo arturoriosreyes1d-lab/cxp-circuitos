@@ -1006,122 +1006,22 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveImpo
         </div>
         {busqProv.length>=2&&busqProv.length<2&&<div style={{fontSize:11,color:'#8a8278',marginTop:6}}>Escribe al menos 2 caracteres…</div>}
 
-        {/* Resultados de búsqueda */}
+
+        {/* Resultados de búsqueda — agrupados por mes colapsables */}
         {qProv.length >= 2 && (
           <div style={{marginTop:14}}>
             {resultadosProv.length === 0
               ? <div style={{fontSize:12,color:'#8a8278',padding:'8px 0'}}>Sin resultados para "{busqProv}"</div>
-              : provNombres.map(provNombre => {
-                  const filas = resultadosProv.filter(r => r.prov_general === provNombre)
-                  const pendFil = filas.filter(r=>!r.paid), pagFil = filas.filter(r=>r.paid)
-                  const tMXN = filas.reduce((a,r)=>a+r._mxn,0), tUSD = filas.reduce((a,r)=>a+r._usd,0)
-                  // Agrupar por circuito
-                  const agCirc = {}
-                  filas.forEach(r=>{ const k=r._circ.id; if(!agCirc[k]) agCirc[k]={circ:r._circ,rows:[]}; agCirc[k].rows.push(r) })
-                  return (
-                    <div key={provNombre} style={{marginBottom:16}}>
-                      {/* Cabecera proveedor */}
-                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',background:'#12151f',borderRadius:'8px 8px 0 0',color:'#fff'}}>
-                        <div style={{display:'flex',alignItems:'center',gap:10}}>
-                          <span style={{fontSize:14,fontWeight:700,color:'#e0c96a'}}>{provNombre}</span>
-                          <span style={{fontSize:10,color:'rgba(255,255,255,.45)'}}>{filas.length} servicio{filas.length!==1?'s':''} en {Object.keys(agCirc).length} circuito{Object.keys(agCirc).length!==1?'s':''}</span>
-                        </div>
-                        <div style={{display:'flex',gap:10,alignItems:'center'}}>
-                          {pendFil.length>0&&<span style={{fontSize:11,color:'#fca5a5',fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>⏳ {fmtMXN(pendFil.reduce((a,r)=>a+r._mxn,0))+' MN'}{pendFil.reduce((a,r)=>a+r._usd,0)>0&&' · '+fmtUSD(pendFil.reduce((a,r)=>a+r._usd,0))+' USD'}</span>}
-                          {pagFil.length>0&&<span style={{fontSize:11,color:'#86efac',fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>✅ {fmtMXN(pagFil.reduce((a,r)=>a+r._mxn,0))+' MN'}{pagFil.reduce((a,r)=>a+r._usd,0)>0&&' · '+fmtUSD(pagFil.reduce((a,r)=>a+r._usd,0))+' USD'}</span>}
-                        </div>
-                      </div>
-                      {/* Tabla de servicios */}
-                      <div style={{border:'1px solid #ece7df',borderTop:'none',borderRadius:'0 0 8px 8px',overflowX:'auto'}}>
-                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:1100}}>
-                          <thead>
-                            <tr style={{background:'#f5f1eb'}}>
-                              {['Circuito','Fecha svc','Servicio','PAX','HAB','Importe','Fact. Rec.','Folio','Fecha Pago','VB Aud.','VB Pago','Estatus',''].map(h=>(
-                                <th key={h} style={{padding:'7px 8px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#8a8278',whiteSpace:'nowrap'}}>{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {filas.map(r=>{
-                              const fi = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
-                              const fStr = fi ? fi.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—'
-                              const pax = r._circ.info?.pax || '—'
-                              const habs = ((parseInt(r._circ.info?.habs_single)||0)+(parseInt(r._circ.info?.habs_doble)||0)) || '—'
-                              return (
-                                <tr key={r.id} style={{borderBottom:'1px solid #f0ebe3',background:r.paid?'#f9fef9':'#fff'}}>
-                                  {/* Circuito completo */}
-                                  <td style={{padding:'6px 8px',fontWeight:700,fontSize:10,whiteSpace:'nowrap',maxWidth:220}}>
-                                    <div style={{color:'#b8952a',fontSize:10,lineHeight:1.3}}>{r._circ.id}</div>
-                                  </td>
-                                  {/* Fecha servicio */}
-                                  <td style={{padding:'6px 8px',fontSize:11,whiteSpace:'nowrap'}}>{fStr}</td>
-                                  {/* Servicio */}
-                                  <td style={{padding:'6px 8px',fontSize:11,maxWidth:130}}>{r.servicio||'—'}</td>
-                                  {/* PAX */}
-                                  <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{pax}</td>
-                                  {/* HAB */}
-                                  <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{habs}</td>
-                                  {/* Importe editable */}
-                                  <td style={{padding:'4px 6px',minWidth:130}}>
-                                    <FilaImporte r={r} saveImporte={saveImporte} tarifario={tarifario}/>
-                                  </td>
-                                  {/* Factura Recibida */}
-                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
-                                    <button onClick={()=>saveFactura(r._circ.id,r.id,'factura_recibida',!r.factura_recibida)}
-                                      style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.factura_recibida?'#d8f3dc':'#ffe0e0',color:r.factura_recibida?'#1b4332':'#7f1d1d',whiteSpace:'nowrap'}}>
-                                      {r.factura_recibida?'✅':'❌'}
-                                    </button>
-                                  </td>
-                                  {/* Folio — más compacto */}
-                                  <td style={{padding:'4px 6px',minWidth:80}}>
-                                    <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…"
-                                      onBlur={e=>{if(e.target.value!==(r.folio_factura||''))saveFactura(r._circ.id,r.id,'folio_factura',e.target.value)}}
-                                      style={{width:78,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'#f5f1eb',outline:'none'}}
-                                      onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
-                                      onBlurCapture={e=>{e.target.style.borderColor='transparent';if(!r.folio_factura)e.target.style.background='#f5f1eb'}}/>
-                                  </td>
-                                  {/* Fecha pago */}
-                                  <td style={{padding:'4px 6px',minWidth:118}}>
-                                    <input type="date" defaultValue={r.fecha_pago||''}
-                                      onBlur={e=>{if(e.target.value!==(r.fecha_pago||''))setFechaPago(r._circ.id,r.id,e.target.value)}}
-                                      style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 5px',fontSize:11,fontFamily:'inherit',width:115,background:'#fff'}}/>
-                                  </td>
-                                  {/* VB Auditoria */}
-                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
-                                    <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_auditoria',!r.visto_bueno_auditoria)}
-                                      style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_auditoria?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_auditoria?'#1b4332':'#7f1d1d'}}>
-                                      {r.visto_bueno_auditoria?'✅ Sí':'❌ No'}
-                                    </button>
-                                  </td>
-                                  {/* VB Pago */}
-                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
-                                    <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_pago',!r.visto_bueno_pago)}
-                                      style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_pago?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_pago?'#1b4332':'#7f1d1d'}}>
-                                      {r.visto_bueno_pago?'✅ Sí':'❌ No'}
-                                    </button>
-                                  </td>
-                                  {/* Estatus */}
-                                  <td style={{padding:'4px 6px',textAlign:'center'}}>
-                                    {r.paid
-                                      ? <span style={{background:'#d8f3dc',color:'#1b4332',borderRadius:8,padding:'3px 7px',fontSize:10,fontWeight:700,whiteSpace:'nowrap'}}>✅ Pagado</span>
-                                      : <button onClick={()=>togglePaid(r._circ.id,r.id,false)}
-                                          style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:6,padding:'3px 8px',fontSize:10,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap'}}>
-                                          Marcar pagado ✓
-                                        </button>
-                                    }
-                                  </td>
-                                  <td style={{padding:'4px 6px'}}>
-                                    <button onClick={()=>onGoCircuit(r._circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:5,padding:'2px 6px',fontSize:10,cursor:'pointer',whiteSpace:'nowrap'}}>Ver →</button>
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )
-                })
+              : <BuscadorResultados
+                  filas={resultadosProv}
+                  provNombres={provNombres}
+                  saveImporte={saveImporte}
+                  saveFactura={saveFactura}
+                  setFechaPago={setFechaPago}
+                  togglePaid={togglePaid}
+                  onGoCircuit={onGoCircuit}
+                  tarifario={tarifario}
+                />
             }
           </div>
         )}
@@ -2333,6 +2233,174 @@ function TimelinePanel({ circ, tarifario }) {
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+
+// ── BuscadorResultados — agrupa por proveedor → mes colapsable ──
+function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setFechaPago, togglePaid, onGoCircuit, tarifario }) {
+  const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+  const [mesesAbiertos, setMesesAbiertos] = useState({}) // key: "provNombre|YYYY-MM"
+  const toggleMes = (key) => setMesesAbiertos(p => ({...p, [key]: !p[key]}))
+
+  const FilaTabla = ({r}) => {
+    const fi = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
+    const fStr = fi ? fi.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—'
+    const pax = r._circ.info?.pax || '—'
+    const habs = ((parseInt(r._circ.info?.habs_single)||0)+(parseInt(r._circ.info?.habs_doble)||0)) || '—'
+    return (
+      <tr style={{borderBottom:'1px solid #f0ebe3',background:r.paid?'#f9fef9':'#fff'}}>
+        <td style={{padding:'6px 8px',fontWeight:700,fontSize:10,whiteSpace:'nowrap',maxWidth:240}}>
+          <div style={{color:'#b8952a',lineHeight:1.3}}>{r._circ.id}</div>
+        </td>
+        <td style={{padding:'6px 8px',fontSize:11,whiteSpace:'nowrap'}}>{fStr}</td>
+        <td style={{padding:'6px 8px',fontSize:11,maxWidth:130}}>{r.servicio||'—'}</td>
+        <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{pax}</td>
+        <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{habs}</td>
+        <td style={{padding:'4px 6px',minWidth:130}}>
+          <FilaImporte r={r} saveImporte={saveImporte} tarifario={tarifario}/>
+        </td>
+        <td style={{padding:'4px 6px',textAlign:'center'}}>
+          <button onClick={()=>saveFactura(r._circ.id,r.id,'factura_recibida',!r.factura_recibida)}
+            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.factura_recibida?'#d8f3dc':'#ffe0e0',color:r.factura_recibida?'#1b4332':'#7f1d1d'}}>
+            {r.factura_recibida?'✅':'❌'}
+          </button>
+        </td>
+        <td style={{padding:'4px 6px',minWidth:80}}>
+          <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…"
+            onBlur={e=>{if(e.target.value!==(r.folio_factura||''))saveFactura(r._circ.id,r.id,'folio_factura',e.target.value)}}
+            style={{width:78,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'#f5f1eb',outline:'none'}}
+            onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+            onBlurCapture={e=>{e.target.style.borderColor='transparent';if(!r.folio_factura)e.target.style.background='#f5f1eb'}}/>
+        </td>
+        <td style={{padding:'4px 6px',minWidth:118}}>
+          <input type="date" defaultValue={r.fecha_pago||''}
+            onBlur={e=>{if(e.target.value!==(r.fecha_pago||''))setFechaPago(r._circ.id,r.id,e.target.value)}}
+            style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 5px',fontSize:11,fontFamily:'inherit',width:115,background:'#fff'}}/>
+        </td>
+        <td style={{padding:'4px 6px',textAlign:'center'}}>
+          <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_auditoria',!r.visto_bueno_auditoria)}
+            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_auditoria?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_auditoria?'#1b4332':'#7f1d1d'}}>
+            {r.visto_bueno_auditoria?'✅ Sí':'❌ No'}
+          </button>
+        </td>
+        <td style={{padding:'4px 6px',textAlign:'center'}}>
+          <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_pago',!r.visto_bueno_pago)}
+            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_pago?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_pago?'#1b4332':'#7f1d1d'}}>
+            {r.visto_bueno_pago?'✅ Sí':'❌ No'}
+          </button>
+        </td>
+        <td style={{padding:'4px 6px',textAlign:'center'}}>
+          {r.paid
+            ? <span style={{background:'#d8f3dc',color:'#1b4332',borderRadius:8,padding:'3px 7px',fontSize:10,fontWeight:700,whiteSpace:'nowrap'}}>✅ Pagado</span>
+            : <button onClick={()=>togglePaid(r._circ.id,r.id,false)}
+                style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:6,padding:'3px 8px',fontSize:10,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap'}}>
+                Marcar pagado ✓
+              </button>
+          }
+        </td>
+        <td style={{padding:'4px 6px'}}>
+          <button onClick={()=>onGoCircuit(r._circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',borderRadius:5,padding:'2px 6px',fontSize:10,cursor:'pointer',whiteSpace:'nowrap'}}>Ver →</button>
+        </td>
+      </tr>
+    )
+  }
+
+  const ColHeaders = () => (
+    <tr style={{background:'#f5f1eb'}}>
+      {['Circuito','Fecha svc','Servicio','PAX','HAB','Importe','Fact. Rec.','Folio','Fecha Pago','VB Aud.','VB Pago','Estatus',''].map(h=>(
+        <th key={h} style={{padding:'7px 8px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#8a8278',whiteSpace:'nowrap'}}>{h}</th>
+      ))}
+    </tr>
+  )
+
+  return (
+    <div>
+      {provNombres.map(provNombre => {
+        const filasP = filas.filter(r => r.prov_general === provNombre)
+        const pendP = filasP.filter(r=>!r.paid), pagP = filasP.filter(r=>r.paid)
+        const totalCircs = new Set(filasP.map(r=>r._circ.id)).size
+
+        // Agrupar por mes YYYY-MM basado en fecha del servicio
+        const porMes = {}
+        filasP.forEach(r => {
+          const fi = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
+          const mk = fi ? fi.getFullYear()+'-'+String(fi.getMonth()+1).padStart(2,'0') : '0000-00'
+          if (!porMes[mk]) porMes[mk] = []
+          porMes[mk].push(r)
+        })
+        const mesesOrdenados = Object.keys(porMes).sort()
+
+        const mkLabel = (mk) => {
+          if (mk === '0000-00') return 'Sin fecha'
+          const [y, m] = mk.split('-')
+          return MESES[parseInt(m)-1] + ' ' + y
+        }
+
+        return (
+          <div key={provNombre} style={{marginBottom:20}}>
+            {/* Cabecera proveedor — siempre visible */}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 16px',background:'#12151f',borderRadius:10,color:'#fff'}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <span style={{fontSize:15,fontWeight:700,color:'#e0c96a'}}>{provNombre}</span>
+                <span style={{fontSize:10,color:'rgba(255,255,255,.4)'}}>{filasP.length} servicio{filasP.length!==1?'s':''} · {totalCircs} circuito{totalCircs!==1?'s':''} · {mesesOrdenados.length} mes{mesesOrdenados.length!==1?'es':''}</span>
+              </div>
+              <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+                {pendP.length>0&&<span style={{fontSize:11,color:'#fca5a5',fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>
+                  ⏳ {fmtMXN(pendP.reduce((a,r)=>a+r._mxn,0))+' MN'}{pendP.reduce((a,r)=>a+r._usd,0)>0&&' · '+fmtUSD(pendP.reduce((a,r)=>a+r._usd,0))+' USD'}
+                </span>}
+                {pagP.length>0&&<span style={{fontSize:11,color:'#86efac',fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>
+                  ✅ {fmtMXN(pagP.reduce((a,r)=>a+r._mxn,0))+' MN'}{pagP.reduce((a,r)=>a+r._usd,0)>0&&' · '+fmtUSD(pagP.reduce((a,r)=>a+r._usd,0))+' USD'}
+                </span>}
+              </div>
+            </div>
+
+            {/* Meses colapsables */}
+            <div style={{border:'1px solid #ece7df',borderTop:'none',borderRadius:'0 0 10px 10px',overflow:'hidden'}}>
+              {mesesOrdenados.map((mk, mi) => {
+                const filasMes = porMes[mk]
+                const pendM = filasMes.filter(r=>!r.paid), pagM = filasMes.filter(r=>r.paid)
+                const mxnM = filasMes.reduce((a,r)=>a+r._mxn,0), usdM = filasMes.reduce((a,r)=>a+r._usd,0)
+                const abierto = !!mesesAbiertos[provNombre+'|'+mk]
+                const esUltimo = mi === mesesOrdenados.length - 1
+
+                return (
+                  <div key={mk}>
+                    {/* Header mes — clic para expandir */}
+                    <div onClick={()=>toggleMes(provNombre+'|'+mk)}
+                      style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 14px',background:abierto?'#f0f4ff':'#fafaf8',cursor:'pointer',borderBottom: abierto||!esUltimo?'1px solid #ece7df':'none',transition:'background .15s',userSelect:'none'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10}}>
+                        <span style={{fontSize:13,transition:'transform .2s',display:'inline-block',transform:abierto?'rotate(90deg)':'rotate(0deg)',color:'#8a8278'}}>▶</span>
+                        <span style={{fontWeight:700,fontSize:13,color:'#12151f'}}>{mkLabel(mk)}</span>
+                        <span style={{fontSize:11,color:'#8a8278'}}>{filasMes.length} servicio{filasMes.length!==1?'s':''}</span>
+                        {pendM.length>0&&<span style={{fontSize:10,color:'#b83232',fontWeight:600}}>⏳ {pendM.length} pend.</span>}
+                        {pagM.length>0&&<span style={{fontSize:10,color:'#1e5c3a',fontWeight:600}}>✅ {pagM.length} pag.</span>}
+                      </div>
+                      <div style={{display:'flex',gap:10,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>
+                        {mxnM>0&&<span style={{color:'#12151f'}}>{fmtMXN(mxnM)} MN</span>}
+                        {usdM>0&&<span style={{color:'#1565a0'}}>{fmtUSD(usdM)} USD</span>}
+                      </div>
+                    </div>
+
+                    {/* Tabla del mes — solo visible si abierto */}
+                    {abierto && (
+                      <div style={{overflowX:'auto',borderBottom:esUltimo?'none':'1px solid #ece7df'}}>
+                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:1100}}>
+                          <thead><ColHeaders/></thead>
+                          <tbody>
+                            {filasMes.map(r=><FilaTabla key={r.id} r={r}/>)}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
