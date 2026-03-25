@@ -160,7 +160,17 @@ function Dashboard({ session }) {
       if (settings) setTC(settings.tc)
       const { data: circs } = await supabase.from('circuits').select('*').order('created_at', { ascending: false })
       if (circs && circs.length > 0) {
-        const { data: allRows } = await supabase.from('circuit_rows').select('*').order('idx')
+        // Cargar TODAS las filas en páginas de 1000 para evitar el límite de Supabase
+        let allRows = [], page = 0, pageSize = 1000, done = false
+        while (!done) {
+          const { data: chunk, error } = await supabase
+            .from('circuit_rows').select('*').order('idx')
+            .range(page * pageSize, (page + 1) * pageSize - 1)
+          if (error || !chunk || chunk.length === 0) { done = true; break }
+          allRows = [...allRows, ...chunk]
+          if (chunk.length < pageSize) done = true
+          else page++
+        }
         const full = circs.map((c) => ({
           ...c,
           rows: (allRows || []).filter((r) => r.circuit_id === c.id).map((r) => ({ ...r, fecha: r.fecha ? new Date(r.fecha) : null })),
