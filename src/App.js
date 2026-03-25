@@ -240,9 +240,12 @@ function Dashboard({ session }) {
       const toInsert = rows.filter(r => (r.proveedor || '').trim()).map(r => ({
         proveedor:    r.proveedor.trim(),
         tipo_servicio: r.tipo_servicio || 'HOSPEDAJE',
+        tipo_tarifa:   r.tipo_tarifa   || 'precio_fijo',
         precio:        parseFloat(r.precio_single) || 0,
         precio_single: parseFloat(r.precio_single) || 0,
         precio_doble:  parseFloat(r.precio_doble)  || parseFloat(r.precio_single) || 0,
+        precio_pax:    parseFloat(r.precio_pax)    || 0,
+        incluye_tl:    !!r.incluye_tl,
         moneda:        r.moneda       || 'MXN',
         temporada:     r.temporada    || 'General',
         temp_inicio:   r.temp_inicio  || null,
@@ -285,8 +288,23 @@ function Dashboard({ session }) {
     updateRow(cid, rowId, { nota: val })
   }, [updateRow])
   const saveProv = async (cid, rowId, val) => {
-    await supabase.from('circuit_rows').update({ prov_general: val, precio_custom: null, moneda_custom: null }).eq('id', rowId)
-    updateRow(cid, rowId, { prov_general: val, precio_custom: null, moneda_custom: null })
+    // Check if this provider has PAX-based pricing — if so, freeze price now
+    const circ = circuits.find(c => c.id === cid)
+    const tarEntry = tarifario.find(t => (t.tipo_tarifa || 'precio_fijo') === 'precio_pax' && t.proveedor === val)
+    let extra = {}
+    if (tarEntry && circ) {
+      const pax = parseInt(circ.info?.pax) || 0
+      const tl  = tarEntry.incluye_tl ? 1 : 0
+      const total = tarEntry.precio_pax * (pax + tl)
+      if (total > 0) {
+        extra = { precio_custom: total, moneda_custom: tarEntry.moneda || 'MXN' }
+      }
+    } else {
+      // Non-PAX provider: clear custom price so tarifario recalculates
+      extra = { precio_custom: null, moneda_custom: null }
+    }
+    await supabase.from('circuit_rows').update({ prov_general: val, ...extra }).eq('id', rowId)
+    updateRow(cid, rowId, { prov_general: val, ...extra })
   }
   const saveImporte = async (cid, rowId, precio, moneda) => {
     await supabase.from('circuit_rows').update({ precio_custom: precio || null, moneda_custom: moneda }).eq('id', rowId)
@@ -1393,8 +1411,11 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
     if (tarifario.length > 0) return tarifario.map(t => ({
       proveedor: t.proveedor || '',
       tipo_servicio: t.tipo_servicio || 'HOSPEDAJE',
+      tipo_tarifa: t.tipo_tarifa || 'precio_fijo',
       precio_single: t.precio_single || t.precio || 0,
       precio_doble: t.precio_doble || t.precio_single || t.precio || 0,
+      precio_pax: t.precio_pax || 0,
+      incluye_tl: !!t.incluye_tl,
       moneda: t.moneda || 'MXN',
       temporada: t.temporada || 'General',
       cortesia_cada: t.cortesia_cada || 0,
@@ -1412,7 +1433,7 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
   })
   const update = (i, k, v) => setRows(prev => prev.map((r, idx) => idx===i ? {...r,[k]:v} : r))
   const del = (i) => setRows(prev => prev.filter((_, idx) => idx!==i))
-  const add = (tipo) => setRows(prev => [...prev, { proveedor:'', tipo_servicio: tipo||'HOSPEDAJE', precio_single:0, precio_doble:0, moneda:'MXN', temporada:'General', cortesia_cada:0, dias_credito:30, notas:'' }])
+  const add = (tipo) => setRows(prev => [...prev, { proveedor:'', tipo_servicio: tipo||'HOSPEDAJE', tipo_tarifa: tipo==='PAX'?'precio_pax':'precio_fijo', precio_single:0, precio_doble:0, precio_pax:0, incluye_tl:false, moneda:'MXN', temporada:'General', cortesia_cada:0, dias_credito:30, notas:'' }])
   const dupRow = (i) => setRows(prev => { const r={...prev[i], temporada:'Nueva temporada'}; const arr=[...prev]; arr.splice(i+1,0,r); return arr })
   const inp = { border:'1px solid #d8d2c8',borderRadius:5,padding:'4px 7px',fontFamily:'inherit',fontSize:12,width:'100%',outline:'none' }
   const sel = { border:'1px solid #d8d2c8',borderRadius:5,padding:'4px 7px',fontFamily:'inherit',fontSize:12,background:'#fff',cursor:'pointer',outline:'none' }
@@ -1423,8 +1444,9 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
 
   const q = busqueda.trim().toLowerCase()
   const rowsVis = q ? rows.map((r,i)=>({...r,_i:i})).filter(r=>(r.proveedor||'').toLowerCase().includes(q)||(r.temporada||'').toLowerCase().includes(q)||(r.notas||'').toLowerCase().includes(q)) : rows.map((r,i)=>({...r,_i:i}))
-  const hoteles = rowsVis.filter(r=>(r.tipo_servicio||'').toUpperCase()==='HOSPEDAJE')
-  const otros   = rowsVis.filter(r=>(r.tipo_servicio||'').toUpperCase()!=='HOSPEDAJE')
+  const hoteles  = rowsVis.filter(r=>(r.tipo_servicio||'').toUpperCase()==='HOSPEDAJE')
+  const porPax   = rowsVis.filter(r=>(r.tipo_tarifa||'precio_fijo')==='precio_pax')
+  const otros    = rowsVis.filter(r=>(r.tipo_servicio||'').toUpperCase()!=='HOSPEDAJE'&&(r.tipo_tarifa||'precio_fijo')!=='precio_pax')
 
   return (
     <div>
@@ -1540,6 +1562,58 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* ── SECCIÓN TARIFA POR PAX ── */}
+      <div style={{marginBottom:24}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <div>
+            <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>👥 Tarifa por PAX <span style={{fontSize:12,fontWeight:400,color:'#8a8278'}}>({porPax.length})</span></div>
+            <div style={{fontSize:11,color:'#8a8278',marginTop:2}}>El costo se congela automáticamente al asignar el proveedor al circuito (PAX del circuito × precio por PAX).</div>
+          </div>
+          <button onClick={()=>add('PAX')} style={{background:'transparent',border:'1.5px dashed #d8d2c8',color:'#8a8278',padding:'4px 12px',borderRadius:7,cursor:'pointer',fontSize:11,whiteSpace:'nowrap'}}>+ Agregar proveedor PAX</button>
+        </div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+            <thead><tr style={{background:'#12151f',color:'#fff'}}>
+              {['Proveedor','Precio por PAX','Moneda','¿Incluye TL?','Días Crédito','Notas',''].map(h=>(
+                <th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.6,whiteSpace:'nowrap'}}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {porPax.length===0&&!q&&(
+                <tr><td colSpan={7} style={{padding:'20px',textAlign:'center',color:'#ccc',fontSize:12}}>Sin proveedores por PAX — agrega uno arriba</td></tr>
+              )}
+              {porPax.map(({_i:i,...r})=>(
+                <tr key={i} style={{borderBottom:'1px solid #ece7df',background:i%2===0?'#fafaf8':'#fff'}}>
+                  <td style={{padding:'5px 7px',minWidth:160}}><input style={{...inp,width:150}} value={r.proveedor} onChange={e=>update(i,'proveedor',e.target.value)} placeholder="Nombre del proveedor"/></td>
+                  <td style={{padding:'5px 7px',minWidth:110}}>
+                    <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                      <input style={{...inp,width:90}} type="number" min="0" value={r.precio_pax||''} onChange={e=>update(i,'precio_pax',parseFloat(e.target.value)||0)} placeholder="0.00"/>
+                    </div>
+                  </td>
+                  <td style={{padding:'5px 7px'}}><select style={sel} value={r.moneda} onChange={e=>update(i,'moneda',e.target.value)}><option>MXN</option><option>USD</option></select></td>
+                  <td style={{padding:'5px 7px',textAlign:'center'}}>
+                    <button onClick={()=>update(i,'incluye_tl',!r.incluye_tl)}
+                      style={{padding:'3px 12px',borderRadius:12,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',background:r.incluye_tl?'#d8f3dc':'#ffe0e0',color:r.incluye_tl?'#1b4332':'#7f1d1d'}}>
+                      {r.incluye_tl?'✅ Sí':'❌ No'}
+                    </button>
+                    {r.incluye_tl&&<div style={{fontSize:9,color:'#1e5c3a',marginTop:2}}>PAX + 1 TL</div>}
+                    {!r.incluye_tl&&<div style={{fontSize:9,color:'#8a8278',marginTop:2}}>Solo PAX</div>}
+                  </td>
+                  <td style={{padding:'5px 7px'}}><input style={{...inp,width:55}} type="number" value={r.dias_credito||''} onChange={e=>update(i,'dias_credito',parseInt(e.target.value)||0)}/></td>
+                  <td style={{padding:'5px 7px'}}><input style={inp} value={r.notas||''} onChange={e=>update(i,'notas',e.target.value)}/></td>
+                  <td style={{padding:'5px 7px'}}><button onClick={()=>del(i)} style={{background:'none',border:'none',color:'#ccc',cursor:'pointer',fontSize:15}}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {porPax.length>0&&(
+          <div style={{fontSize:11,color:'#8a8278',marginTop:6,padding:'6px 10px',background:'#f0f6ff',borderRadius:6,borderLeft:'3px solid #1565a0'}}>
+            💡 Al seleccionar este proveedor en un renglón del circuito, el importe se calcula y <strong>congela automáticamente</strong> según el número de PAX capturado en ese circuito. Actualizar el precio aquí <strong>no afecta</strong> circuitos anteriores.
+          </div>
+        )}
       </div>
 
       <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20,paddingTop:14,borderTop:'1px solid #ece7df'}}>
@@ -2062,10 +2136,11 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
                         {/* Proveedor */}
                         <td style={{padding:'8px 8px',minWidth:155}}>
                           {eC('prov')
-                            ? <div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'3px 6px',fontSize:11,fontFamily:'inherit',background:'#fff',maxWidth:150}}><option value="">— Sin proveedor —</option>{tarifario.map(t=><option key={t.id||t.proveedor} value={t.proveedor}>{t.proveedor}</option>)}</select><button onClick={()=>confirmEdit(circ.id,r.id,'prov')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            ? <div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'3px 6px',fontSize:11,fontFamily:'inherit',background:'#fff',maxWidth:150}}><option value="">— Sin proveedor —</option>{tarifario.map(t=><option key={t.id||t.proveedor} value={t.proveedor}>{t.proveedor}{(t.tipo_tarifa||'precio_fijo')==='precio_pax'?' 👥 x PAX':''}</option>)}</select><button onClick={()=>confirmEdit(circ.id,r.id,'prov')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
                             : <div>
                                 <span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:'pointer',borderBottom:'1px dotted #b8952a'}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'#b83232',fontSize:10}}> ⚠</span>}</span>
                                 {dc>0&&!r.paid&&<div style={{fontSize:9,color:'#8a8278'}}>{dc}d crédito</div>}
+                                {(()=>{ const t=tarifario.find(x=>(x.tipo_tarifa||'precio_fijo')==='precio_pax'&&x.proveedor===r.prov_general); if(!t) return null; const pax=parseInt(circ.info?.pax)||0; const tl=t.incluye_tl?1:0; return <div style={{fontSize:9,color:'#1565a0',fontWeight:600,marginTop:1}}>👥 {pax+tl} PAX{t.incluye_tl?' (c/TL)':''} × {t.moneda==='USD'?'$'+t.precio_pax+' USD':'$'+t.precio_pax+' MN'}</div> })()}
                                 {/* Temporada detectada automáticamente por fecha */}
                                 {(r.clasificacion||'').toUpperCase()==='HOSPEDAJE'&&(()=>{
                                   const svcDate = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
