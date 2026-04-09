@@ -807,6 +807,23 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
 // ═══════════════════════════════════════════════
 //  MODO PRESENTACIÓN
 // ═══════════════════════════════════════════════
+
+function Chip({ k, onOpen, w }) {
+  return (
+    <div onClick={k.id?()=>onOpen(k.id):undefined}
+      style={{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',borderRadius:16,padding:'20px 24px',cursor:k.id?'pointer':'default',transition:'border-color .15s,background .15s',width:w?w+'px':undefined}}
+      onMouseEnter={e=>{if(k.id){e.currentTarget.style.borderColor='rgba(224,201,106,.5)';e.currentTarget.style.background='rgba(255,255,255,.1)'}}}
+      onMouseLeave={e=>{e.currentTarget.style.borderColor='rgba(255,255,255,.1)';e.currentTarget.style.background='rgba(255,255,255,.06)'}}>
+      <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:1,color:'rgba(255,255,255,.4)',marginBottom:8,display:'flex',justifyContent:'space-between'}}>
+        <span>{k.label}</span>
+        {k.id&&<span style={{color:'rgba(224,201,106,.4)',fontSize:10}}>ver detalle ↗</span>}
+      </div>
+      <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:k.green===false?'#fca5a5':k.green?'#86efac':'#e0c96a'}}>{k.val}</div>
+      {k.sub&&<div style={{fontSize:12,color:'rgba(255,255,255,.4)',marginTop:4}}>{k.sub}</div>}
+    </div>
+  )
+}
+
 function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onClose }) {
   const MESES_NOM = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
   const [slide, setSlide] = useState(0)
@@ -864,6 +881,7 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
   const margenLib = totIngMXN > 0 ? ((utilLib/totIngMXN)*100).toFixed(1) : '—'
   const margenOpc = ingOpcTotal > 0 ? ((utilOpc/ingOpcTotal)*100).toFixed(1) : '—'
 
+  const totPax = circsMostrar.reduce((a,c)=>a+(parseInt(c.info?.pax)||0),0)
   const topProvs = Object.values(provMap).sort((a,b)=>b.total-a.total).slice(0,6)
   const maxProv = topProvs[0]?.total || 1
   const maxCat = Math.max(...Object.values(catCosto), 1)
@@ -902,27 +920,32 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
             </h1>
             <div style={{fontSize:16,color:'rgba(255,255,255,.4)',marginTop:8}}>{circsMostrar.length} circuitos operados</div>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:24,width:'100%',maxWidth:900}}>
-            {[
-              {id:'ing_lib',  label:'Ingresos LIBERO',   val: fmtUSD(totIngUSD)+' USD', sub: fmtMXN(totIngMXN)+' MN'},
-              {id:'ing_opc',  label:'Ingresos OPCIONAL',  val: totIngOpcMXN>0||totIngOpcUSD>0 ? fmtMXN(totIngOpcMXN)+' MN'+(totIngOpcUSD>0?' · '+fmtUSD(totIngOpcUSD)+' USD':'') : '—', sub:''},
-              {id:'costos',   label:'Costos Totales',      val: fmtMXN(totCostoLib+totCostoOpc)+' MN', sub:''},
-              {id:'util_lib', label:'Utilidad LIBERO',     val: fmtMXN(Math.abs(utilLib))+' MN', sub:'Margen: '+margenLib+'%', green: utilLib>=0},
-              {id:'util_opc', label:'Utilidad OPCIONAL',   val: fmtMXN(Math.abs(utilOpc))+' MN', sub:'Margen: '+margenOpc+'%', green: utilOpc>=0},
-              {id:'circuitos',label:'Circuitos',            val: circsMostrar.length, sub: mesesRango.length+' mes'+(mesesRango.length!==1?'es':'')},
-            ].map((k,i) => (
-              <div key={i} onClick={k.id?()=>{setKpiModal(k.id);setMesExpandido(null)}:undefined}
-                style={{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',borderRadius:16,padding:'20px 24px',cursor:k.id?'pointer':'default',transition:'border-color .15s,background .15s'}}
-                onMouseEnter={e=>{if(k.id){e.currentTarget.style.borderColor='rgba(224,201,106,.5)';e.currentTarget.style.background='rgba(255,255,255,.1)'}}}
-                onMouseLeave={e=>{e.currentTarget.style.borderColor='rgba(255,255,255,.1)';e.currentTarget.style.background='rgba(255,255,255,.06)'}}>
-                <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:1,color:'rgba(255,255,255,.4)',marginBottom:8,display:'flex',justifyContent:'space-between'}}>
-                  <span>{k.label}</span>
-                  {k.id&&<span style={{color:'rgba(224,201,106,.4)',fontSize:10}}>ver detalle ↗</span>}
-                </div>
-                <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:k.green===false?'#fca5a5':k.green?'#86efac':'#e0c96a'}}>{k.val}</div>
-                {k.sub&&<div style={{fontSize:12,color:'rgba(255,255,255,.4)',marginTop:4}}>{k.sub}</div>}
-              </div>
-            ))}
+          <div style={{display:'flex',flexDirection:'column',gap:16,width:'100%',maxWidth:980}}>
+            {/* Fila 1: 2 chips centrados */}
+            <div style={{display:'flex',justifyContent:'center',gap:24}}>
+              {[
+                {id:'circuitos', label:'No. Circuitos', val: circsMostrar.length, sub: mesesRango.length+' mes'+(mesesRango.length!==1?'es':'')},
+                {id:'pax',       label:'No. PAX',       val: totPax+' PAX',        sub: circsMostrar.length+' circuitos'},
+              ].map((k,i)=>(
+                <Chip key={i} k={k} onOpen={id=>{setKpiModal(id);setMesExpandido(null)}} w={280}/>
+              ))}
+            </div>
+            {/* Fila 2: LIBERO */}
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:16}}>
+              {[
+                {id:'ing_lib',  label:'Ingresos LIBERO',  val: fmtUSD(totIngUSD)+' USD', sub: fmtMXN(totIngMXN)+' MN'},
+                {id:'costos',   label:'Costos LIBERO',     val: fmtMXN(totCostoLib)+' MN', sub:''},
+                {id:'util_lib', label:'Utilidad LIBERO',   val: fmtMXN(Math.abs(utilLib))+' MN', sub:'Margen: '+margenLib+'%', green: utilLib>=0},
+              ].map((k,i)=><Chip key={i} k={k} onOpen={id=>{setKpiModal(id);setMesExpandido(null)}}/>)}
+            </div>
+            {/* Fila 3: OPCIONAL */}
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:16}}>
+              {[
+                {id:'ing_opc',  label:'Ingresos OPCIONAL', val: totIngOpcMXN>0||totIngOpcUSD>0 ? fmtMXN(totIngOpcMXN)+' MN'+(totIngOpcUSD>0?' · '+fmtUSD(totIngOpcUSD)+' USD':'') : '—', sub:''},
+                {id:'costos_opc',label:'Costos OPCIONAL',  val: fmtMXN(totCostoOpc)+' MN', sub:''},
+                {id:'util_opc', label:'Utilidad OPCIONAL', val: fmtMXN(Math.abs(utilOpc))+' MN', sub:'Margen: '+margenOpc+'%', green: utilOpc>=0},
+              ].map((k,i)=><Chip key={i} k={k} onOpen={id=>{setKpiModal(id);setMesExpandido(null)}}/>)}
+            </div>
           </div>
         </div>
       )
@@ -1117,12 +1140,18 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
             detCols:['Circuito','Tour Leader','MXN','USD','Total MN'],
             detFn: c=>{ const T=calcCircTotals(c,tarifario,TC); return [c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(T.ingresoOpcMXN), T.ingresoOpcUSD>0?fmtUSD(T.ingresoOpcUSD):'—', fmtMXN(T.ingresoOpcTotal)+' MN'] },
             totalFn: ()=>['TOTAL', circsMostrar.length, fmtMXN(totIngOpcMXN), totIngOpcUSD>0?fmtUSD(totIngOpcUSD):'—', fmtMXN(ingOpcTotal)+' MN'] },
-          costos:    { title:'📤 Costos Totales — Por mes',
-            cols:['Mes','Circuitos','Costo LIBERO','Costo OPCIONAL','Total MN'],
-            rowFn: m=>[mkLabel(m.mk), m.circs.length, fmtMXN(m.costoLib)+' MN', m.costoOpc>0?fmtMXN(m.costoOpc)+' MN':'—', fmtMXN(m.costoLib+m.costoOpc)+' MN'],
-            detCols:['Circuito','Tour Leader','Costo LIB','Costo OPC','Total'],
-            detFn: c=>{ const T=calcCircTotals(c,tarifario,TC); return [c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(T.costoTotal)+' MN', T.costoOpcTotal>0?fmtMXN(T.costoOpcTotal)+' MN':'—', fmtMXN(T.costoTotal+T.costoOpcTotal)+' MN'] },
-            totalFn: ()=>['TOTAL', circsMostrar.length, fmtMXN(totCostoLib)+' MN', fmtMXN(totCostoOpc)+' MN', fmtMXN(totCostoLib+totCostoOpc)+' MN'] },
+          costos:    { title:'📤 Costos LIBERO — Por mes',
+            cols:['Mes','Circuitos','Costo LIBERO'],
+            rowFn: m=>[mkLabel(m.mk), m.circs.length, fmtMXN(m.costoLib)+' MN'],
+            detCols:['Circuito','Tour Leader','Costo LIBERO'],
+            detFn: c=>{ const T=calcCircTotals(c,tarifario,TC); return [c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(T.costoTotal)+' MN'] },
+            totalFn: ()=>['TOTAL', circsMostrar.length, fmtMXN(totCostoLib)+' MN'] },
+          costos_opc:{ title:'📤 Costos OPCIONAL — Por mes',
+            cols:['Mes','Circuitos','Costo OPCIONAL'],
+            rowFn: m=>[mkLabel(m.mk), m.circs.length, fmtMXN(m.costoOpc)+' MN'],
+            detCols:['Circuito','Tour Leader','Costo OPCIONAL'],
+            detFn: c=>{ const T=calcCircTotals(c,tarifario,TC); return [c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(T.costoOpcTotal)+' MN'] },
+            totalFn: ()=>['TOTAL', circsMostrar.length, fmtMXN(totCostoOpc)+' MN'] },
           util_lib:  { title:'✅ Utilidad LIBERO — Por mes',
             cols:['Mes','Circuitos','Ingreso MN','Costo MN','Utilidad','Margen'],
             rowFn: m=>{ const mg=m.ingMXN>0?((m.utilLib/m.ingMXN)*100).toFixed(1)+'%':'—'; return [mkLabel(m.mk), m.circs.length, fmtMXN(m.ingMXN)+' MN', fmtMXN(m.costoLib)+' MN', fmtMXN(Math.abs(m.utilLib))+' MN', mg] },
@@ -1136,11 +1165,17 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
             detFn: c=>{ const T=calcCircTotals(c,tarifario,TC); const m=T.ingresoOpcTotal>0?((T.utilidadOpc/T.ingresoOpcTotal)*100).toFixed(1)+'%':'—'; return [c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(T.ingresoOpcTotal)+' MN', fmtMXN(T.costoOpcTotal)+' MN', fmtMXN(Math.abs(T.utilidadOpc))+' MN', m] },
             totalFn: ()=>['TOTAL', circsMostrar.length, fmtMXN(ingOpcTotal)+' MN', fmtMXN(totCostoOpc)+' MN', fmtMXN(Math.abs(utilOpc))+' MN', margenOpc+'%'] },
           circuitos: { title:'🗂 Circuitos — Por mes',
-            cols:['Mes','Circuitos','Servicios','PAX promedio'],
-            rowFn: m=>{ const avgPax=m.circs.length>0?Math.round(m.circs.reduce((a,c)=>a+(parseInt(c.info?.pax)||0),0)/m.circs.length):0; return [mkLabel(m.mk), m.circs.length, m.circs.reduce((a,c)=>a+c.rows.length,0), avgPax+' PAX'] },
+            cols:['Mes','Circuitos','Total PAX','Servicios'],
+            rowFn: m=>{ const paxMes=m.circs.reduce((a,c)=>a+(parseInt(c.info?.pax)||0),0); return [mkLabel(m.mk), m.circs.length, paxMes+' PAX', m.circs.reduce((a,c)=>a+c.rows.length,0)] },
             detCols:['Circuito','Tour Leader','PAX','HAB','Servicios'],
             detFn: c=>[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', c.info?.pax||'—', ((parseInt(c.info?.habs_single)||0)+(parseInt(c.info?.habs_doble)||0))||'—', c.rows.length],
-            totalFn: ()=>['TOTAL', circsMostrar.length, circsMostrar.reduce((a,c)=>a+c.rows.length,0), ''] }
+            totalFn: ()=>['TOTAL', circsMostrar.length, totPax+' PAX', circsMostrar.reduce((a,c)=>a+c.rows.length,0)] },
+          pax: { title:'👥 PAX — Por mes',
+            cols:['Mes','Circuitos','Total PAX'],
+            rowFn: m=>{ const paxMes=m.circs.reduce((a,c)=>a+(parseInt(c.info?.pax)||0),0); return [mkLabel(m.mk), m.circs.length, paxMes+' PAX'] },
+            detCols:['Circuito','Tour Leader','PAX','HAB'],
+            detFn: c=>[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', c.info?.pax||'—', ((parseInt(c.info?.habs_single)||0)+(parseInt(c.info?.habs_doble)||0))||'—'],
+            totalFn: ()=>['TOTAL', circsMostrar.length, totPax+' PAX'] }
         }
 
         const cfg = MODAL_CFG[kpiModal]
