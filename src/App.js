@@ -1007,7 +1007,7 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
               <div key={cat}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
                   <span style={{fontSize:15,fontWeight:600,color:'#fff'}}>{cat}</span>
-                  <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:15,color:'rgba(255,255,255,.7)'}}>{fmtMXN(val)} MN <span style={{color:'rgba(255,255,255,.4)',fontSize:12'}}>({((val/totalCat)*100).toFixed(1)}%)</span></span>
+                  <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:15,color:'rgba(255,255,255,.7)'}}>{fmtMXN(val)} MN <span style={{color:'rgba(255,255,255,.4)',fontSize:12}}>({((val/totalCat)*100).toFixed(1)}%)</span></span>
                 </div>
                 <div style={{background:'rgba(255,255,255,.08)',borderRadius:6,height:10,overflow:'hidden'}}>
                   <div style={{height:'100%',width:((val/maxCat)*100)+'%',background:CAT_COLORS_PRES[cat]||'#888',borderRadius:6,transition:'width .5s'}}/>
