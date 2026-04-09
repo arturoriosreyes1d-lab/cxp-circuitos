@@ -409,6 +409,7 @@ function Dashboard({ session }) {
   )
 
   return (
+    <>
     <div style={{ fontFamily: "'Outfit', sans-serif", fontVariantNumeric: 'lining-nums tabular-nums', fontFeatureSettings: '"tnum","lnum"', background: '#f5f1eb', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
       {/* ── HEADER ── */}
@@ -543,6 +544,7 @@ function Dashboard({ session }) {
       )}
     </div>
     {presentacion && <PresentacionMode circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} onClose={()=>setPresentacion(false)}/>}
+    </>
   )
 }
 // ═══════════════════════════════════════════════
