@@ -804,6 +804,21 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
   )
 }
 
+// ── Helpers de celda para tabla de presentación ──
+function Num({ v, color, bold }) {
+  if (!v) return <td style={{padding:'14px 14px',color:'rgba(255,255,255,.25)',fontSize:14,fontFamily:"'IBM Plex Mono',monospace"}}>—</td>
+  const [num, ...rest] = v.split(' ')
+  return (
+    <td style={{padding:'14px 14px',fontFamily:"'IBM Plex Mono',monospace",fontSize:14,color:color||'#fff',fontWeight:bold?700:500}}>
+      <span>{num}</span>
+      {rest.length>0&&<span style={{fontSize:11,color:'rgba(255,255,255,.45)',marginLeft:4,fontWeight:400}}>{rest.join(' ')}</span>}
+    </td>
+  )
+}
+function Pct({ v, color, bold }) {
+  return <td style={{padding:'14px 14px',fontSize:14,color:color||'#fff',fontWeight:bold?700:500}}>{v||'—'}</td>
+}
+
 // ═══════════════════════════════════════════════
 //  MODO PRESENTACIÓN
 // ═══════════════════════════════════════════════
@@ -993,8 +1008,19 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:14}}>
               <thead>
                 <tr style={{borderBottom:'1px solid rgba(255,255,255,.15)'}}>
-                  {['Mes','Circs','Ingreso LIB','Costo LIB','Utilidad LIB','Margen LIB','Ingreso OPC','Costo OPC','Utilidad OPC','Margen OPC'].map(h=>(
-                    <th key={h} style={{padding:'10px 12px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.7,color:'rgba(255,255,255,.4)',fontWeight:500,whiteSpace:'nowrap'}}>{h}</th>
+                  {[
+                    {h:'Mes',            w:160},
+                    {h:'Circuitos',      w:70},
+                    {h:'Ingreso LIBERO', w:170},
+                    {h:'Costo LIBERO',   w:160},
+                    {h:'Utilidad LIBERO',w:170},
+                    {h:'Margen LIBERO',  w:110},
+                    {h:'Ingreso OPC',    w:160},
+                    {h:'Costo OPC',      w:150},
+                    {h:'Utilidad OPC',   w:160},
+                    {h:'Margen OPC',     w:110},
+                  ].map(({h,w})=>(
+                    <th key={h} style={{padding:'12px 14px',textAlign:'left',fontSize:11,textTransform:'uppercase',letterSpacing:.8,color:'rgba(255,255,255,.45)',fontWeight:600,whiteSpace:'nowrap',minWidth:w}}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1005,32 +1031,32 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
                   const mgOpc = (m.ingOpc||0)>0?(((m.utilOpc||0)/(m.ingOpc||1))*100).toFixed(1)+'%':'—'
                   return (
                     <tr key={mk} style={{borderBottom:'1px solid rgba(255,255,255,.06)',background:i%2===0?'rgba(255,255,255,.03)':'transparent'}}>
-                      <td style={{padding:'12px 12px',fontWeight:700,color:'#e0c96a',whiteSpace:'nowrap'}}>{cap(mk)}</td>
-                      <td style={{padding:'12px 12px',color:'rgba(255,255,255,.7)',textAlign:'center'}}>{m.circs||0}</td>
-                      <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#60a5fa'}}>{fmtMXN(m.ingMXN||0)} MN</td>
-                      <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#fca5a5'}}>{fmtMXN(m.costoLib||0)} MN</td>
-                      <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:(m.utilLib||0)>=0?'#86efac':'#fca5a5',fontWeight:700}}>{fmtMXN(Math.abs(m.utilLib||0))} MN</td>
-                      <td style={{padding:'12px 12px',fontSize:13,color:(m.utilLib||0)>=0?'#86efac':'#fca5a5',fontWeight:600}}>{mgLib}</td>
-                      <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#a78bfa'}}>{(m.ingOpc||0)>0?fmtMXN(m.ingOpc)+' MN':'—'}</td>
-                      <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#d8b4fe'}}>{(m.costoOpc||0)>0?fmtMXN(m.costoOpc)+' MN':'—'}</td>
-                      <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:(m.utilOpc||0)>=0?'#86efac':'#fca5a5',fontWeight:700}}>{(m.ingOpc||0)>0?fmtMXN(Math.abs(m.utilOpc||0))+' MN':'—'}</td>
-                      <td style={{padding:'12px 12px',fontSize:13,color:(m.utilOpc||0)>=0?'#86efac':'#fca5a5',fontWeight:600}}>{mgOpc}</td>
+                      <td style={{padding:'14px 14px',fontWeight:700,fontSize:14,color:'#e0c96a',whiteSpace:'nowrap'}}>{cap(mk)}</td>
+                      <td style={{padding:'14px 14px',color:'rgba(255,255,255,.7)',textAlign:'center',fontSize:14}}>{m.circs||0}</td>
+                      <Num v={fmtMXN(m.ingMXN||0)} color='#60a5fa'/>
+                      <Num v={fmtMXN(m.costoLib||0)} color='#fca5a5'/>
+                      <Num v={fmtMXN(Math.abs(m.utilLib||0))} color={(m.utilLib||0)>=0?'#86efac':'#fca5a5'} bold/>
+                      <Pct v={mgLib} color={(m.utilLib||0)>=0?'#86efac':'#fca5a5'}/>
+                      <Num v={(m.ingOpc||0)>0?fmtMXN(m.ingOpc):null} color='#a78bfa'/>
+                      <Num v={(m.costoOpc||0)>0?fmtMXN(m.costoOpc):null} color='#d8b4fe'/>
+                      <Num v={(m.ingOpc||0)>0?fmtMXN(Math.abs(m.utilOpc||0)):null} color={(m.utilOpc||0)>=0?'#86efac':'#fca5a5'} bold/>
+                      <Pct v={mgOpc} color={(m.utilOpc||0)>=0?'#86efac':'#fca5a5'}/>
                     </tr>
                   )
                 })}
               </tbody>
               <tfoot>
                 <tr style={{borderTop:'2px solid rgba(255,255,255,.2)'}}>
-                  <td style={{padding:'12px 12px',fontWeight:700,color:'#e0c96a'}}>TOTAL</td>
-                  <td style={{padding:'12px 12px',color:'#fff',fontWeight:700,textAlign:'center'}}>{circsMostrar.length}</td>
-                  <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#60a5fa',fontWeight:700}}>{fmtMXN(totIngMXN)} MN</td>
-                  <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#fca5a5',fontWeight:700}}>{fmtMXN(totCostoLib)} MN</td>
-                  <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:utilLib>=0?'#86efac':'#fca5a5',fontWeight:800}}>{fmtMXN(Math.abs(utilLib))} MN</td>
-                  <td style={{padding:'12px 12px',fontSize:13,color:utilLib>=0?'#86efac':'#fca5a5',fontWeight:700}}>{margenLib}%</td>
-                  <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#a78bfa',fontWeight:700}}>{ingOpcTotal>0?fmtMXN(ingOpcTotal)+' MN':'—'}</td>
-                  <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#d8b4fe',fontWeight:700}}>{totCostoOpc>0?fmtMXN(totCostoOpc)+' MN':'—'}</td>
-                  <td style={{padding:'12px 12px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:utilOpc>=0?'#86efac':'#fca5a5',fontWeight:800}}>{ingOpcTotal>0?fmtMXN(Math.abs(utilOpc))+' MN':'—'}</td>
-                  <td style={{padding:'12px 12px',fontSize:13,color:utilOpc>=0?'#86efac':'#fca5a5',fontWeight:700}}>{ingOpcTotal>0?margenOpc+'%':'—'}</td>
+                  <td style={{padding:'14px 14px',fontWeight:800,fontSize:14,color:'#e0c96a'}}>TOTAL</td>
+                  <td style={{padding:'14px 14px',color:'#fff',fontWeight:800,textAlign:'center',fontSize:14}}>{circsMostrar.length}</td>
+                  <Num v={fmtMXN(totIngMXN)} color='#60a5fa' bold/>
+                  <Num v={fmtMXN(totCostoLib)} color='#fca5a5' bold/>
+                  <Num v={fmtMXN(Math.abs(utilLib))} color={utilLib>=0?'#86efac':'#fca5a5'} bold/>
+                  <Pct v={margenLib+'%'} color={utilLib>=0?'#86efac':'#fca5a5'} bold/>
+                  <Num v={ingOpcTotal>0?fmtMXN(ingOpcTotal):null} color='#a78bfa' bold/>
+                  <Num v={totCostoOpc>0?fmtMXN(totCostoOpc):null} color='#d8b4fe' bold/>
+                  <Num v={ingOpcTotal>0?fmtMXN(Math.abs(utilOpc)):null} color={utilOpc>=0?'#86efac':'#fca5a5'} bold/>
+                  <Pct v={ingOpcTotal>0?margenOpc+'%':'—'} color={utilOpc>=0?'#86efac':'#fca5a5'} bold/>
                 </tr>
               </tfoot>
             </table>
