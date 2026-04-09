@@ -146,6 +146,7 @@ function Dashboard({ session }) {
   const [deleteId, setDeleteId] = useState(null)
   const [activeTab, setActiveTab] = useState('cxp')
   const [saving, setSaving] = useState(false)
+  const [presentacion, setPresentacion] = useState(false)
   const fileRef = useRef()
   const tarFileRef = useRef()
 
@@ -419,6 +420,7 @@ function Dashboard({ session }) {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {saving && <span style={{ fontSize: 11, color: '#e0c96a' }}>Guardando...</span>}
           <HBtn onClick={() => { setPendingCircuit(null); setModal('upload') }}>+ Circuito</HBtn>
+          <HBtn onClick={() => setPresentacion(true)}>📊 Presentación</HBtn>
           <HBtn onClick={() => setModal('tarifario')}>📋 Tarifario</HBtn>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(184,149,42,.15)', border: '1px solid rgba(224,201,106,.3)', borderRadius: 20, padding: '3px 12px' }}>
             <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>TC:</span>
@@ -540,6 +542,7 @@ function Dashboard({ session }) {
         </Modal>
       )}
     </div>
+    {presentacion && <PresentacionMode circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} onClose={()=>setPresentacion(false)}/>}
   )
 }
 // ═══════════════════════════════════════════════
@@ -798,6 +801,294 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
     </div>
   )
 }
+
+// ═══════════════════════════════════════════════
+//  MODO PRESENTACIÓN
+// ═══════════════════════════════════════════════
+function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onClose }) {
+  const MESES_NOM = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+  const [slide, setSlide] = useState(0)
+  const [mesDe, setMesDe] = useState(sortedMonths[0] || '')
+  const [mesA,  setMesA]  = useState(sortedMonths[sortedMonths.length-1] || '')
+
+  // Filtrar circuitos en el rango seleccionado
+  const mesesRango = sortedMonths.filter(mk => mk >= mesDe && mk <= mesA)
+  const circsMostrar = mesesRango.flatMap(mk => monthMap[mk] || [])
+
+  // Acumular totales
+  let totIngUSD=0, totIngMXN=0, totCostoLib=0, totIngOpcMXN=0, totIngOpcUSD=0, totCostoOpc=0
+  const catCosto = {}
+  const provMap = {}
+  const porMes = {}
+  const CAT_COLORS_PRES = {HOSPEDAJE:'#f4a261',TRANSPORTE:'#4361ee',ACTIVIDADES:'#f72585',ALIMENTOS:'#2d6a4f',GUIA:'#9b5de5',OTROS:'#888'}
+
+  circsMostrar.forEach(c => {
+    const T = calcCircTotals(c, tarifario, TC)
+    totIngUSD    += c.importe_cobrado || 0
+    totIngMXN    += T.ingresoMXN
+    totCostoLib  += T.costoTotal
+    totIngOpcMXN += T.ingresoOpcMXN
+    totIngOpcUSD += T.ingresoOpcUSD
+    totCostoOpc  += T.costoOpcTotal
+
+    const mk = c.month_key || 'Sin mes'
+    if (!porMes[mk]) porMes[mk] = { ingMXN:0, costoLib:0, utilLib:0, ingOpc:0, costoOpc:0, utilOpc:0, circs:0 }
+    porMes[mk].ingMXN   += T.ingresoMXN
+    porMes[mk].costoLib += T.costoTotal
+    porMes[mk].utilLib  += T.utilidad
+    porMes[mk].ingOpc   += T.ingresoOpcTotal
+    porMes[mk].costoOpc += T.costoOpcTotal
+    porMes[mk].utilOpc  += T.utilidadOpc
+    porMes[mk].circs    += 1
+
+    c.rows.forEach(r => {
+      const {mxn, usd} = getImporte(r, c.info, tarifario)
+      const v = mxn + usd * TC
+      const cat = (r.clasificacion||'OTROS').toUpperCase()
+      catCosto[cat] = (catCosto[cat]||0) + v
+      const pn = (r.prov_general||'').toUpperCase()
+      if (pn) {
+        if (!provMap[pn]) provMap[pn] = { nombre: r.prov_general, total: 0 }
+        provMap[pn].total += v
+      }
+    })
+  })
+
+  const ingOpcTotal = totIngOpcMXN + totIngOpcUSD * TC
+  const utilLib = totIngMXN - totCostoLib
+  const utilOpc = ingOpcTotal - totCostoOpc
+  const margenLib = totIngMXN > 0 ? ((utilLib/totIngMXN)*100).toFixed(1) : '—'
+  const margenOpc = ingOpcTotal > 0 ? ((utilOpc/ingOpcTotal)*100).toFixed(1) : '—'
+
+  const topProvs = Object.values(provMap).sort((a,b)=>b.total-a.total).slice(0,6)
+  const maxProv = topProvs[0]?.total || 1
+  const maxCat = Math.max(...Object.values(catCosto), 1)
+  const totalCat = Object.values(catCosto).reduce((a,v)=>a+v, 0) || 1
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key === 'ArrowRight') setSlide(s => Math.min(s+1, 4))
+      if (e.key === 'ArrowLeft')  setSlide(s => Math.max(s-1, 0))
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  const SLIDES = ['Resumen Ejecutivo','LIBERO vs OPCIONAL','Comparativo por Mes','Distribución por Categoría','Top Proveedores']
+  const N = (v, gold) => <span style={{fontFamily:"'IBM Plex Mono',monospace",color:gold?'#e0c96a':'#fff',fontWeight:700}}>{v}</span>
+
+  const mkLabel = (mk) => {
+    if (!mk) return ''
+    const parts = mk.split(' ')
+    return cap(parts[0]) + (parts[2] ? ' '+parts[2] : '')
+  }
+
+  const selStyle = {background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.2)',color:'#fff',borderRadius:8,padding:'6px 12px',fontFamily:'inherit',fontSize:13,cursor:'pointer',outline:'none'}
+
+  // ── SLIDES ──
+  const renderSlide = () => {
+    switch(slide) {
+      case 0: return (
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flex:1,gap:40}}>
+          <div style={{textAlign:'center'}}>
+            <div style={{fontSize:13,letterSpacing:3,textTransform:'uppercase',color:'rgba(255,255,255,.4)',marginBottom:12}}>Reporte Trimestral</div>
+            <h1 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:56,fontWeight:700,color:'#fff',margin:0,lineHeight:1.1}}>
+              {mkLabel(mesDe)} {mesDe===mesA?'':' — '+mkLabel(mesA)}
+            </h1>
+            <div style={{fontSize:16,color:'rgba(255,255,255,.4)',marginTop:8}}>{circsMostrar.length} circuitos operados</div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:24,width:'100%',maxWidth:900}}>
+            {[
+              {label:'Ingresos LIBERO', val: fmtUSD(totIngUSD)+' USD', sub: fmtMXN(totIngMXN)+' MN'},
+              {label:'Ingresos OPCIONAL', val: totIngOpcMXN>0||totIngOpcUSD>0 ? fmtMXN(totIngOpcMXN)+' MN'+(totIngOpcUSD>0?' · '+fmtUSD(totIngOpcUSD)+' USD':'') : '—', sub:''},
+              {label:'Costos Totales', val: fmtMXN(totCostoLib+totCostoOpc)+' MN', sub:''},
+              {label:'Utilidad LIBERO', val: fmtMXN(Math.abs(utilLib))+' MN', sub:'Margen: '+margenLib+'%', green: utilLib>=0},
+              {label:'Utilidad OPCIONAL', val: fmtMXN(Math.abs(utilOpc))+' MN', sub:'Margen: '+margenOpc+'%', green: utilOpc>=0},
+              {label:'Circuitos', val: circsMostrar.length, sub: mesesRango.length+' mes'+(mesesRango.length!==1?'es':'')},
+            ].map((k,i) => (
+              <div key={i} style={{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',borderRadius:16,padding:'20px 24px'}}>
+                <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:1,color:'rgba(255,255,255,.4)',marginBottom:8}}>{k.label}</div>
+                <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:k.green===false?'#fca5a5':k.green?'#86efac':'#e0c96a'}}>{k.val}</div>
+                {k.sub&&<div style={{fontSize:12,color:'rgba(255,255,255,.4)',marginTop:4}}>{k.sub}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+
+      case 1: return (
+        <div style={{display:'flex',flexDirection:'column',flex:1,justifyContent:'center',gap:32}}>
+          <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:38,fontWeight:700,color:'#fff',margin:0,textAlign:'center'}}>LIBERO vs OPCIONAL</h2>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:32}}>
+            {[
+              {title:'🔵 Circuito LIBERO', color:'#60a5fa',
+               rows:[
+                 ['Cobrado al cliente (USD)', fmtUSD(totIngUSD)],
+                 ['Equivalente MN', fmtMXN(totIngMXN)],
+                 ['Costo LIBERO', fmtMXN(totCostoLib)],
+                 ['Utilidad', fmtMXN(Math.abs(utilLib))+' MN'],
+                 ['Margen', margenLib+'%'],
+               ]},
+              {title:'🔷 Opcionales', color:'#a78bfa',
+               rows:[
+                 ['Ingresos MXN', fmtMXN(totIngOpcMXN)],
+                 ['Ingresos USD', totIngOpcUSD>0?fmtUSD(totIngOpcUSD):'—'],
+                 ['Costo OPCIONAL', fmtMXN(totCostoOpc)],
+                 ['Utilidad', fmtMXN(Math.abs(utilOpc))+' MN'],
+                 ['Margen', margenOpc+'%'],
+               ]},
+            ].map(panel => (
+              <div key={panel.title} style={{background:'rgba(255,255,255,.05)',border:'1px solid rgba(255,255,255,.1)',borderRadius:16,padding:28}}>
+                <div style={{fontSize:20,fontWeight:700,color:panel.color,marginBottom:20}}>{panel.title}</div>
+                {panel.rows.map(([l,v],i) => (
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'10px 0',borderBottom:'1px solid rgba(255,255,255,.07)',fontSize:15}}>
+                    <span style={{color:'rgba(255,255,255,.5)'}}>{l}</span>
+                    <span style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:'#fff'}}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+
+      case 2: return (
+        <div style={{display:'flex',flexDirection:'column',flex:1,justifyContent:'center',gap:28}}>
+          <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:38,fontWeight:700,color:'#fff',margin:0,textAlign:'center'}}>Comparativo por Mes</h2>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:15}}>
+              <thead>
+                <tr style={{borderBottom:'1px solid rgba(255,255,255,.15)'}}>
+                  {['Mes','Circuitos','Ingreso LIBERO','Costo LIBERO','Utilidad LIBERO','Ingreso OPCIONAL','Utilidad OPCIONAL'].map(h=>(
+                    <th key={h} style={{padding:'10px 16px',textAlign:'left',fontSize:11,textTransform:'uppercase',letterSpacing:.8,color:'rgba(255,255,255,.4)',fontWeight:500}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {mesesRango.map((mk,i) => {
+                  const m = porMes[mk] || {}
+                  return (
+                    <tr key={mk} style={{borderBottom:'1px solid rgba(255,255,255,.06)',background:i%2===0?'rgba(255,255,255,.03)':'transparent'}}>
+                      <td style={{padding:'12px 16px',fontWeight:700,color:'#e0c96a'}}>{cap(mk)}</td>
+                      <td style={{padding:'12px 16px',color:'rgba(255,255,255,.7)'}}>{m.circs||0}</td>
+                      <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:'#60a5fa'}}>{fmtMXN(m.ingMXN||0)} MN</td>
+                      <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:'#fca5a5'}}>{fmtMXN(m.costoLib||0)} MN</td>
+                      <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:(m.utilLib||0)>=0?'#86efac':'#fca5a5',fontWeight:700}}>{fmtMXN(Math.abs(m.utilLib||0))} MN</td>
+                      <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:'#a78bfa'}}>{m.ingOpc>0?fmtMXN(m.ingOpc)+' MN':'—'}</td>
+                      <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:(m.utilOpc||0)>=0?'#86efac':'#fca5a5',fontWeight:700}}>{m.ingOpc>0?fmtMXN(Math.abs(m.utilOpc||0))+' MN':'—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{borderTop:'2px solid rgba(255,255,255,.2)'}}>
+                  <td style={{padding:'12px 16px',fontWeight:700,color:'#e0c96a'}}>TOTAL</td>
+                  <td style={{padding:'12px 16px',color:'#fff',fontWeight:700}}>{circsMostrar.length}</td>
+                  <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:'#60a5fa',fontWeight:700}}>{fmtMXN(totIngMXN)} MN</td>
+                  <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:'#fca5a5',fontWeight:700}}>{fmtMXN(totCostoLib)} MN</td>
+                  <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:utilLib>=0?'#86efac':'#fca5a5',fontWeight:800}}>{fmtMXN(Math.abs(utilLib))} MN</td>
+                  <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:'#a78bfa',fontWeight:700}}>{ingOpcTotal>0?fmtMXN(ingOpcTotal)+' MN':'—'}</td>
+                  <td style={{padding:'12px 16px',fontFamily:"'IBM Plex Mono',monospace",color:utilOpc>=0?'#86efac':'#fca5a5',fontWeight:800}}>{ingOpcTotal>0?fmtMXN(Math.abs(utilOpc))+' MN':'—'}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )
+
+      case 3: return (
+        <div style={{display:'flex',flexDirection:'column',flex:1,justifyContent:'center',gap:28}}>
+          <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:38,fontWeight:700,color:'#fff',margin:0,textAlign:'center'}}>Distribución por Categoría</h2>
+          <div style={{maxWidth:800,margin:'0 auto',width:'100%',display:'flex',flexDirection:'column',gap:16}}>
+            {Object.entries(catCosto).sort((a,b)=>b[1]-a[1]).map(([cat,val]) => (
+              <div key={cat}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
+                  <span style={{fontSize:15,fontWeight:600,color:'#fff'}}>{cat}</span>
+                  <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:15,color:'rgba(255,255,255,.7)'}}>{fmtMXN(val)} MN <span style={{color:'rgba(255,255,255,.4)',fontSize:12'}}>({((val/totalCat)*100).toFixed(1)}%)</span></span>
+                </div>
+                <div style={{background:'rgba(255,255,255,.08)',borderRadius:6,height:10,overflow:'hidden'}}>
+                  <div style={{height:'100%',width:((val/maxCat)*100)+'%',background:CAT_COLORS_PRES[cat]||'#888',borderRadius:6,transition:'width .5s'}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+
+      case 4: return (
+        <div style={{display:'flex',flexDirection:'column',flex:1,justifyContent:'center',gap:28}}>
+          <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:38,fontWeight:700,color:'#fff',margin:0,textAlign:'center'}}>Top Proveedores</h2>
+          <div style={{maxWidth:860,margin:'0 auto',width:'100%',display:'flex',flexDirection:'column',gap:12}}>
+            {topProvs.map((p,i) => (
+              <div key={p.nombre} style={{display:'grid',gridTemplateColumns:'32px 1fr 200px',gap:16,alignItems:'center',background:'rgba(255,255,255,.05)',border:'1px solid rgba(255,255,255,.08)',borderRadius:12,padding:'14px 20px'}}>
+                <span style={{fontSize:16,fontWeight:800,color:i<3?'#e0c96a':'rgba(255,255,255,.3)',textAlign:'center'}}>#{i+1}</span>
+                <div>
+                  <div style={{fontSize:16,fontWeight:700,color:'#fff',marginBottom:5}}>{p.nombre}</div>
+                  <div style={{background:'rgba(255,255,255,.08)',borderRadius:4,height:6,overflow:'hidden'}}>
+                    <div style={{height:'100%',width:((p.total/maxProv)*100)+'%',background:'#e0c96a',borderRadius:4}}/>
+                  </div>
+                </div>
+                <div style={{textAlign:'right',fontFamily:"'IBM Plex Mono',monospace",fontSize:15,fontWeight:700,color:'#e0c96a'}}>{fmtMXN(p.total)} MN</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+
+      default: return null
+    }
+  }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'#080a0f',zIndex:999,display:'flex',flexDirection:'column',fontFamily:"'Outfit',sans-serif"}}>
+
+      {/* Header barra superior */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 32px',borderBottom:'1px solid rgba(255,255,255,.08)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:20}}>
+          <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'#fff'}}>CxP <span style={{color:'#e0c96a'}}>Circuitos</span></span>
+          <div style={{width:1,height:20,background:'rgba(255,255,255,.15)'}}/>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:12,color:'rgba(255,255,255,.4)'}}>Rango:</span>
+            <select value={mesDe} onChange={e=>setMesDe(e.target.value)} style={selStyle}>
+              {sortedMonths.map(mk=><option key={mk} value={mk}>{cap(mk)}</option>)}
+            </select>
+            <span style={{color:'rgba(255,255,255,.3)'}}>→</span>
+            <select value={mesA} onChange={e=>setMesA(e.target.value)} style={selStyle}>
+              {sortedMonths.filter(mk=>mk>=mesDe).map(mk=><option key={mk} value={mk}>{cap(mk)}</option>)}
+            </select>
+          </div>
+        </div>
+        <button onClick={onClose} style={{background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.15)',color:'rgba(255,255,255,.7)',borderRadius:8,padding:'6px 14px',fontSize:13,cursor:'pointer',fontFamily:'inherit'}}>✕ Cerrar</button>
+      </div>
+
+      {/* Contenido del slide */}
+      <div style={{flex:1,padding:'32px 64px',display:'flex',flexDirection:'column',overflow:'auto'}}>
+        {renderSlide()}
+      </div>
+
+      {/* Footer navegación */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 32px',borderTop:'1px solid rgba(255,255,255,.08)'}}>
+        <button onClick={()=>setSlide(s=>Math.max(s-1,0))} disabled={slide===0}
+          style={{background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.15)',color:slide===0?'rgba(255,255,255,.2)':'rgba(255,255,255,.8)',borderRadius:8,padding:'8px 20px',fontSize:14,cursor:slide===0?'default':'pointer',fontFamily:'inherit'}}>← Anterior</button>
+
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          {SLIDES.map((name,i) => (
+            <button key={i} onClick={()=>setSlide(i)}
+              style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4,background:'none',border:'none',cursor:'pointer',padding:'4px 8px'}}>
+              <div style={{width:i===slide?28:8,height:8,borderRadius:4,background:i===slide?'#e0c96a':'rgba(255,255,255,.2)',transition:'all .2s'}}/>
+              {i===slide&&<span style={{fontSize:10,color:'rgba(255,255,255,.5)',whiteSpace:'nowrap'}}>{name}</span>}
+            </button>
+          ))}
+        </div>
+
+        <button onClick={()=>setSlide(s=>Math.min(s+1,SLIDES.length-1))} disabled={slide===SLIDES.length-1}
+          style={{background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.15)',color:slide===SLIDES.length-1?'rgba(255,255,255,.2)':'rgba(255,255,255,.8)',borderRadius:8,padding:'8px 20px',fontSize:14,cursor:slide===SLIDES.length-1?'default':'pointer',fontFamily:'inherit'}}>Siguiente →</button>
+      </div>
+    </div>
+  )
+}
+
 function KPICard({ label, val, sub, cls }) {
   const colors = { gold: '#b8952a', forest: '#52b788', rust: '#b83232', sky: '#1565a0', violet: '#5c35a0' }
   return (
