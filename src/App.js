@@ -810,6 +810,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
 function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onClose }) {
   const MESES_NOM = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
   const [slide, setSlide] = useState(0)
+  const [kpiModal, setKpiModal] = useState(null)
   const [mesDe, setMesDe] = useState(sortedMonths[0] || '')
   const [mesA,  setMesA]  = useState(sortedMonths[sortedMonths.length-1] || '')
 
@@ -886,7 +887,7 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
     return cap(parts[0]) + (parts[2] ? ' '+parts[2] : '')
   }
 
-  const selStyle = {background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.2)',color:'#fff',borderRadius:8,padding:'6px 12px',fontFamily:'inherit',fontSize:13,cursor:'pointer',outline:'none'}
+  const selStyle = {background:'#1a1d26',border:'1px solid rgba(255,255,255,.25)',color:'#fff',borderRadius:8,padding:'6px 12px',fontFamily:'inherit',fontSize:13,cursor:'pointer',outline:'none'}
 
   // ── SLIDES ──
   const renderSlide = () => {
@@ -902,15 +903,21 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:24,width:'100%',maxWidth:900}}>
             {[
-              {label:'Ingresos LIBERO', val: fmtUSD(totIngUSD)+' USD', sub: fmtMXN(totIngMXN)+' MN'},
-              {label:'Ingresos OPCIONAL', val: totIngOpcMXN>0||totIngOpcUSD>0 ? fmtMXN(totIngOpcMXN)+' MN'+(totIngOpcUSD>0?' · '+fmtUSD(totIngOpcUSD)+' USD':'') : '—', sub:''},
-              {label:'Costos Totales', val: fmtMXN(totCostoLib+totCostoOpc)+' MN', sub:''},
-              {label:'Utilidad LIBERO', val: fmtMXN(Math.abs(utilLib))+' MN', sub:'Margen: '+margenLib+'%', green: utilLib>=0},
-              {label:'Utilidad OPCIONAL', val: fmtMXN(Math.abs(utilOpc))+' MN', sub:'Margen: '+margenOpc+'%', green: utilOpc>=0},
-              {label:'Circuitos', val: circsMostrar.length, sub: mesesRango.length+' mes'+(mesesRango.length!==1?'es':'')},
+              {id:'ing_lib',  label:'Ingresos LIBERO',   val: fmtUSD(totIngUSD)+' USD', sub: fmtMXN(totIngMXN)+' MN'},
+              {id:'ing_opc',  label:'Ingresos OPCIONAL',  val: totIngOpcMXN>0||totIngOpcUSD>0 ? fmtMXN(totIngOpcMXN)+' MN'+(totIngOpcUSD>0?' · '+fmtUSD(totIngOpcUSD)+' USD':'') : '—', sub:''},
+              {id:'costos',   label:'Costos Totales',      val: fmtMXN(totCostoLib+totCostoOpc)+' MN', sub:''},
+              {id:'util_lib', label:'Utilidad LIBERO',     val: fmtMXN(Math.abs(utilLib))+' MN', sub:'Margen: '+margenLib+'%', green: utilLib>=0},
+              {id:'util_opc', label:'Utilidad OPCIONAL',   val: fmtMXN(Math.abs(utilOpc))+' MN', sub:'Margen: '+margenOpc+'%', green: utilOpc>=0},
+              {id:'circuitos',label:'Circuitos',            val: circsMostrar.length, sub: mesesRango.length+' mes'+(mesesRango.length!==1?'es':'')},
             ].map((k,i) => (
-              <div key={i} style={{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',borderRadius:16,padding:'20px 24px'}}>
-                <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:1,color:'rgba(255,255,255,.4)',marginBottom:8}}>{k.label}</div>
+              <div key={i} onClick={k.id?()=>setKpiModal(k.id):undefined}
+                style={{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',borderRadius:16,padding:'20px 24px',cursor:k.id?'pointer':'default',transition:'border-color .15s,background .15s'}}
+                onMouseEnter={e=>{if(k.id){e.currentTarget.style.borderColor='rgba(224,201,106,.5)';e.currentTarget.style.background='rgba(255,255,255,.1)'}}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor='rgba(255,255,255,.1)';e.currentTarget.style.background='rgba(255,255,255,.06)'}}>
+                <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:1,color:'rgba(255,255,255,.4)',marginBottom:8,display:'flex',justifyContent:'space-between'}}>
+                  <span>{k.label}</span>
+                  {k.id&&<span style={{color:'rgba(224,201,106,.4)',fontSize:10}}>ver detalle ↗</span>}
+                </div>
                 <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:k.green===false?'#fca5a5':k.green?'#86efac':'#e0c96a'}}>{k.val}</div>
                 {k.sub&&<div style={{fontSize:12,color:'rgba(255,255,255,.4)',marginTop:4}}>{k.sub}</div>}
               </div>
@@ -1068,6 +1075,90 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
       <div style={{flex:1,padding:'32px 64px',display:'flex',flexDirection:'column',overflow:'auto'}}>
         {renderSlide()}
       </div>
+
+      {/* ── Modal KPI ── */}
+      {kpiModal && (()=>{
+        const modalData = {
+          ing_lib: {
+            title:'💰 Ingresos LIBERO — Detalle por circuito',
+            cols:['Circuito','Tour Leader','PAX','Cobrado (USD)','Equiv. MN'],
+            rows: circsMostrar.filter(c=>c.importe_cobrado>0).map(c=>({
+              cells:[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', c.info?.pax||'—', fmtUSD(c.importe_cobrado), fmtMXN((c.importe_cobrado||0)*TC)+' MN'],
+              sub: null
+            })),
+            total: ['TOTAL','','', fmtUSD(totIngUSD), fmtMXN(totIngMXN)+' MN']
+          },
+          ing_opc: {
+            title:'🔷 Ingresos OPCIONAL — Detalle por circuito',
+            cols:['Circuito','Tour Leader','Ing. MXN','Ing. USD','Total MN'],
+            rows: circsMostrar.filter(c=>(c.ingreso_opcional_mxn||0)+(c.ingreso_opcional_usd||0)>0).map(c=>({
+              cells:[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(c.ingreso_opcional_mxn||0), c.ingreso_opcional_usd>0?fmtUSD(c.ingreso_opcional_usd):'—', fmtMXN((c.ingreso_opcional_mxn||0)+(c.ingreso_opcional_usd||0)*TC)+' MN']
+            })),
+            total: ['TOTAL','', fmtMXN(totIngOpcMXN), totIngOpcUSD>0?fmtUSD(totIngOpcUSD):'—', fmtMXN(ingOpcTotal)+' MN']
+          },
+          costos: {
+            title:'📤 Costos Totales — Detalle por circuito',
+            cols:['Circuito','Tour Leader','Costo LIBERO','Costo OPCIONAL','Total MN'],
+            rows: circsMostrar.map(c=>{ const T=calcCircTotals(c,tarifario,TC); return { cells:[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(T.costoTotal)+' MN', T.costoOpcTotal>0?fmtMXN(T.costoOpcTotal)+' MN':'—', fmtMXN(T.costoTotal+T.costoOpcTotal)+' MN'] } }),
+            total: ['TOTAL','', fmtMXN(totCostoLib)+' MN', fmtMXN(totCostoOpc)+' MN', fmtMXN(totCostoLib+totCostoOpc)+' MN']
+          },
+          util_lib: {
+            title:'✅ Utilidad LIBERO — Detalle por circuito',
+            cols:['Circuito','Tour Leader','Ingreso MN','Costo MN','Utilidad','Margen'],
+            rows: circsMostrar.map(c=>{ const T=calcCircTotals(c,tarifario,TC); const m=T.ingresoMXN>0?((T.utilidad/T.ingresoMXN)*100).toFixed(1)+'%':'—'; return { cells:[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', T.ingresoMXN>0?fmtMXN(T.ingresoMXN)+' MN':'Sin capturar', fmtMXN(T.costoTotal)+' MN', fmtMXN(Math.abs(T.utilidad))+' MN', m], util: T.utilidad } }),
+            total: ['TOTAL','', fmtMXN(totIngMXN)+' MN', fmtMXN(totCostoLib)+' MN', fmtMXN(Math.abs(utilLib))+' MN', margenLib+'%']
+          },
+          util_opc: {
+            title:'✅ Utilidad OPCIONAL — Detalle por circuito',
+            cols:['Circuito','Tour Leader','Ingreso OPC','Costo OPC','Utilidad','Margen'],
+            rows: circsMostrar.filter(c=>(c.ingreso_opcional_mxn||0)+(c.ingreso_opcional_usd||0)>0).map(c=>{ const T=calcCircTotals(c,tarifario,TC); const m=T.ingresoOpcTotal>0?((T.utilidadOpc/T.ingresoOpcTotal)*100).toFixed(1)+'%':'—'; return { cells:[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', fmtMXN(T.ingresoOpcTotal)+' MN', fmtMXN(T.costoOpcTotal)+' MN', fmtMXN(Math.abs(T.utilidadOpc))+' MN', m], util: T.utilidadOpc } }),
+            total: ['TOTAL','', fmtMXN(ingOpcTotal)+' MN', fmtMXN(totCostoOpc)+' MN', fmtMXN(Math.abs(utilOpc))+' MN', margenOpc+'%']
+          },
+          circuitos: {
+            title:'🗂 Circuitos — Listado completo',
+            cols:['Circuito','Tour Leader','Mes','PAX','HAB','Servicios'],
+            rows: circsMostrar.map(c=>({ cells:[c.id.split('-').slice(-4).join('-'), c.info?.tl||'—', cap(c.month_key||''), c.info?.pax||'—', ((parseInt(c.info?.habs_single)||0)+(parseInt(c.info?.habs_doble)||0))||'—', c.rows.length] })),
+            total: null
+          }
+        }
+        const md = modalData[kpiModal]
+        if (!md) return null
+        return (
+          <div onClick={e=>e.target===e.currentTarget&&setKpiModal(null)}
+            style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',zIndex:1100,display:'flex',alignItems:'center',justifyContent:'center',padding:32}}>
+            <div style={{background:'#13161f',border:'1px solid rgba(255,255,255,.12)',borderRadius:16,width:'min(900px,95vw)',maxHeight:'80vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,.6)'}}>
+              {/* Header modal */}
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'20px 24px',borderBottom:'1px solid rgba(255,255,255,.08)'}}>
+                <h3 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:20,fontWeight:700,color:'#fff',margin:0}}>{md.title}</h3>
+                <button onClick={()=>setKpiModal(null)} style={{background:'rgba(255,255,255,.08)',border:'none',color:'rgba(255,255,255,.6)',borderRadius:6,padding:'4px 10px',fontSize:16,cursor:'pointer'}}>✕</button>
+              </div>
+              {/* Tabla */}
+              <div style={{overflowY:'auto',flex:1}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+                  <thead style={{position:'sticky',top:0,background:'#1a1d28'}}>
+                    <tr>{md.cols.map(h=><th key={h} style={{padding:'10px 16px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.8,color:'rgba(255,255,255,.4)',fontWeight:500,borderBottom:'1px solid rgba(255,255,255,.08)'}}>{h}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {md.rows.map((row,i)=>(
+                      <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,.05)',background:i%2===0?'rgba(255,255,255,.02)':'transparent'}}>
+                        {row.cells.map((cell,ci)=>(
+                          <td key={ci} style={{padding:'10px 16px',color: ci===4&&row.util!=null?(row.util>=0?'#86efac':'#fca5a5'):'rgba(255,255,255,.8)',fontFamily:ci>=2?"'IBM Plex Mono',monospace":'inherit',fontSize:ci===0?11:13,fontWeight:ci===0?700:400}}>{cell}</td>
+                        ))}
+                      </tr>
+                    ))}
+                    {md.rows.length===0&&<tr><td colSpan={md.cols.length} style={{padding:'30px',textAlign:'center',color:'rgba(255,255,255,.3)'}}>Sin datos capturados</td></tr>}
+                  </tbody>
+                  {md.total&&<tfoot>
+                    <tr style={{borderTop:'2px solid rgba(255,255,255,.15)'}}>
+                      {md.total.map((cell,ci)=><td key={ci} style={{padding:'12px 16px',color:'#e0c96a',fontFamily:ci>=2?"'IBM Plex Mono',monospace":'inherit',fontWeight:700,fontSize:ci===0?12:14}}>{cell}</td>)}
+                    </tr>
+                  </tfoot>}
+                </table>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Footer navegación */}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 32px',borderTop:'1px solid rgba(255,255,255,.08)'}}>
