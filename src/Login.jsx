@@ -1,131 +1,69 @@
-import { useState } from "react";
-import { supabase } from "./supabase.js";
+import { useState } from 'react'
+import { supabase } from './supabase'
+import { Btn } from './components'
 
-const C = {
-  navy: "#0F2D4A", blue: "#1565C0", sky: "#2196F3",
-  cream: "#FAFBFC", surface: "#FFFFFF", border: "#E2E8F0", muted: "#64748B",
-  text: "#1A2332", danger: "#E53935",
-};
-
-export default function Login({ onLogin }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+export default function Login() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   const handleLogin = async (e) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) setError('Correo o contraseña incorrectos')
+    setLoading(false)
+  }
 
-    try {
-      const { data, error: dbError } = await supabase
-        .from("app_users")
-        .select("*")
-        .eq("username", username.trim().toLowerCase())
-        .eq("password", password)
-        .eq("activo", true)
-        .single();
-
-      if (dbError || !data) {
-        setError("Usuario o contraseña incorrectos");
-        setLoading(false);
-        return;
-      }
-
-      onLogin(data);
-    } catch (err) {
-      setError("Error al conectar con el servidor");
-    }
-    setLoading(false);
-  };
+  const inp = {
+    width: '100%', padding: '11px 14px', border: '1.5px solid #d8d2c8',
+    borderRadius: 9, fontFamily: 'inherit', fontSize: 14, outline: 'none',
+    transition: 'border-color .2s', background: '#fafaf8',
+  }
 
   return (
-    <div style={{
-      minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-      background: `linear-gradient(135deg, ${C.navy} 0%, #1a3a5c 50%, ${C.blue} 100%)`,
-      fontFamily: "'DM Sans','Segoe UI',sans-serif",
-    }}>
-      <div style={{
-        background: C.surface, borderRadius: 24, padding: 48, width: "100%", maxWidth: 420,
-        boxShadow: "0 20px 60px rgba(0,0,0,.3)",
-      }}>
-        {/* Logo */}
-        <div style={{ textAlign: "center", marginBottom: 32 }}>
-          <div style={{ fontSize: 56, marginBottom: 8 }}>✈️</div>
-          <h1 style={{ fontSize: 28, fontWeight: 900, color: C.navy, margin: 0 }}>Viajes Libero</h1>
-          <p style={{ color: C.muted, fontSize: 14, marginTop: 4 }}>Sistema de Cuentas por Pagar</p>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#12151f', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 20, padding: '40px 36px', width: 'min(420px,100%)', boxShadow: '0 20px 60px rgba(0,0,0,.3)' }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 32, fontWeight: 700, color: '#12151f' }}>
+            CxP <span style={{ color: '#b8952a' }}>Circuitos</span>
+          </div>
+          <div style={{ color: '#8a8278', fontSize: 13, marginTop: 6 }}>Control de Cuentas por Pagar</div>
         </div>
 
-        <form onSubmit={handleLogin}>
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 }}>
-              Usuario
-            </label>
-            <input
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              placeholder="Ingresa tu usuario"
-              autoFocus
-              style={{
-                padding: "12px 16px", borderRadius: 12, border: `2px solid ${C.border}`, fontSize: 15,
-                outline: "none", background: C.cream, width: "100%", fontFamily: "inherit", color: C.text,
-                boxSizing: "border-box", transition: "border-color .2s",
-              }}
-              onFocus={e => e.target.style.borderColor = C.blue}
-              onBlur={e => e.target.style.borderColor = C.border}
-            />
+        <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#8a8278', display: 'block', marginBottom: 5 }}>CORREO</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              style={inp} placeholder="tu@correo.com" required
+              onFocus={(e) => e.target.style.borderColor = '#b8952a'}
+              onBlur={(e) => e.target.style.borderColor = '#d8d2c8'} />
           </div>
-
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 }}>
-              Contraseña
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="Ingresa tu contraseña"
-              style={{
-                padding: "12px 16px", borderRadius: 12, border: `2px solid ${C.border}`, fontSize: 15,
-                outline: "none", background: C.cream, width: "100%", fontFamily: "inherit", color: C.text,
-                boxSizing: "border-box", transition: "border-color .2s",
-              }}
-              onFocus={e => e.target.style.borderColor = C.blue}
-              onBlur={e => e.target.style.borderColor = C.border}
-            />
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#8a8278', display: 'block', marginBottom: 5 }}>CONTRASEÑA</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+              style={inp} placeholder="••••••••" required
+              onFocus={(e) => e.target.style.borderColor = '#b8952a'}
+              onBlur={(e) => e.target.style.borderColor = '#d8d2c8'} />
           </div>
 
           {error && (
-            <div style={{
-              background: "#FFEBEE", border: "1px solid #EF9A9A", borderRadius: 10,
-              padding: "10px 14px", marginBottom: 16, color: C.danger, fontSize: 13, fontWeight: 600,
-              textAlign: "center",
-            }}>
+            <div style={{ background: '#fff0f0', border: '1px solid #ffcdd2', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b83232' }}>
               ⚠️ {error}
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={loading || !username || !password}
-            style={{
-              width: "100%", padding: "14px 20px", borderRadius: 12, border: "none",
-              background: loading ? C.muted : C.blue, color: "#fff", fontWeight: 800,
-              fontSize: 16, cursor: loading ? "wait" : "pointer", fontFamily: "inherit",
-              transition: "background .2s",
-              opacity: (!username || !password) ? 0.6 : 1,
-            }}
-          >
-            {loading ? "Verificando…" : "Iniciar Sesión"}
-          </button>
+          <Btn full disabled={loading} onClick={handleLogin}>
+            {loading ? 'Ingresando...' : 'Ingresar →'}
+          </Btn>
         </form>
 
-        <div style={{ textAlign: "center", marginTop: 24, fontSize: 12, color: C.muted }}>
-          Sistema de gestión de cuentas por pagar
+        <div style={{ textAlign: 'center', marginTop: 24, fontSize: 12, color: '#bbb' }}>
+          ¿Problemas para ingresar? Contacta al administrador.
         </div>
       </div>
     </div>
-  );
+  )
 }
