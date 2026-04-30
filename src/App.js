@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from './supabase'
 import Login from './Login'
 import { Badge, TipoBadge, Btn, KPIGrid, Modal, Spinner } from './components'
-import { norm, clean, parseAmt, fmtMXN, fmtUSD, cap, getDC, parseCircuito } from './helpers'
+import { norm, clean, parseAmt, fmtMXN, fmtUSD, cap, getDC, parseCircuito, monthKeySortable } from './helpers'
 
 function useXLSX() {
   const [ready, setReady] = useState(!!window.XLSX)
@@ -390,7 +390,7 @@ function Dashboard({ session }) {
       return fa - fb
     })
   })
-  const sortedMonths = Object.keys(monthMap).sort((a, b) => a.localeCompare(b))
+  const sortedMonths = Object.keys(monthMap).sort((a, b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
 
   const filteredRows = (rows) => rows.filter((r) => {
     if (F.tipo !== 'ALL' && norm(r.tipo) !== F.tipo) return false
@@ -847,8 +847,12 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
   const [mesDe, setMesDe] = useState(sortedMonths[0] || '')
   const [mesA,  setMesA]  = useState(sortedMonths[sortedMonths.length-1] || '')
 
-  // Filtrar circuitos en el rango seleccionado
-  const mesesRango = sortedMonths.filter(mk => mk >= mesDe && mk <= mesA)
+  // Filtrar circuitos en el rango seleccionado (comparación cronológica)
+  const _sDe = monthKeySortable(mesDe), _sA = monthKeySortable(mesA)
+  const mesesRango = sortedMonths.filter(mk => {
+    const s = monthKeySortable(mk)
+    return s >= _sDe && s <= _sA
+  })
   const circsMostrar = mesesRango.flatMap(mk => monthMap[mk] || [])
 
   // Acumular totales
@@ -1122,7 +1126,7 @@ function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onC
             </select>
             <span style={{color:'rgba(255,255,255,.3)'}}>→</span>
             <select value={mesA} onChange={e=>setMesA(e.target.value)} style={selStyle}>
-              {sortedMonths.filter(mk=>mk>=mesDe).map(mk=><option key={mk} value={mk}>{cap(mk)}</option>)}
+              {sortedMonths.filter(mk=>monthKeySortable(mk)>=monthKeySortable(mesDe)).map(mk=><option key={mk} value={mk}>{cap(mk)}</option>)}
             </select>
           </div>
         </div>

@@ -11,6 +11,26 @@ export const fmtUSD = (v) =>
   v > 0 ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v) : '—'
 export const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s)
 
+// Convierte un month_key como "abril de 2026", "diciembre 2025", "Mayo De 2026"
+// a una clave cronológicamente ordenable tipo "2026-04". Devuelve "9999-99"
+// para meses desconocidos para que queden al final del listado.
+const _MESES_ES = {
+  enero: '01', febrero: '02', marzo: '03', abril: '04',
+  mayo: '05', junio: '06', julio: '07', agosto: '08',
+  septiembre: '09', setiembre: '09', octubre: '10',
+  noviembre: '11', diciembre: '12',
+}
+export function monthKeySortable(mk) {
+  if (!mk || mk === 'Sin mes') return '9999-99'
+  const s = String(mk).toLowerCase().trim()
+  // Acepta "abril 2026", "abril de 2026", con o sin acentos
+  const m = s.match(/([a-záéíóúñ]+)\s+(?:de\s+)?(\d{4})/i)
+  if (!m) return '9999-99'
+  const month = _MESES_ES[m[1]]
+  if (!month) return '9999-99'
+  return `${m[2]}-${month}`
+}
+
 export const CAT_ICONS = { HOSPEDAJE: '🏨', TRANSPORTE: '🚌', ACTIVIDADES: '🎯', ALIMENTOS: '🍽', GUIA: '🧭' }
 export const CAT_COLORS = {
   HOSPEDAJE: { bg: '#fff3cd', color: '#7d5a00' },
