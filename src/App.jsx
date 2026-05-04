@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from './supabase'
 import Login from './Login'
 import { Badge, TipoBadge, Btn, KPIGrid, Modal, Spinner } from './components'
-import { norm, clean, parseAmt, fmtMXN, fmtUSD, cap, getDC, parseCircuito, monthKeySortable } from './helpers'
+import { norm, clean, parseAmt, fmtMXN, fmtUSD, cap, getDC, parseCircuito, monthKeySortable, dateToMonthKey } from './helpers'
 
 function useXLSX() {
   const [ready, setReady] = useState(!!window.XLSX)
@@ -564,10 +564,10 @@ function Dashboard({ session }) {
       {/* ── MODALS ── */}
       {modal === 'upload' && (
         <Modal title="Agregar Circuito" onClose={() => { setModal(null); setPendingCircuit(null) }}>
-          <UploadZone xlsxReady={xlsxReady} onFile={handleCircuitFile} pending={pendingCircuit} fileRef={fileRef} />
+          <UploadZone xlsxReady={xlsxReady} onFile={handleCircuitFile} pending={pendingCircuit} fileRef={fileRef} onUpdatePending={setPendingCircuit} existingCircuits={circuits} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
             <Btn outline onClick={() => { setModal(null); setPendingCircuit(null) }}>Cancelar</Btn>
-            <Btn disabled={!pendingCircuit || saving} onClick={confirmLoad}>{saving ? 'Guardando...' : 'Cargar circuito ✓'}</Btn>
+            <Btn disabled={!pendingCircuit || saving} onClick={confirmLoad}>{saving ? 'Guardando...' : 'Confirmar y cargar ✓'}</Btn>
           </div>
         </Modal>
       )}
@@ -1843,19 +1843,126 @@ function EmptyState({ onAdd }) {
   )
 }
 
-function UploadZone({ xlsxReady, onFile, pending, fileRef }) {
+function UploadZone({ xlsxReady, onFile, pending, fileRef, onUpdatePending, existingCircuits }) {
   const [drag, setDrag] = useState(false)
+
+  // Si ya hay un circuito cargado, mostrar el preview enriquecido
+  if (pending) {
+    const fechaIni = pending.info?.fecha_inicio ? new Date(pending.info.fecha_inicio) : null
+    const fechaIniValid = fechaIni && !isNaN(fechaIni.getTime())
+    // Valor para input type="date" (formato YYYY-MM-DD)
+    const fechaIsoForInput = fechaIniValid
+      ? `${fechaIni.getFullYear()}-${String(fechaIni.getMonth()+1).padStart(2,'0')}-${String(fechaIni.getDate()).padStart(2,'0')}`
+      : ''
+    const fechaLargo = fechaIniValid
+      ? fechaIni.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+      : 'Sin fecha detectada'
+
+    const yaExiste = existingCircuits?.some(c => c.id === pending.id)
+    const totalServicios = pending.rows.length
+    const monthLabel = pending.monthKey === 'Sin mes' ? '⚠ Sin mes asignado' : cap(pending.monthKey)
+    const monthOk = pending.monthKey !== 'Sin mes'
+
+    const onChangeFecha = (isoYmd) => {
+      if (!isoYmd) {
+        onUpdatePending({ ...pending, info: { ...pending.info, fecha_inicio: null }, monthKey: 'Sin mes' })
+        return
+      }
+      // isoYmd viene como "YYYY-MM-DD". Construyo Date local para evitar shift por TZ.
+      const [y, m, d] = isoYmd.split('-').map(Number)
+      const newDate = new Date(y, m - 1, d)
+      onUpdatePending({
+        ...pending,
+        info: { ...pending.info, fecha_inicio: newDate.toISOString() },
+        monthKey: dateToMonthKey(newDate),
+      })
+    }
+
+    const reset = () => { onUpdatePending(null); if (fileRef.current) fileRef.current.value = '' }
+
+    return (
+      <div>
+        {/* Encabezado: archivo cargado */}
+        <div style={{ background: '#f0faf4', border: '1px solid #c5e8d3', borderRadius: 10, padding: 14, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 24 }}>✅</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#1f6e3f' }}>Excel cargado correctamente</div>
+            <div style={{ fontSize: 11, color: '#5a7d68' }}>Revisa los datos detectados antes de guardar</div>
+          </div>
+          <button onClick={reset} style={{ background: 'none', border: '1px solid #c5e8d3', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer', color: '#5a7d68' }}>Cambiar archivo</button>
+        </div>
+
+        {/* Aviso si el ID ya existe */}
+        {yaExiste && (
+          <div style={{ background: '#fff8e1', border: '1px solid #f0d97f', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12, color: '#7d5a00' }}>
+            ⚠ Ya existe un circuito con el ID <strong>{pending.id}</strong>. Si confirmas, se reemplazarán sus datos.
+          </div>
+        )}
+
+        {/* Datos clave del circuito */}
+        <div style={{ background: '#fafafa', border: '1px solid #e8e3da', borderRadius: 10, padding: 16 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#8a8278', marginBottom: 10 }}>Datos detectados</div>
+
+          <Row label="ID del circuito"><strong style={{ fontFamily: 'monospace', fontSize: 13 }}>{pending.id}</strong></Row>
+          <Row label="Tour Leader">{pending.info?.tl || <em style={{ color: '#aaa' }}>—</em>}</Row>
+          <Row label="Operador">{pending.info?.operador || <em style={{ color: '#aaa' }}>—</em>}</Row>
+          <Row label="PAX / Habitaciones">{pending.info?.pax || '—'} pax · {pending.info?.habs || '—'} habs</Row>
+          <Row label="Total de servicios"><strong>{totalServicios}</strong> servicios LIBERO/OPCIONAL</Row>
+
+          {/* Fecha de inicio editable — la parte crítica */}
+          <div style={{ borderTop: '1px solid #e8e3da', marginTop: 10, paddingTop: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#8a8278', marginBottom: 6 }}>📅 Fecha de inicio</div>
+            <div style={{ fontSize: 13, color: '#121512', marginBottom: 6, textTransform: 'capitalize' }}>{fechaLargo}</div>
+            <input
+              type="date"
+              value={fechaIsoForInput}
+              onChange={(e) => onChangeFecha(e.target.value)}
+              style={{ border: '1.5px solid #d8d2c8', borderRadius: 6, padding: '6px 10px', fontFamily: 'inherit', fontSize: 13, background: '#fff', outline: 'none' }}
+            />
+            <div style={{ fontSize: 11, color: '#8a8278', marginTop: 6, fontStyle: 'italic' }}>
+              Si la fecha no es la correcta (porque el Excel la interpretó mal), modifícala aquí.
+            </div>
+          </div>
+
+          {/* Mes destino */}
+          <div style={{ borderTop: '1px solid #e8e3da', marginTop: 10, paddingTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#8a8278' }}>Mes destino</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: monthOk ? '#1f6e3f' : '#a05a00', marginTop: 4 }}>
+                {monthOk ? '📂 ' : ''}{monthLabel}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: '#8a8278', textAlign: 'right', maxWidth: 200 }}>
+              El circuito se agrupará bajo este mes en la app.
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Sin archivo aún: zona de drop
   return (
     <div>
       {!xlsxReady && <p style={{ color: '#8a8278', fontSize: 13, marginBottom: 12 }}>⏳ Cargando lector de Excel...</p>}
       <div onDragOver={(e) => { e.preventDefault(); setDrag(true) }} onDragLeave={() => setDrag(false)}
         onDrop={(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]) }}
         onClick={() => fileRef.current?.click()}
-        style={{ border: `2px dashed ${drag ? '#b8952a' : pending ? '#52b788' : '#d8d2c8'}`, borderRadius: 10, padding: 28, textAlign: 'center', cursor: 'pointer', background: pending ? '#f0faf4' : '#fafafa', transition: 'all .2s' }}>
-        <div style={{ fontSize: 36, marginBottom: 8 }}>{pending ? '✅' : '📊'}</div>
-        <p style={{ color: '#8a8278', fontSize: 13 }}>{pending ? `✓ ${pending.id} · ${pending.rows.length} servicios` : 'Arrastra el Excel o haz clic'}</p>
+        style={{ border: `2px dashed ${drag ? '#b8952a' : '#d8d2c8'}`, borderRadius: 10, padding: 28, textAlign: 'center', cursor: 'pointer', background: '#fafafa', transition: 'all .2s' }}>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>📊</div>
+        <p style={{ color: '#8a8278', fontSize: 13 }}>Arrastra el Excel o haz clic</p>
         <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={(e) => { if (e.target.files[0]) onFile(e.target.files[0]) }} />
       </div>
+    </div>
+  )
+}
+
+// Pequeño helper visual para filas label/value en el preview
+function Row({ label, children }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', fontSize: 13 }}>
+      <span style={{ color: '#8a8278' }}>{label}</span>
+      <span style={{ color: '#121512', textAlign: 'right' }}>{children}</span>
     </div>
   )
 }
