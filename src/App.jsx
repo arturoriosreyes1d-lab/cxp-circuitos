@@ -714,8 +714,8 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
           {label:'Circuitos',val:circsMostrar.length,cls:'gold'},
           {label:'💰 Cobrado',val:totalIngUSD>0?fmtUSD(totalIngUSD):'—',sub:totalIngUSD>0?fmtMXN(totalIngMXN)+' MN':'Sin capturar',cls:'forest'},
           {label:'📤 Costo',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
-          ...(totalComision>0 ? [{label:'👥 Comisión Socio',val:fmtMXN(totalComision)+' MN',cls:'rust'}] : []),
-          {label:hayIngreso?(utilidadNeta>=0?'✅ Utilidad'+(totalComision>0?' Neta':''):'❌ Pérdida'+(totalComision>0?' Neta':'')):'💡 Utilidad',val:hayIngreso?fmtMXN(Math.abs(utilidadNeta))+' MN':'—',sub:hayIngreso&&totalIngMXN>0?((utilidadNeta/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidadNeta>=0?'forest':'rust'):'sky'},
+          ...(totalComision>0 ? [{label:'👥 Comisión Pietro',val:fmtMXN(totalComision)+' MN',cls:'rust'}] : []),
+          {label:hayIngreso?(utilidadNeta>=0?'✅ Utilidad'+(totalComision>0?' Bruta':''):'❌ Pérdida'+(totalComision>0?' Bruta':'')):'💡 Utilidad',val:hayIngreso?fmtMXN(Math.abs(utilidadNeta))+' MN':'—',sub:hayIngreso&&totalIngMXN>0?((utilidadNeta/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidadNeta>=0?'forest':'rust'):'sky'},
           {label:'✅ Pagado',val:fmtMXN(totalPaidMXN)+' MN',sub:fmtUSD(totalPaidUSD)+' USD',cls:'forest'},
           {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
         ] : [
@@ -738,12 +738,18 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
         <Card>
           <CH t={socioMode ? "🔵 Circuito — Utilidad" : "🔵 Circuito LIBERO — Utilidad"}/>
           <DRow label="Cobrado al cliente (USD)" val={totalIngUSD>0?fmtUSD(totalIngUSD):'Sin capturar'} color="#1565a0"/>
-          {totalIngUSD>0&&<DRow label="Equivalente MN" val={fmtMXN(totalIngMXN)+' MN'} color="#1565a0"/>}
+          {totalIngUSD>0&&<DRow label="Equivalente" val={fmtMXN(totalIngMXN)+' MN'} color="#1565a0"/>}
           <DRow label={socioMode ? "Total Costos" : "Total Costos LIBERO"} val={fmtMXN(totalCosto)+' MN'} color="#b83232"/>
-          {totalComision>0 && <DRow label="👥 Comisión Socio" val={'−'+fmtMXN(totalComision)+' MN'} color="#a05a00"/>}
           {hayIngreso&&totalCosto>0&&<>
-            {totalComision>0 && <DRow label={utilidad>=0?'Utilidad antes de comisión':'Pérdida antes de comisión'} val={fmtMXN(Math.abs(utilidad))+' MN'} color={utilidad>=0?'#1e5c3a':'#b83232'}/>}
-            <DRow label={utilidadNeta>=0?(totalComision>0?'✅ Utilidad NETA':'✅ Utilidad'):(totalComision>0?'❌ Pérdida NETA':'❌ Pérdida')} val={fmtMXN(Math.abs(utilidadNeta))+' MN'} color={utilidadNeta>=0?'#1e5c3a':'#b83232'} bold big/>
+            <DRow label={utilidad>=0?'Utilidad antes de comisión':'Pérdida antes de comisión'} val={fmtMXN(Math.abs(utilidad))+' MN'} color={utilidad>=0?'#1e5c3a':'#b83232'}/>
+            {totalComision>0 && (
+              <DRow
+                label={<>👥 Comisión Pietro <span style={{fontSize:10,fontWeight:400,color:'#8a8278'}}>({totalIngMXN>0?((totalComision/totalIngMXN)*100).toFixed(2):'0.00'}% sobre ingreso)</span></>}
+                val={'−'+fmtMXN(totalComision)+' MN'}
+                color="#a05a00"
+              />
+            )}
+            <DRow label={utilidadNeta>=0?'✅ Utilidad Bruta':'❌ Pérdida Bruta'} val={fmtMXN(Math.abs(utilidadNeta))+' MN'} color={utilidadNeta>=0?'#1e5c3a':'#b83232'} bold big/>
             <DRow label="Margen" val={`${((utilidadNeta/totalIngMXN)*100).toFixed(1)}%`} color={utilidadNeta>=0?'#1e5c3a':'#b83232'} bold/>
           </>}
           {!hayIngreso&&<p style={{fontSize:12,color:'#8a8278',marginTop:10}}>⚠️ Captura el importe cobrado en cada circuito.</p>}
@@ -846,7 +852,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
               <thead>
                 <tr style={{background:'#070a12',color:'#fff'}}>
                   {(socioMode
-                    ? ['Circuito','Tour Leader','PAX','Svc','Cobrado (USD)','Equiv. MN','Costo','Comisión','Util/Pérd Neta','% Pagado']
+                    ? ['Circuito','Tour Leader','PAX','Svc','Cobrado (USD)','Equiv. MN','Costo','Comisión','Util/Pérd Bruta','% Pagado']
                     : ['Circuito','Tour Leader','PAX','Svc','Cobrado LIB (USD)','Equiv. MN','Costo LIB','Util/Pérd LIB','Ing. OPC MN','Ing. OPC USD','Costo OPC','Util/Pérd OPC','% Pagado']
                   ).map(h=>(
                     <th key={h} style={{padding:'9px 10px',textAlign:'left',fontSize:9,textTransform:'uppercase',letterSpacing:.5,whiteSpace:'nowrap'}}>{h}</th>
@@ -2352,7 +2358,7 @@ function CircuitCards({ circs, tarifario, TC, socioMode, onSelect }) {
             </div>
             {hayIng && (
               <div style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8, background: utilidad >= 0 ? '#f0faf4' : '#fff5f5', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278' }}>{utilidad >= 0 ? '✅ UTILIDAD' : '❌ PÉRDIDA'}{socioMode && T.commissionPct>0 ? ' NETA' : ''}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278' }}>{utilidad >= 0 ? '✅ UTILIDAD' : '❌ PÉRDIDA'}{socioMode && T.commissionPct>0 ? ' BRUTA' : ''}</span>
                 <span style={{ fontWeight: 800, fontSize: 13, color: utilidad >= 0 ? '#1e5c3a' : '#b83232' }}>{fmtMXN(Math.abs(utilidad))} <span style={{ fontSize: 10, fontWeight: 600 }}>MN</span></span>
               </div>
             )}
@@ -2499,7 +2505,7 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
             </div>
             <div style={{textAlign:'right'}}>
               {hayIngLib ? <>
-                {T.utilidadNeta>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD{T.commissionPct>0?' NETA':''}</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA{T.commissionPct>0?' NETA':''}</span>}
+                {T.utilidadNeta>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD{T.commissionPct>0?' BRUTA':''}</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA{T.commissionPct>0?' BRUTA':''}</span>}
                 <br/><UtilBadge util={T.utilidadNeta}/>
                 {T.ingresoMXN>0&&<div style={{fontSize:10,color:'#8a8278'}}>Margen: {((T.utilidadNeta/T.ingresoMXN)*100).toFixed(1)}%</div>}
               </> : <span style={{fontSize:11,color:'#8a8278'}}>Sin ingreso</span>}
@@ -2533,7 +2539,7 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
             <div style={{width:1,background:'#d8d2c8'}}/>
             {/* Comisión a Socio (Pietro Lamprati) */}
             <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>👥 Comisión Socio</div>
+              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>👥 Comisión Pietro</div>
               {editCom ? (
                 <div style={{display:'flex',gap:5,alignItems:'center'}}>
                   <input type="number" step="0.01" min="0" value={comVal} onChange={e=>setComVal(e.target.value)} placeholder="0" autoFocus
