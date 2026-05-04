@@ -103,11 +103,16 @@ function calcCircTotals(circ, tarifario, TC) {
   const ingreso = circ.importe_cobrado || 0
   const ingresoMXN = circ.moneda_cobrado === 'USD' ? ingreso * TC : ingreso
   const utilidad = ingresoMXN - costoTotal
+  // Comisión a socio (Pietro Lamprati): % manual sobre ingreso LIBERO
+  const commissionPct = parseFloat(circ.commission_pct) || 0
+  const comision = ingresoMXN * (commissionPct / 100)
+  const utilidadNeta = utilidad - comision
   const ingresoOpcMXN = circ.ingreso_opcional_mxn || 0
   const ingresoOpcUSD = circ.ingreso_opcional_usd || 0
   const ingresoOpcTotal = ingresoOpcMXN + ingresoOpcUSD * TC
   const utilidadOpc = ingresoOpcTotal - costoOpcTotal
   return { costoMXN, costoUSD, costoTotal, paidMXN, paidUSD, ingreso, ingresoMXN, utilidad,
+    commissionPct, comision, utilidadNeta,
     costoOpcMXN, costoOpcUSD, costoOpcTotal, paidOpcMXN, paidOpcUSD,
     ingresoOpcMXN, ingresoOpcUSD, ingresoOpcTotal, utilidadOpc }
 }
@@ -166,6 +171,13 @@ function Dashboard({ session }) {
   const [activeTab, setActiveTab] = useState('cxp')
   const [saving, setSaving] = useState(false)
   const [presentacion, setPresentacion] = useState(false)
+  // Modo Vista Socio: oculta OPCIONAL y muestra comisión a socio
+  const [socioMode, setSocioMode] = useState(() => {
+    try { return localStorage.getItem('cxp_socioMode') === '1' } catch { return false }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('cxp_socioMode', socioMode ? '1' : '0') } catch {}
+  }, [socioMode])
   const fileRef = useRef()
   const tarFileRef = useRef()
 
@@ -386,6 +398,12 @@ function Dashboard({ session }) {
     await supabase.from('circuits').update({ importe_cobrado: valor || null, moneda_cobrado: moneda }).eq('id', cid)
     setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, importe_cobrado: valor || null, moneda_cobrado: moneda }))
   }
+  const saveCommission = async (cid, pct) => {
+    const val = parseFloat(pct)
+    const safe = isNaN(val) || val < 0 ? 0 : val
+    await supabase.from('circuits').update({ commission_pct: safe }).eq('id', cid)
+    setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, commission_pct: safe }))
+  }
   const deleteCircuit = async () => {
     await supabase.from('circuits').delete().eq('id', deleteId)
     const next = circuits.filter((c) => c.id !== deleteId)
@@ -443,16 +461,24 @@ function Dashboard({ session }) {
     <div style={{ fontFamily: "'Outfit', sans-serif", fontVariantNumeric: 'lining-nums tabular-nums', fontFeatureSettings: '"tnum","lnum"', background: '#f5f1eb', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
       {/* ── HEADER ── */}
-      <header style={{ background: '#000000', borderBottom: '2px solid #b8952a', padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200 }}>
+      <header style={{ background: socioMode ? '#1a3a1a' : '#000000', borderBottom: `2px solid ${socioMode ? '#52b788' : '#b8952a'}`, padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200, transition: 'background .2s, border-color .2s' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,.5)', cursor: 'pointer', fontSize: 18 }}>☰</button>
-          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: '#fff' }}>CxP <span style={{ color: '#e0c96a' }}>Circuitos</span></span>
+          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: '#fff' }}>
+            CxP <span style={{ color: socioMode ? '#95d5b2' : '#e0c96a' }}>Circuitos</span>
+          </span>
+          {socioMode && (
+            <span style={{ marginLeft: 6, padding: '3px 10px', background: 'rgba(149,213,178,.18)', border: '1px solid rgba(149,213,178,.4)', borderRadius: 12, fontSize: 10.5, fontWeight: 700, color: '#95d5b2', letterSpacing: 0.5, textTransform: 'uppercase' }}>👥 Vista Socio · Pietro Lamprati</span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {saving && <span style={{ fontSize: 11, color: '#e0c96a' }}>Guardando...</span>}
           <HBtn onClick={() => { setPendingCircuit(null); setModal('upload') }}>+ Circuito</HBtn>
           <HBtn onClick={() => setPresentacion(true)}>📊 Presentación</HBtn>
           <HBtn onClick={() => setModal('tarifario')}>📋 Tarifario</HBtn>
+          <HBtn onClick={() => setSocioMode(!socioMode)} style={socioMode ? { background: 'rgba(149,213,178,.2)', borderColor: 'rgba(149,213,178,.5)', color: '#95d5b2' } : undefined}>
+            {socioMode ? '✓ Vista Socio' : '👥 Vista Socio'}
+          </HBtn>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(184,149,42,.15)', border: '1px solid rgba(224,201,106,.3)', borderRadius: 20, padding: '3px 12px' }}>
             <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>TC:</span>
             <input type="number" value={TC} step="0.01" onChange={(e) => updateTC(e.target.value)} style={{ width: 52, background: 'none', border: 'none', color: '#e0c96a', fontSize: 12, fontWeight: 600, outline: 'none' }} />
@@ -546,16 +572,16 @@ function Dashboard({ session }) {
         {/* ── MAIN ── */}
         <main style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
           {view.type === 'empty' && <EmptyState onAdd={() => { setPendingCircuit(null); setModal('upload') }} />}
-          {view.type === 'all' && <AllView circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
-          {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
-          {view.type === 'resultados_all' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} />}
-          {view.type === 'resultados_mes' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} initModo="mes" initMes={view.monthKey} />}
+          {view.type === 'all' && <AllView circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
+          {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
+          {view.type === 'resultados_all' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} />}
+          {view.type === 'resultados_mes' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} initModo="mes" initMes={view.monthKey} />}
           {view.type === 'pagos' && <PagosView circuits={circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
           {view.type === 'circuit' && activeCircuit && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
-              F={F} setFilters={setFilters} filteredRows={filteredRows}
+              F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode}
               togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
-              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional} saveCircInfo={saveCircInfo}
+              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveCommission={saveCommission} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional} saveCircInfo={saveCircInfo}
               onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
           )}
         </main>
@@ -586,14 +612,14 @@ function Dashboard({ session }) {
         </Modal>
       )}
     </div>
-    {presentacion && <PresentacionMode circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} onClose={()=>setPresentacion(false)}/>}
+    {presentacion && <PresentacionMode circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onClose={()=>setPresentacion(false)}/>}
     </>
   )
 }
 // ═══════════════════════════════════════════════
 //  ESTADO DE RESULTADOS
 // ═══════════════════════════════════════════════
-function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, initModo, initMes }) {
+function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, socioMode, initModo, initMes }) {
   const [modo, setModo] = useState(initModo || 'todos')
   const [mesSel, setMesSel] = useState(initMes || sortedMonths[0] || '')
   const [circSel, setCircSel] = useState(circuits[0]?.id || '')
@@ -607,6 +633,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
   let totalPaidMXN=0, totalPaidUSD=0, totalPendMXN=0, totalPendUSD=0
   let totalCostoOpc=0, totalIngOpcMXN=0, totalIngOpcUSD=0, totalIngOpcTotal=0
   let totalPaidOpcMXN=0, totalPaidOpcUSD=0
+  let totalComision=0
   const catCosto={}, catPaidMXN={}, catPaidUSD={}, catPendMXN={}, catPendUSD={}
 
   circsMostrar.forEach(c => {
@@ -620,8 +647,11 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
     totalIngOpcMXN += T.ingresoOpcMXN; totalIngOpcUSD += T.ingresoOpcUSD
     totalIngOpcTotal += T.ingresoOpcTotal
     totalPaidOpcMXN += T.paidOpcMXN;   totalPaidOpcUSD += T.paidOpcUSD
+    totalComision  += T.comision
 
     c.rows.forEach(r => {
+      // En modo socio, ignoramos OPCIONAL en gráficas por categoría
+      if (socioMode && (r.tipo||'').toString().toUpperCase().trim() === 'OPCIONAL') return
       const cat = (r.clasificacion||'OTROS').toUpperCase().trim()
       const {mxn,usd} = getImporte(r,c.info,tarifario)
       const v = mxn + usd*TC; if (v>0) catCosto[cat]=(catCosto[cat]||0)+v
@@ -632,6 +662,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
   })
 
   const utilidad     = totalIngMXN   - totalCosto
+  const utilidadNeta = utilidad - totalComision
   const utilidadOpc  = totalIngOpcTotal - totalCostoOpc
   const hayIngreso   = totalIngMXN   > 0
   const hayIngOpc    = totalIngOpcTotal > 0
@@ -679,7 +710,15 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
 
       {/* KPIs fila */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12,marginBottom:20}}>
-        {[
+        {(socioMode ? [
+          {label:'Circuitos',val:circsMostrar.length,cls:'gold'},
+          {label:'💰 Cobrado',val:totalIngUSD>0?fmtUSD(totalIngUSD):'—',sub:totalIngUSD>0?fmtMXN(totalIngMXN)+' MN':'Sin capturar',cls:'forest'},
+          {label:'📤 Costo',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
+          ...(totalComision>0 ? [{label:'👥 Comisión Socio',val:fmtMXN(totalComision)+' MN',cls:'rust'}] : []),
+          {label:hayIngreso?(utilidadNeta>=0?'✅ Utilidad'+(totalComision>0?' Neta':''):'❌ Pérdida'+(totalComision>0?' Neta':'')):'💡 Utilidad',val:hayIngreso?fmtMXN(Math.abs(utilidadNeta))+' MN':'—',sub:hayIngreso&&totalIngMXN>0?((utilidadNeta/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidadNeta>=0?'forest':'rust'):'sky'},
+          {label:'✅ Pagado',val:fmtMXN(totalPaidMXN)+' MN',sub:fmtUSD(totalPaidUSD)+' USD',cls:'forest'},
+          {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
+        ] : [
           {label:'Circuitos',val:circsMostrar.length,cls:'gold'},
           {label:'💰 Cobrado LIBERO',val:totalIngUSD>0?fmtUSD(totalIngUSD):'—',sub:totalIngUSD>0?fmtMXN(totalIngMXN)+' MN':'Sin capturar',cls:'forest'},
           {label:'💰 Cobrado OPCIONAL',val:(totalIngOpcMXN>0||totalIngOpcUSD>0)?(totalIngOpcMXN>0?fmtMXN(totalIngOpcMXN)+' MN':''):'—',sub:totalIngOpcUSD>0?fmtUSD(totalIngOpcUSD):'Sin capturar',cls:'sky'},
@@ -689,26 +728,29 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
           {label:hayIngOpc?(utilidadOpc>=0?'✅ Utilidad OPC':'❌ Pérdida OPC'):'💡 OPCIONAL',val:hayIngOpc?fmtMXN(Math.abs(utilidadOpc))+' MN':'—',sub:hayIngOpc&&totalCostoOpc>0?((utilidadOpc/totalIngOpcTotal)*100).toFixed(1)+'%':undefined,cls:hayIngOpc?(utilidadOpc>=0?'forest':'rust'):'sky'},
           {label:'✅ Pagado',val:fmtMXN(totalPaidMXN)+' MN',sub:fmtUSD(totalPaidUSD)+' USD',cls:'forest'},
           {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
-        ].map((k,i)=><KPICard key={i} {...k}/>)}
+        ]).map((k,i)=><KPICard key={i} {...k}/>)}
       </div>
 
-      {/* Grid: utilidades lado a lado */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:0}}>
+      {/* Grid: utilidades lado a lado (UNA columna en Vista Socio) */}
+      <div style={{display:'grid',gridTemplateColumns: socioMode ? '1fr' : '1fr 1fr',gap:16,marginBottom:0}}>
 
         {/* LIBERO */}
         <Card>
-          <CH t="🔵 Circuito LIBERO — Utilidad"/>
+          <CH t={socioMode ? "🔵 Circuito — Utilidad" : "🔵 Circuito LIBERO — Utilidad"}/>
           <DRow label="Cobrado al cliente (USD)" val={totalIngUSD>0?fmtUSD(totalIngUSD):'Sin capturar'} color="#1565a0"/>
           {totalIngUSD>0&&<DRow label="Equivalente MN" val={fmtMXN(totalIngMXN)+' MN'} color="#1565a0"/>}
-          <DRow label="Total Costos LIBERO" val={fmtMXN(totalCosto)+' MN'} color="#b83232"/>
+          <DRow label={socioMode ? "Total Costos" : "Total Costos LIBERO"} val={fmtMXN(totalCosto)+' MN'} color="#b83232"/>
+          {totalComision>0 && <DRow label="👥 Comisión Socio" val={'−'+fmtMXN(totalComision)+' MN'} color="#a05a00"/>}
           {hayIngreso&&totalCosto>0&&<>
-            <DRow label={utilidad>=0?'✅ Utilidad LIBERO':'❌ Pérdida LIBERO'} val={fmtMXN(Math.abs(utilidad))+' MN'} color={utilidad>=0?'#1e5c3a':'#b83232'} bold big/>
-            <DRow label="Margen LIBERO" val={`${((utilidad/totalIngMXN)*100).toFixed(1)}%`} color={utilidad>=0?'#1e5c3a':'#b83232'} bold/>
+            {totalComision>0 && <DRow label={utilidad>=0?'Utilidad antes de comisión':'Pérdida antes de comisión'} val={fmtMXN(Math.abs(utilidad))+' MN'} color={utilidad>=0?'#1e5c3a':'#b83232'}/>}
+            <DRow label={utilidadNeta>=0?(totalComision>0?'✅ Utilidad NETA':'✅ Utilidad'):(totalComision>0?'❌ Pérdida NETA':'❌ Pérdida')} val={fmtMXN(Math.abs(utilidadNeta))+' MN'} color={utilidadNeta>=0?'#1e5c3a':'#b83232'} bold big/>
+            <DRow label="Margen" val={`${((utilidadNeta/totalIngMXN)*100).toFixed(1)}%`} color={utilidadNeta>=0?'#1e5c3a':'#b83232'} bold/>
           </>}
           {!hayIngreso&&<p style={{fontSize:12,color:'#8a8278',marginTop:10}}>⚠️ Captura el importe cobrado en cada circuito.</p>}
         </Card>
 
-        {/* OPCIONAL */}
+        {/* OPCIONAL — oculto en Vista Socio */}
+        {!socioMode && (
         <Card>
           <CH t="🔷 Opcionales — Utilidad"/>
           {totalIngOpcMXN>0&&<DRow label="Ingresos opcionales MXN" val={fmtMXN(totalIngOpcMXN)+' MN'} color="#1565a0"/>}
@@ -721,6 +763,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
           </>}
           {!hayIngOpc&&<p style={{fontSize:12,color:'#8a8278',marginTop:10}}>⚠️ Captura los ingresos opcionales en cada circuito.</p>}
         </Card>
+        )}
       </div>
 
       {/* Distribución categorías + proveedores */}
@@ -802,7 +845,10 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
               <thead>
                 <tr style={{background:'#070a12',color:'#fff'}}>
-                  {['Circuito','Tour Leader','PAX','Svc','Cobrado LIB (USD)','Equiv. MN','Costo LIB','Util/Pérd LIB','Ing. OPC MN','Ing. OPC USD','Costo OPC','Util/Pérd OPC','% Pagado'].map(h=>(
+                  {(socioMode
+                    ? ['Circuito','Tour Leader','PAX','Svc','Cobrado (USD)','Equiv. MN','Costo','Comisión','Util/Pérd Neta','% Pagado']
+                    : ['Circuito','Tour Leader','PAX','Svc','Cobrado LIB (USD)','Equiv. MN','Costo LIB','Util/Pérd LIB','Ing. OPC MN','Ing. OPC USD','Costo OPC','Util/Pérd OPC','% Pagado']
+                  ).map(h=>(
                     <th key={h} style={{padding:'9px 10px',textAlign:'left',fontSize:9,textTransform:'uppercase',letterSpacing:.5,whiteSpace:'nowrap'}}>{h}</th>
                   ))}
                 </tr>
@@ -810,23 +856,30 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, ini
               <tbody>
                 {circsMostrar.map((circ,i)=>{
                   const T=calcCircTotals(circ,tarifario,TC)
-                  const paid=circ.rows.filter(r=>r.paid).length
-                  const pct=circ.rows.length>0?Math.round((paid/circ.rows.length)*100):0
+                  const liberoRows = circ.rows.filter(r=>(r.tipo||'').toString().toUpperCase().trim()!=='OPCIONAL')
+                  const visibleRows = socioMode ? liberoRows : circ.rows
+                  const paid = visibleRows.filter(r=>r.paid).length
+                  const pct = visibleRows.length>0?Math.round((paid/visibleRows.length)*100):0
                   const hLib=T.ingresoMXN>0; const hOpc=T.ingresoOpcTotal>0
                   return (
                     <tr key={circ.id} style={{borderBottom:'1px solid #ece7df',background:i%2===0?'#fafaf8':'#fff'}}>
                       <td style={{padding:'8px 10px',fontWeight:700,fontSize:10}}>{circ.id.split('-').slice(-3).join('-')}</td>
                       <td style={{padding:'8px 10px',fontSize:11}}>{circ.info?.tl||'—'}</td>
                       <td style={{padding:'8px 10px'}}>{circ.info?.pax||'—'}</td>
-                      <td style={{padding:'8px 10px'}}>{circ.rows.length}</td>
+                      <td style={{padding:'8px 10px'}}>{visibleRows.length}</td>
                       <td style={{padding:'8px 10px',fontWeight:700,color:'#1565a0'}}>{hLib?fmtUSD(circ.importe_cobrado):<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
                       <td style={{padding:'8px 10px',color:'#1e5c3a'}}>{hLib?fmtMXN(T.ingresoMXN)+' MN':<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
                       <td style={{padding:'8px 10px',fontWeight:700,color:'#b83232'}}>{T.costoTotal>0?fmtMXN(T.costoTotal)+' MN':'—'}</td>
-                      <td style={{padding:'8px 10px'}}>{hLib?<span style={{fontWeight:700,color:T.utilidad>=0?'#1e5c3a':'#b83232'}}>{T.utilidad>=0?'✅':'❌'} {fmtMXN(Math.abs(T.utilidad))} MN</span>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
-                      <td style={{padding:'8px 10px',color:'#1565a0'}}>{T.ingresoOpcMXN>0?fmtMXN(T.ingresoOpcMXN)+' MN':<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
-                      <td style={{padding:'8px 10px',color:'#1565a0'}}>{T.ingresoOpcUSD>0?fmtUSD(T.ingresoOpcUSD):<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
-                      <td style={{padding:'8px 10px',fontWeight:700,color:'#b83232'}}>{T.costoOpcTotal>0?fmtMXN(T.costoOpcTotal)+' MN':'—'}</td>
-                      <td style={{padding:'8px 10px'}}>{hOpc?<span style={{fontWeight:700,color:T.utilidadOpc>=0?'#1e5c3a':'#b83232'}}>{T.utilidadOpc>=0?'✅':'❌'} {fmtMXN(Math.abs(T.utilidadOpc))} MN</span>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      {socioMode ? (<>
+                        <td style={{padding:'8px 10px',color:'#a05a00',fontWeight:600}}>{T.commissionPct>0?<><span style={{fontSize:10,color:'#8a8278'}}>{T.commissionPct}%</span> −{fmtMXN(T.comision)}</>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                        <td style={{padding:'8px 10px'}}>{hLib?<span style={{fontWeight:700,color:T.utilidadNeta>=0?'#1e5c3a':'#b83232'}}>{T.utilidadNeta>=0?'✅':'❌'} {fmtMXN(Math.abs(T.utilidadNeta))} MN</span>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      </>) : (<>
+                        <td style={{padding:'8px 10px'}}>{hLib?<span style={{fontWeight:700,color:T.utilidad>=0?'#1e5c3a':'#b83232'}}>{T.utilidad>=0?'✅':'❌'} {fmtMXN(Math.abs(T.utilidad))} MN</span>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                        <td style={{padding:'8px 10px',color:'#1565a0'}}>{T.ingresoOpcMXN>0?fmtMXN(T.ingresoOpcMXN)+' MN':<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                        <td style={{padding:'8px 10px',color:'#1565a0'}}>{T.ingresoOpcUSD>0?fmtUSD(T.ingresoOpcUSD):<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                        <td style={{padding:'8px 10px',fontWeight:700,color:'#b83232'}}>{T.costoOpcTotal>0?fmtMXN(T.costoOpcTotal)+' MN':'—'}</td>
+                        <td style={{padding:'8px 10px'}}>{hOpc?<span style={{fontWeight:700,color:T.utilidadOpc>=0?'#1e5c3a':'#b83232'}}>{T.utilidadOpc>=0?'✅':'❌'} {fmtMXN(Math.abs(T.utilidadOpc))} MN</span>:<span style={{color:'#ccc',fontSize:10}}>—</span>}</td>
+                      </>)}
                       <td style={{padding:'8px 10px'}}>
                         <div style={{display:'flex',alignItems:'center',gap:5}}>
                           <div style={{flex:1,height:5,background:'#ece7df',borderRadius:3,overflow:'hidden',minWidth:40}}>
@@ -882,7 +935,7 @@ function Chip({ k, onOpen, w }) {
   )
 }
 
-function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, onClose }) {
+function PresentacionMode({ circuits, monthMap, sortedMonths, tarifario, TC, socioMode, onClose }) {
   const MESES_NOM = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
   const [slide, setSlide] = useState(0)
   const [kpiModal, setKpiModal] = useState(null)
@@ -1371,8 +1424,8 @@ function KPICard({ label, val, sub, cls }) {
 // ═══════════════════════════════════════════════
 //  UI HELPERS
 // ═══════════════════════════════════════════════
-function HBtn({ children, onClick }) {
-  return <button onClick={onClick} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,.25)', color: 'rgba(255,255,255,.75)', padding: '5px 13px', borderRadius: 7, cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', fontWeight: 500 }}>{children}</button>
+function HBtn({ children, onClick, style }) {
+  return <button onClick={onClick} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,.25)', color: 'rgba(255,255,255,.75)', padding: '5px 13px', borderRadius: 7, cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', fontWeight: 500, ...(style||{}) }}>{children}</button>
 }
 
 // ═══════════════════════════════════════════════
@@ -2216,9 +2269,16 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
 }
 
 // ── All / Month Views ──
-function AllView({ circuits, monthMap, sortedMonths, tarifario, TC, onSelect }) {
+function AllView({ circuits, monthMap, sortedMonths, tarifario, TC, socioMode, onSelect }) {
   let tMXN = 0, tUSD = 0, pMXN = 0, pUSD = 0
-  circuits.forEach((c) => c.rows.forEach((r) => { const { mxn, usd } = getImporte(r, c.info, tarifario); tMXN += mxn; tUSD += usd; if (r.paid) { pMXN += mxn; pUSD += usd } }))
+  circuits.forEach((c) => c.rows.forEach((r) => {
+    // En modo socio, ignoramos las filas OPCIONAL en los KPIs
+    if (socioMode && (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL') return
+    const { mxn, usd } = getImporte(r, c.info, tarifario)
+    tMXN += mxn; tUSD += usd
+    if (r.paid) { pMXN += mxn; pUSD += usd }
+  }))
+  const totalServicios = circuits.reduce((a, c) => a + c.rows.filter(r => !socioMode || (r.tipo||'').toString().toUpperCase().trim() !== 'OPCIONAL').length, 0)
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 26, marginBottom: 4 }}>📊 Todos los circuitos</h2>
@@ -2227,22 +2287,27 @@ function AllView({ circuits, monthMap, sortedMonths, tarifario, TC, onSelect }) 
         { cls: 'gold', label: 'Circuitos', val: circuits.length },
         { cls: 'forest', label: '✅ Pagado MXN', val: fmtMXN(pMXN), sub: fmtUSD(pUSD) + ' USD' },
         { cls: 'rust', label: '⏳ Pendiente MXN', val: fmtMXN(tMXN - pMXN), sub: fmtUSD(tUSD - pUSD) + ' USD' },
-        { cls: 'sky', label: 'Total Servicios', val: circuits.reduce((a, c) => a + c.rows.length, 0) },
+        { cls: 'sky', label: 'Total Servicios', val: totalServicios },
       ]} />
       {sortedMonths.map((mk) => (
         <div key={mk} style={{ marginBottom: 28 }}>
           <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18, fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
             {cap(mk)} <span style={{ background: '#b8952a', color: '#12151f', borderRadius: 10, padding: '1px 9px', fontSize: 12, fontFamily: 'inherit', fontWeight: 700 }}>{monthMap[mk].length}</span>
           </div>
-          <CircuitCards circs={monthMap[mk]} tarifario={tarifario} TC={TC} onSelect={onSelect} />
+          <CircuitCards circs={monthMap[mk]} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={onSelect} />
         </div>
       ))}
     </div>
   )
 }
-function MonthView({ mk, circuits, tarifario, TC, onSelect }) {
+function MonthView({ mk, circuits, tarifario, TC, socioMode, onSelect }) {
   let tMXN = 0, tUSD = 0, pMXN = 0, pUSD = 0
-  circuits.forEach((c) => c.rows.forEach((r) => { const { mxn, usd } = getImporte(r, c.info, tarifario); tMXN += mxn; tUSD += usd; if (r.paid) { pMXN += mxn; pUSD += usd } }))
+  circuits.forEach((c) => c.rows.forEach((r) => {
+    if (socioMode && (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL') return
+    const { mxn, usd } = getImporte(r, c.info, tarifario)
+    tMXN += mxn; tUSD += usd
+    if (r.paid) { pMXN += mxn; pUSD += usd }
+  }))
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 26, marginBottom: 16 }}>{cap(mk)}</h2>
@@ -2252,18 +2317,23 @@ function MonthView({ mk, circuits, tarifario, TC, onSelect }) {
         { cls: 'rust', label: '⏳ Pendiente MXN', val: fmtMXN(tMXN - pMXN), sub: fmtUSD(tUSD - pUSD) + ' USD' },
         { cls: 'sky', label: 'Total MXN', val: fmtMXN(tMXN), sub: fmtUSD(tUSD) + ' USD' },
       ]} />
-      <CircuitCards circs={circuits} tarifario={tarifario} TC={TC} onSelect={onSelect} />
+      <CircuitCards circs={circuits} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={onSelect} />
     </div>
   )
 }
-function CircuitCards({ circs, tarifario, TC, onSelect }) {
+function CircuitCards({ circs, tarifario, TC, socioMode, onSelect }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(270px,1fr))', gap: 14 }}>
       {circs.map((c) => {
-        const { costoMXN, costoUSD, ingresoMXN, utilidad } = calcCircTotals(c, tarifario, TC)
-        const paid = c.rows.filter((r) => r.paid).length
-        const pct = c.rows.length > 0 ? Math.round((paid / c.rows.length) * 100) : 0
-        const allPaid = paid === c.rows.length && c.rows.length > 0
+        const T = calcCircTotals(c, tarifario, TC)
+        const costoMXN = T.costoMXN, costoUSD = T.costoUSD, ingresoMXN = T.ingresoMXN
+        // En modo socio: utilidad neta (libero - comisión); en modo normal: utilidad libero
+        const utilidad = socioMode ? T.utilidadNeta : T.utilidad
+        const liberoRows = c.rows.filter(r => (r.tipo||'').toString().toUpperCase().trim() !== 'OPCIONAL')
+        const visibleRows = socioMode ? liberoRows : c.rows
+        const paid = visibleRows.filter((r) => r.paid).length
+        const pct = visibleRows.length > 0 ? Math.round((paid / visibleRows.length) * 100) : 0
+        const allPaid = paid === visibleRows.length && visibleRows.length > 0
         const fi = c.info?.fecha_inicio
         const fStr = fi ? (fi instanceof Date ? fi : new Date(fi)).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
         const hayIng = ingresoMXN > 0
@@ -2282,13 +2352,13 @@ function CircuitCards({ circs, tarifario, TC, onSelect }) {
             </div>
             {hayIng && (
               <div style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8, background: utilidad >= 0 ? '#f0faf4' : '#fff5f5', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278' }}>{utilidad >= 0 ? '✅ UTILIDAD' : '❌ PÉRDIDA'}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: '#8a8278' }}>{utilidad >= 0 ? '✅ UTILIDAD' : '❌ PÉRDIDA'}{socioMode && T.commissionPct>0 ? ' NETA' : ''}</span>
                 <span style={{ fontWeight: 800, fontSize: 13, color: utilidad >= 0 ? '#1e5c3a' : '#b83232' }}>{fmtMXN(Math.abs(utilidad))} <span style={{ fontSize: 10, fontWeight: 600 }}>MN</span></span>
               </div>
             )}
             <div style={{ height: 4, background: '#ece7df', borderRadius: 2, overflow: 'hidden', marginBottom: 6 }}><div style={{ height: '100%', width: pct + '%', background: '#52b788', borderRadius: 2 }} /></div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#8a8278' }}>{paid}/{c.rows.length} pagados ({pct}%)</span>
+              <span style={{ fontSize: 11, color: '#8a8278' }}>{paid}/{visibleRows.length} pagados ({pct}%)</span>
               <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 9, background: allPaid ? '#d8f3dc' : '#caf0f8', color: allPaid ? '#1b4332' : '#03045e' }}>{allPaid ? '✅ Completo' : '⏳ Pendiente'}</span>
             </div>
           </div>
@@ -2326,7 +2396,7 @@ function EditableInfoField({ label, value, type, onSave }) {
 }
 
 // ── Circuit Detail ──
-function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, onDelete }) {
+function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, socioMode, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveCommission, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, onDelete }) {
   const [editIC, setEditIC] = useState(false)
   const [icVal, setIcVal] = useState(circ.importe_cobrado || '')
   const [editOpc, setEditOpc] = useState(false)
@@ -2335,6 +2405,11 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
   const [editHabs, setEditHabs] = useState(false)
   const [habSingle, setHabSingle] = useState(circ.info?.habs_single || '')
   const [habDoble, setHabDoble] = useState(circ.info?.habs_doble || '')
+  // Edición de comisión a socio
+  const [editCom, setEditCom] = useState(false)
+  const [comVal, setComVal] = useState(circ.commission_pct ?? '')
+  // Sincronizar al cambiar de circuito
+  useEffect(() => { setComVal(circ.commission_pct ?? '') }, [circ.id])
 
   const fi = circ.info?.fecha_inicio
   const fStr = fi ? (fi instanceof Date ? fi : new Date(fi)).toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' }) : 'N/D'
@@ -2412,18 +2487,22 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
         <button onClick={() => onDelete(circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12}}>🗑 Eliminar</button>
       </div>
 
-      {/* ── BANNERS DE UTILIDAD — DOS COLUMNAS ── */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+      {/* ── BANNERS DE UTILIDAD — DOS COLUMNAS (UNA EN VISTA SOCIO) ── */}
+      <div style={{display:'grid',gridTemplateColumns: socioMode ? '1fr' : '1fr 1fr',gap:12,marginBottom:16}}>
 
         {/* LIBERO */}
-        <div style={{background: hayIngLib ? (T.utilidad>=0?'#f0faf4':'#fff5f5') : '#fafafa', border:`1px solid ${hayIngLib?(T.utilidad>=0?'#95d5b2':'#fca5a5'):'#d8d2c8'}`, borderRadius:12, padding:'14px 18px'}}>
+        <div style={{background: hayIngLib ? (T.utilidadNeta>=0?'#f0faf4':'#fff5f5') : '#fafafa', border:`1px solid ${hayIngLib?(T.utilidadNeta>=0?'#95d5b2':'#fca5a5'):'#d8d2c8'}`, borderRadius:12, padding:'14px 18px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
             <div>
-              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'#1e5c3a',marginBottom:2}}>🔵 Circuito LIBERO</div>
+              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'#1e5c3a',marginBottom:2}}>🔵 Circuito {socioMode ? '' : 'LIBERO'}</div>
               <div style={{fontSize:10,color:'#8a8278'}}>{lib} servicios incluidos</div>
             </div>
             <div style={{textAlign:'right'}}>
-              {hayIngLib ? <>{T.utilidad>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA</span>}<br/><UtilBadge util={T.utilidad}/>{T.ingresoMXN>0&&<div style={{fontSize:10,color:'#8a8278'}}>Margen: {((T.utilidad/T.ingresoMXN)*100).toFixed(1)}%</div>}</> : <span style={{fontSize:11,color:'#8a8278'}}>Sin ingreso</span>}
+              {hayIngLib ? <>
+                {T.utilidadNeta>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD{T.commissionPct>0?' NETA':''}</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA{T.commissionPct>0?' NETA':''}</span>}
+                <br/><UtilBadge util={T.utilidadNeta}/>
+                {T.ingresoMXN>0&&<div style={{fontSize:10,color:'#8a8278'}}>Margen: {((T.utilidadNeta/T.ingresoMXN)*100).toFixed(1)}%</div>}
+              </> : <span style={{fontSize:11,color:'#8a8278'}}>Sin ingreso</span>}
             </div>
           </div>
           <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
@@ -2447,14 +2526,37 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
             </div>
             <div style={{width:1,background:'#d8d2c8'}}/>
             <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Costo LIBERO</div>
+              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Costo {socioMode ? '' : 'LIBERO'}</div>
               <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'#b83232'}}>{fmtMXN(T.costoTotal)} MN</span>
               {T.costoUSD>0&&<div style={{fontSize:10,color:'#1565a0'}}>{fmtUSD(T.costoUSD)}</div>}
+            </div>
+            <div style={{width:1,background:'#d8d2c8'}}/>
+            {/* Comisión a Socio (Pietro Lamprati) */}
+            <div>
+              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>👥 Comisión Socio</div>
+              {editCom ? (
+                <div style={{display:'flex',gap:5,alignItems:'center'}}>
+                  <input type="number" step="0.01" min="0" value={comVal} onChange={e=>setComVal(e.target.value)} placeholder="0" autoFocus
+                    style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:60}}/>
+                  <span style={{fontSize:11,fontWeight:700,color:'#8a8278'}}>%</span>
+                  <button onClick={()=>{ saveCommission(circ.id, comVal); setEditCom(false) }} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                  <button onClick={()=>{ setComVal(circ.commission_pct ?? ''); setEditCom(false) }} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                </div>
+              ) : (
+                <div onClick={()=>setEditCom(true)} style={{cursor:'pointer'}}>
+                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:T.commissionPct>0?'#a05a00':'#8a8278',borderBottom:'1px dotted #b8952a'}}>
+                    {T.commissionPct>0 ? `${T.commissionPct}%` : '0%'} <span style={{fontSize:10,color:'#b8952a'}}>✎</span>
+                  </span>
+                  {T.commissionPct>0 && hayIngLib && <div style={{fontSize:10,color:'#a05a00'}}>−{fmtMXN(T.comision)} MN</div>}
+                  {!T.commissionPct && <div style={{fontSize:10,color:'#8a8278',fontStyle:'italic'}}>Clic para capturar</div>}
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* OPCIONAL */}
+        {/* OPCIONAL — oculto en Vista Socio */}
+        {!socioMode && (
         <div style={{background: hayIngOpc?(T.utilidadOpc>=0?'#f0f4ff':'#fff5f5'):'#fafafa', border:`1px solid ${hayIngOpc?(T.utilidadOpc>=0?'#93c5fd':'#fca5a5'):'#d8d2c8'}`, borderRadius:12, padding:'14px 18px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
             <div>
@@ -2501,6 +2603,7 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* KPIs */}
