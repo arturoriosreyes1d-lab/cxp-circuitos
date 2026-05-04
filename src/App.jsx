@@ -141,6 +141,25 @@ function Dashboard({ session }) {
   const [view, setView] = useState({ type: 'empty' })
   const [F, setFilters] = useState({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' })
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  // Meses expandidos en la sidebar (independientes, varios a la vez). Persiste en localStorage.
+  const [expandedMonths, setExpandedMonths] = useState(() => {
+    try {
+      const raw = localStorage.getItem('cxp_expandedMonths')
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch { return new Set() }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('cxp_expandedMonths', JSON.stringify([...expandedMonths])) } catch {}
+  }, [expandedMonths])
+  const toggleMonth = (mk) => setExpandedMonths(prev => {
+    const next = new Set(prev)
+    if (next.has(mk)) next.delete(mk); else next.add(mk)
+    return next
+  })
+  const openMonth = (mk) => setExpandedMonths(prev => {
+    if (prev.has(mk)) return prev
+    const next = new Set(prev); next.add(mk); return next
+  })
   const [modal, setModal] = useState(null)
   const [pendingCircuit, setPendingCircuit] = useState(null)
   const [deleteId, setDeleteId] = useState(null)
@@ -392,6 +411,17 @@ function Dashboard({ session }) {
   })
   const sortedMonths = Object.keys(monthMap).sort((a, b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
 
+  // Cuando seleccionas un circuito o un mes en el main, abre ese mes en la sidebar (sin cerrar otros)
+  useEffect(() => {
+    if (view.type === 'circuit' && view.circuitId) {
+      const c = circuits.find(x => x.id === view.circuitId)
+      if (c?.month_key) openMonth(c.month_key)
+    } else if ((view.type === 'month' || view.type === 'resultados_mes') && view.monthKey) {
+      openMonth(view.monthKey)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.type, view.circuitId, view.monthKey, circuits.length])
+
   const filteredRows = (rows) => rows.filter((r) => {
     if (F.tipo !== 'ALL' && norm(r.tipo) !== F.tipo) return false
     if (F.cat !== 'ALL' && norm(r.clasificacion) !== F.cat) return false
@@ -459,35 +489,48 @@ function Dashboard({ session }) {
             {sortedMonths.map((mk) => {
               const mCircs = monthMap[mk]
               const mPaid = mCircs.every((c) => c.rows.length > 0 && c.rows.every((r) => r.paid))
+              const isExpanded = expandedMonths.has(mk)
               return (
                 <div key={mk}>
-                  {/* Cabecera del mes */}
-                  <div style={{ padding: '10px 16px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1.2, color: 'rgba(255,255,255,.35)' }}>{mk}</span>
+                  {/* Cabecera del mes — clickeable para expandir/colapsar */}
+                  <div
+                    onClick={() => toggleMonth(mk)}
+                    style={{ padding: '10px 16px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
+                    title={isExpanded ? 'Colapsar' : 'Expandir'}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1.2, color: 'rgba(255,255,255,.35)' }}>
+                      <span style={{ fontSize: 8, transition: 'transform .15s', display: 'inline-block', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                      {mk}
+                      <span style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,.45)', background: 'rgba(255,255,255,.08)', padding: '1px 6px', borderRadius: 8 }}>{mCircs.length}</span>
+                    </span>
                     <div style={{ width: 7, height: 7, borderRadius: '50%', background: mPaid ? '#52b788' : '#e0c96a' }} />
                   </div>
 
-                  {/* Ver mes */}
-                  <SbItem label="📅 Ver mes" count={mCircs.length} active={view.type === 'month' && view.monthKey === mk} onClick={() => setView({ type: 'month', monthKey: mk })} indent />
-                  {/* Resultados del mes */}
-                  <SbItem label="📈 Resultados" count="" active={view.type === 'resultados_mes' && view.monthKey === mk} onClick={() => setView({ type: 'resultados_mes', monthKey: mk })} indent />
+                  {isExpanded && (
+                    <>
+                      {/* Ver mes */}
+                      <SbItem label="📅 Ver mes" count={mCircs.length} active={view.type === 'month' && view.monthKey === mk} onClick={() => setView({ type: 'month', monthKey: mk })} indent />
+                      {/* Resultados del mes */}
+                      <SbItem label="📈 Resultados" count="" active={view.type === 'resultados_mes' && view.monthKey === mk} onClick={() => setView({ type: 'resultados_mes', monthKey: mk })} indent />
 
-                  {/* Circuitos */}
-                  {mCircs.map((c) => {
-                    const paid = c.rows.filter((r) => r.paid).length
-                    const allPaid = paid === c.rows.length && c.rows.length > 0
-                    const isActive = view.circuitId === c.id
-                    return (
-                      <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
-                        style={{ padding: '5px 16px 5px 32px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
-                        <div style={{ width: 6, height: 6, borderRadius: '50%', background: allPaid ? '#52b788' : '#e0c96a', flexShrink: 0 }} />
-                        <div style={{ overflow: 'hidden' }}>
-                          <div style={{ fontSize: 9.5, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }} title={c.id}>{c.id}</div>
-                          {c.info?.tl && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.info.tl}</div>}
-                        </div>
-                      </div>
-                    )
-                  })}
+                      {/* Circuitos */}
+                      {mCircs.map((c) => {
+                        const paid = c.rows.filter((r) => r.paid).length
+                        const allPaid = paid === c.rows.length && c.rows.length > 0
+                        const isActive = view.circuitId === c.id
+                        return (
+                          <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
+                            style={{ padding: '5px 16px 5px 32px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
+                            <div style={{ width: 6, height: 6, borderRadius: '50%', background: allPaid ? '#52b788' : '#e0c96a', flexShrink: 0 }} />
+                            <div style={{ overflow: 'hidden' }}>
+                              <div style={{ fontSize: 9.5, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }} title={c.id}>{c.id}</div>
+                              {c.info?.tl && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.info.tl}</div>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </>
+                  )}
                   <div style={{ height: 6 }} />
                 </div>
               )
