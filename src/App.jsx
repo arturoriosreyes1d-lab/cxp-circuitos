@@ -441,6 +441,8 @@ function Dashboard({ session }) {
   }, [view.type, view.circuitId, view.monthKey, circuits.length])
 
   const filteredRows = (rows) => rows.filter((r) => {
+    // En modo Vista Socio, ocultar todas las filas OPCIONAL
+    if (socioMode && (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL') return false
     if (F.tipo !== 'ALL' && norm(r.tipo) !== F.tipo) return false
     if (F.cat !== 'ALL' && norm(r.clasificacion) !== F.cat) return false
     if (F.pago === 'PAID' && !r.paid) return false
@@ -461,23 +463,21 @@ function Dashboard({ session }) {
     <div style={{ fontFamily: "'Outfit', sans-serif", fontVariantNumeric: 'lining-nums tabular-nums', fontFeatureSettings: '"tnum","lnum"', background: '#f5f1eb', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
       {/* ── HEADER ── */}
-      <header style={{ background: socioMode ? '#1a3a1a' : '#000000', borderBottom: `2px solid ${socioMode ? '#52b788' : '#b8952a'}`, padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200, transition: 'background .2s, border-color .2s' }}>
+      <header style={{ background: '#000000', borderBottom: '2px solid #b8952a', padding: '0 24px', height: 54, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 200 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,.5)', cursor: 'pointer', fontSize: 18 }}>☰</button>
-          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: '#fff' }}>
-            CxP <span style={{ color: socioMode ? '#95d5b2' : '#e0c96a' }}>Circuitos</span>
+          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
+            CxP <span style={{ color: '#e0c96a' }}>Circuitos</span>
+            {socioMode && <span title="Vista Socio activa" style={{ width: 7, height: 7, borderRadius: '50%', background: '#52b788', display: 'inline-block', boxShadow: '0 0 6px rgba(82,183,136,.6)' }} />}
           </span>
-          {socioMode && (
-            <span style={{ marginLeft: 6, padding: '3px 10px', background: 'rgba(149,213,178,.18)', border: '1px solid rgba(149,213,178,.4)', borderRadius: 12, fontSize: 10.5, fontWeight: 700, color: '#95d5b2', letterSpacing: 0.5, textTransform: 'uppercase' }}>👥 Vista Socio · Pietro Lamprati</span>
-          )}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {saving && <span style={{ fontSize: 11, color: '#e0c96a' }}>Guardando...</span>}
           <HBtn onClick={() => { setPendingCircuit(null); setModal('upload') }}>+ Circuito</HBtn>
           <HBtn onClick={() => setPresentacion(true)}>📊 Presentación</HBtn>
           <HBtn onClick={() => setModal('tarifario')}>📋 Tarifario</HBtn>
-          <HBtn onClick={() => setSocioMode(!socioMode)} style={socioMode ? { background: 'rgba(149,213,178,.2)', borderColor: 'rgba(149,213,178,.5)', color: '#95d5b2' } : undefined}>
-            {socioMode ? '✓ Vista Socio' : '👥 Vista Socio'}
+          <HBtn onClick={() => setSocioMode(!socioMode)} style={socioMode ? { background: 'rgba(149,213,178,.12)', borderColor: 'rgba(149,213,178,.35)', color: '#95d5b2', padding: '5px 10px' } : { padding: '5px 10px' }} title={socioMode ? 'Vista Socio activa (clic para desactivar)' : 'Vista Socio (clic para activar)'}>
+            👥
           </HBtn>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(184,149,42,.15)', border: '1px solid rgba(224,201,106,.3)', borderRadius: 20, padding: '3px 12px' }}>
             <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>TC:</span>
@@ -2614,7 +2614,9 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
 
       {/* KPIs */}
       <KPIGrid items={[
-        { cls:'gold', label:'Servicios', val:circ.rows.length, sub:`${lib} LIBERO · ${opc} OPCIONAL` },
+        socioMode
+          ? { cls:'gold', label:'Servicios', val:lib, sub:'incluidos' }
+          : { cls:'gold', label:'Servicios', val:circ.rows.length, sub:`${lib} LIBERO · ${opc} OPCIONAL` },
         { cls:'forest', label:'✅ Pagado MXN', val:fmtMXN(T.paidMXN) },
         { cls:'sky', label:'✅ Pagado USD', val:fmtUSD(T.paidUSD) },
         { cls:'rust', label:'⏳ Pendiente MXN', val:fmtMXN(pendMXN) },
@@ -2629,14 +2631,14 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
         ))}
       </div>
 
-      {activeTab==='cxp'&&<CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow}/>}
+      {activeTab==='cxp'&&<CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow}/>}
       {activeTab==='proveedores'&&<ProvPanel circ={circ} tarifario={tarifario} TC={TC}/>}
       {activeTab==='timeline'&&<TimelinePanel circ={circ} tarifario={tarifario}/>}
     </div>
   )
 }
 // ── CxP Panel ──
-function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveFactura, saveRowField, addRow, deleteRow }) {
+function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveFactura, saveRowField, addRow, deleteRow }) {
   const [editCell, setEditCell] = useState(null)
   const [editVal, setEditVal] = useState('')
   const [editVal2, setEditVal2] = useState('')
@@ -2730,7 +2732,9 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, togglePaid, se
           {busqueda&&<button onClick={()=>setBusqueda('')} style={{background:'none',border:'none',color:'#8a8278',cursor:'pointer',fontSize:16}}>✕</button>}
         </div>
         {[
-          {key:'tipo',label:'Tipo',opts:[['ALL','#12151f','Todos'],['LIBERO','#1e5c3a','🔵 LIBERO'],['OPCIONAL','#1565a0','🔷 OPCIONAL']]},
+          {key:'tipo',label:'Tipo',opts: socioMode
+            ? [['ALL','#12151f','Todos'],['LIBERO','#1e5c3a','🔵 LIBERO']]
+            : [['ALL','#12151f','Todos'],['LIBERO','#1e5c3a','🔵 LIBERO'],['OPCIONAL','#1565a0','🔷 OPCIONAL']]},
           {key:'cat',label:'Categoría',opts:[['ALL','#b8952a','Todas'],['HOSPEDAJE','#b8952a','🏨 Hospedaje'],['TRANSPORTE','#b8952a','🚌 Transporte'],['ACTIVIDADES','#b8952a','🎯 Actividades'],['ALIMENTOS','#b8952a','🍽 Alimentos'],['GUIA','#b8952a','🧭 Guía']]},
           {key:'pago',label:'Estatus',opts:[['ALL','#12151f','Todos'],['PAID','#1e5c3a','✅ Pagado'],['UNPAID','#b83232','⏳ Pendiente']]},
         ].map(({key,label,opts})=>(
