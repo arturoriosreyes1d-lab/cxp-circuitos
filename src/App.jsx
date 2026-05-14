@@ -317,19 +317,31 @@ function Dashboard({ session }) {
     setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, rows: c.rows.map((r) => r.id !== rowId ? r : { ...r, ...changes }) }))
   }, [])
 
+  // Guard: bloquear si circuito está locked (la UI también desabilita los controles,
+  // pero este es el safety net)
+  const checkLocked = (cid) => {
+    const c = circuits.find(x => x.id === cid)
+    if (c?.locked) { alert('Este circuito está cerrado. Ábrelo antes de editarlo.'); return true }
+    return false
+  }
   const togglePaid = async (cid, rowId, current) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuit_rows').update({ paid: !current }).eq('id', rowId)
     updateRow(cid, rowId, { paid: !current })
   }
   const setFechaPago = async (cid, rowId, val) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuit_rows').update({ fecha_pago: val || null }).eq('id', rowId)
     updateRow(cid, rowId, { fecha_pago: val })
   }
   const setNota = useCallback(async (cid, rowId, val) => {
+    const c = circuits.find(x => x.id === cid)
+    if (c?.locked) { alert('Este circuito está cerrado. Ábrelo antes de editarlo.'); return }
     await supabase.from('circuit_rows').update({ nota: val }).eq('id', rowId)
     updateRow(cid, rowId, { nota: val })
-  }, [updateRow])
+  }, [updateRow, circuits])
   const saveProv = async (cid, rowId, val) => {
+    if (checkLocked(cid)) return
     // Check if this provider has PAX-based pricing — if so, freeze price now
     const circ = circuits.find(c => c.id === cid)
     const tarEntry = tarifario.find(t => (t.tipo_tarifa || 'precio_fijo') === 'precio_pax' && t.proveedor === val)
@@ -349,18 +361,22 @@ function Dashboard({ session }) {
     updateRow(cid, rowId, { prov_general: val, ...extra })
   }
   const saveImporte = async (cid, rowId, precio, moneda) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuit_rows').update({ precio_custom: precio || null, moneda_custom: moneda }).eq('id', rowId)
     updateRow(cid, rowId, { precio_custom: precio || null, moneda_custom: moneda })
   }
   const saveFactura = async (cid, rowId, field, val) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuit_rows').update({ [field]: val }).eq('id', rowId)
     updateRow(cid, rowId, { [field]: val })
   }
   const saveRowField = async (cid, rowId, changes) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuit_rows').update(changes).eq('id', rowId)
     updateRow(cid, rowId, changes)
   }
   const addRow = async (cid) => {
+    if (checkLocked(cid)) return
     const circ = circuits.find(c => c.id === cid)
     const nextIdx = circ ? Math.max(0, ...circ.rows.map(r => r.idx || 0)) + 1 : 1
     const { data, error } = await supabase.from('circuit_rows').insert({
@@ -380,14 +396,17 @@ function Dashboard({ session }) {
     }
   }
   const deleteRow = async (cid, rowId) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuit_rows').delete().eq('id', rowId)
     setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, rows: c.rows.filter(r => r.id !== rowId) }))
   }
   const saveOpcional = async (cid, field, val) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuits').update({ [field]: parseFloat(val) || 0 }).eq('id', cid)
     setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, [field]: parseFloat(val) || 0 }))
   }
   const saveCircInfo = async (cid, infoChanges) => {
+    if (checkLocked(cid)) return
     const circ = circuits.find(c => c.id === cid)
     if (!circ) return
     const newInfo = { ...circ.info, ...infoChanges }
@@ -395,16 +414,37 @@ function Dashboard({ session }) {
     setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, info: newInfo }))
   }
   const saveImporteCobrado = async (cid, valor, moneda) => {
+    if (checkLocked(cid)) return
     await supabase.from('circuits').update({ importe_cobrado: valor || null, moneda_cobrado: moneda }).eq('id', cid)
     setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, importe_cobrado: valor || null, moneda_cobrado: moneda }))
   }
   const saveCommission = async (cid, pct) => {
+    if (checkLocked(cid)) return
     const val = parseFloat(pct)
     const safe = isNaN(val) || val < 0 ? 0 : val
     await supabase.from('circuits').update({ commission_pct: safe }).eq('id', cid)
     setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, commission_pct: safe }))
   }
+  // ── Bloqueo / cierre de circuito ─────────────────────────────────────
+  // Contraseña global desde env var (con fallback). Configurar VITE_LOCK_PASSWORD en Vercel.
+  const LOCK_PASSWORD = import.meta.env.VITE_LOCK_PASSWORD || 'abrir2026'
+  const [lockModal, setLockModal] = useState(null) // { circuitId, action: 'lock'|'unlock' }
+  const [lockPwd, setLockPwd] = useState('')
+  const [lockError, setLockError] = useState('')
+  const openLockModal = (circuitId, action) => { setLockPwd(''); setLockError(''); setLockModal({ circuitId, action }) }
+  const confirmLock = async () => {
+    if (lockPwd !== LOCK_PASSWORD) { setLockError('Contraseña incorrecta'); return }
+    const { circuitId, action } = lockModal
+    const newLocked = action === 'lock'
+    await supabase.from('circuits').update({ locked: newLocked }).eq('id', circuitId)
+    setCircuits((prev) => prev.map((c) => c.id !== circuitId ? c : { ...c, locked: newLocked }))
+    setLockModal(null); setLockPwd(''); setLockError('')
+  }
+  // Helper para verificar si un circuito está bloqueado
+  const isLocked = (cid) => !!circuits.find((c) => c.id === cid)?.locked
+  // ─────────────────────────────────────────────────────────────────────
   const deleteCircuit = async () => {
+    if (checkLocked(deleteId)) return
     await supabase.from('circuits').delete().eq('id', deleteId)
     const next = circuits.filter((c) => c.id !== deleteId)
     setCircuits(next); setView(next.length > 0 ? { type: 'all' } : { type: 'empty' }); setModal(null)
@@ -548,10 +588,11 @@ function Dashboard({ session }) {
                           <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
                             style={{ padding: '5px 16px 5px 32px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
                             <div style={{ width: 6, height: 6, borderRadius: '50%', background: allPaid ? '#52b788' : '#e0c96a', flexShrink: 0 }} />
-                            <div style={{ overflow: 'hidden' }}>
+                            <div style={{ overflow: 'hidden', flex: 1 }}>
                               <div style={{ fontSize: 9.5, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }} title={c.id}>{c.id}</div>
                               {c.info?.tl && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.info.tl}</div>}
                             </div>
+                            {c.locked && <span title="Circuito cerrado" style={{ fontSize: 11, color: '#e0c96a', flexShrink: 0 }}>🔒</span>}
                           </div>
                         )
                       })}
@@ -582,6 +623,7 @@ function Dashboard({ session }) {
               F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode}
               togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
               saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveCommission={saveCommission} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional} saveCircInfo={saveCircInfo}
+              openLockModal={openLockModal}
               onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
           )}
         </main>
@@ -608,6 +650,29 @@ function Dashboard({ session }) {
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
             <Btn outline onClick={() => setModal(null)}>Cancelar</Btn>
             <Btn danger onClick={deleteCircuit}>Eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {lockModal && (
+        <Modal title={lockModal.action === 'lock' ? '🔒 Cerrar circuito' : '🔓 Abrir circuito'} onClose={() => { setLockModal(null); setLockPwd(''); setLockError('') }}>
+          <p style={{ color: '#8a8278', fontSize: 13, marginBottom: 14 }}>
+            {lockModal.action === 'lock'
+              ? 'Al cerrar el circuito, nadie podrá editarlo hasta que se vuelva a abrir. Ingresa la contraseña para confirmar.'
+              : 'Al abrir el circuito, los usuarios podrán editarlo de nuevo. Ingresa la contraseña para confirmar.'}
+          </p>
+          <input
+            type="password"
+            value={lockPwd}
+            onChange={(e) => { setLockPwd(e.target.value); setLockError('') }}
+            onKeyDown={(e) => e.key === 'Enter' && confirmLock()}
+            placeholder="Contraseña"
+            autoFocus
+            style={{ width: '100%', border: `1.5px solid ${lockError ? '#b83232' : '#d8d2c8'}`, borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, outline: 'none' }}
+          />
+          {lockError && <div style={{ color: '#b83232', fontSize: 12, marginTop: 6 }}>❌ {lockError}</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+            <Btn outline onClick={() => { setLockModal(null); setLockPwd(''); setLockError('') }}>Cancelar</Btn>
+            <Btn onClick={confirmLock}>{lockModal.action === 'lock' ? '🔒 Cerrar' : '🔓 Abrir'}</Btn>
           </div>
         </Modal>
       )}
@@ -2344,7 +2409,12 @@ function CircuitCards({ circs, tarifario, TC, socioMode, onSelect }) {
         const fStr = fi ? (fi instanceof Date ? fi : new Date(fi)).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
         const hayIng = ingresoMXN > 0
         return (
-          <div key={c.id} onClick={() => onSelect(c.id)} style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderTop: `3px solid ${allPaid ? '#52b788' : '#d8d2c8'}`, cursor: 'pointer' }}>
+          <div key={c.id} onClick={() => onSelect(c.id)} style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderTop: `3px solid ${c.locked ? '#e0c96a' : (allPaid ? '#52b788' : '#d8d2c8')}`, cursor: 'pointer', position: 'relative' }}>
+            {c.locked && (
+              <div style={{ position: 'absolute', top: 10, right: 10, background: '#fef8e6', border: '1px solid #e0c96a', borderRadius: 12, padding: '2px 8px', fontSize: 10, fontWeight: 700, color: '#7d5a00', display: 'flex', alignItems: 'center', gap: 3 }} title="Circuito cerrado">
+                🔒 Cerrado
+              </div>
+            )}
             <div style={{ fontSize: 11, color: '#8a8278', marginBottom: 3 }}>{c.id.split('-').slice(-3).join('-')}</div>
             <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 15, fontWeight: 700, marginBottom: 8 }}>{c.info?.tl || 'Sin TL'}</div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -2402,7 +2472,7 @@ function EditableInfoField({ label, value, type, onSave }) {
 }
 
 // ── Circuit Detail ──
-function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, socioMode, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveCommission, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, onDelete }) {
+function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, socioMode, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveCommission, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, openLockModal, onDelete }) {
   const [editIC, setEditIC] = useState(false)
   const [icVal, setIcVal] = useState(circ.importe_cobrado || '')
   const [editOpc, setEditOpc] = useState(false)
@@ -2490,8 +2560,26 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
             </div>
           </div>
         </div>
-        <button onClick={() => onDelete(circ.id)} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12}}>🗑 Eliminar</button>
+        <div style={{display:'flex',gap:8,flexDirection:'column',alignItems:'flex-end'}}>
+          {circ.locked ? (
+            <button onClick={() => openLockModal(circ.id, 'unlock')} style={{background:'#fef8e6',border:'1px solid #e0c96a',color:'#7d5a00',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>🔓 Abrir circuito</button>
+          ) : (
+            <button onClick={() => openLockModal(circ.id, 'lock')} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12,whiteSpace:'nowrap'}}>🔒 Cerrar circuito</button>
+          )}
+          <button onClick={() => onDelete(circ.id)} disabled={circ.locked} style={{background:'none',border:'1px solid #d8d2c8',color: circ.locked?'#ccc':'#8a8278',padding:'6px 13px',borderRadius:7,cursor: circ.locked?'not-allowed':'pointer',fontSize:12,whiteSpace:'nowrap'}}>🗑 Eliminar</button>
+        </div>
       </div>
+
+      {/* Banner de circuito bloqueado */}
+      {circ.locked && (
+        <div style={{ background: '#fef8e6', border: '1px solid #e0c96a', borderRadius: 10, padding: '10px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 18 }}>🔒</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: '#7d5a00' }}>Circuito cerrado</div>
+            <div style={{ fontSize: 11, color: '#8a7a3a' }}>Este circuito está en solo lectura. Ábrelo para poder editar.</div>
+          </div>
+        </div>
+      )}
 
       {/* ── BANNERS DE UTILIDAD — DOS COLUMNAS (UNA EN VISTA SOCIO) ── */}
       <div style={{display:'grid',gridTemplateColumns: socioMode ? '1fr' : '1fr 1fr',gap:12,marginBottom:16}}>
