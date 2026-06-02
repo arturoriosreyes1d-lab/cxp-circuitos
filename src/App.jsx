@@ -178,6 +178,21 @@ function Dashboard({ session }) {
   useEffect(() => {
     try { localStorage.setItem('cxp_socioMode', socioMode ? '1' : '0') } catch {}
   }, [socioMode])
+  // Rango de meses para Vista Socio: { from, to } usando month_keys. null = sin filtro (todos).
+  const [socioRange, setSocioRange] = useState(() => {
+    try {
+      const raw = localStorage.getItem('cxp_socioRange')
+      return raw ? JSON.parse(raw) : null
+    } catch { return null }
+  })
+  useEffect(() => {
+    try {
+      if (socioRange) localStorage.setItem('cxp_socioRange', JSON.stringify(socioRange))
+      else localStorage.removeItem('cxp_socioRange')
+    } catch {}
+  }, [socioRange])
+  // Modal de configuración al activar Vista Socio
+  const [socioConfigModal, setSocioConfigModal] = useState(false)
   const fileRef = useRef()
   const tarFileRef = useRef()
 
@@ -455,8 +470,20 @@ function Dashboard({ session }) {
   }
   const logout = () => supabase.auth.signOut()
 
+  // Filtrar circuitos por rango de meses si Vista Socio está activa con rango
+  const inSocioRange = (mk) => {
+    if (!socioMode || !socioRange) return true
+    const s = monthKeySortable(mk)
+    const sFrom = monthKeySortable(socioRange.from)
+    const sTo = monthKeySortable(socioRange.to)
+    return s >= sFrom && s <= sTo
+  }
+  const visibleCircuits = (socioMode && socioRange)
+    ? circuits.filter(c => inSocioRange(c.month_key || 'Sin mes'))
+    : circuits
+
   const monthMap = {}
-  circuits.forEach((c) => { const mk = c.month_key || 'Sin mes'; if (!monthMap[mk]) monthMap[mk] = []; monthMap[mk].push(c) })
+  visibleCircuits.forEach((c) => { const mk = c.month_key || 'Sin mes'; if (!monthMap[mk]) monthMap[mk] = []; monthMap[mk].push(c) })
   // Ordenar circuitos dentro de cada mes por fecha_inicio ascendente
   Object.keys(monthMap).forEach(mk => {
     monthMap[mk].sort((a, b) => {
@@ -468,6 +495,8 @@ function Dashboard({ session }) {
     })
   })
   const sortedMonths = Object.keys(monthMap).sort((a, b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
+  // Lista de TODOS los meses (sin filtrar) — para el selector del modal de configuración
+  const allMonthsSorted = [...new Set(circuits.map(c => c.month_key || 'Sin mes'))].sort((a, b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
 
   // Cuando seleccionas un circuito o un mes en el main, abre ese mes en la sidebar (sin cerrar otros)
   useEffect(() => {
@@ -516,7 +545,7 @@ function Dashboard({ session }) {
           <HBtn onClick={() => { setPendingCircuit(null); setModal('upload') }}>+ Circuito</HBtn>
           <HBtn onClick={() => setPresentacion(true)}>📊 Presentación</HBtn>
           <HBtn onClick={() => setModal('tarifario')}>📋 Tarifario</HBtn>
-          <HBtn onClick={() => setSocioMode(!socioMode)} style={socioMode ? { background: 'rgba(149,213,178,.12)', borderColor: 'rgba(149,213,178,.35)', color: '#95d5b2', padding: '5px 10px' } : { padding: '5px 10px' }} title={socioMode ? 'Vista Socio activa (clic para desactivar)' : 'Vista Socio (clic para activar)'}>
+          <HBtn onClick={() => { if (socioMode) setSocioMode(false); else setSocioConfigModal(true) }} style={socioMode ? { background: 'rgba(149,213,178,.12)', borderColor: 'rgba(149,213,178,.35)', color: '#95d5b2', padding: '5px 10px' } : { padding: '5px 10px' }} title={socioMode ? 'Vista Socio activa (clic para desactivar)' : 'Vista Socio (clic para configurar y activar)'}>
             👥
           </HBtn>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(184,149,42,.15)', border: '1px solid rgba(224,201,106,.3)', borderRadius: 20, padding: '3px 12px' }}>
@@ -613,11 +642,11 @@ function Dashboard({ session }) {
         {/* ── MAIN ── */}
         <main style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
           {view.type === 'empty' && <EmptyState onAdd={() => { setPendingCircuit(null); setModal('upload') }} />}
-          {view.type === 'all' && <AllView circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
+          {view.type === 'all' && <AllView circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
-          {view.type === 'resultados_all' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} />}
-          {view.type === 'resultados_mes' && <EstadoResultados circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} initModo="mes" initMes={view.monthKey} />}
-          {view.type === 'pagos' && <PagosView circuits={circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
+          {view.type === 'resultados_all' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} />}
+          {view.type === 'resultados_mes' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} initModo="mes" initMes={view.monthKey} />}
+          {view.type === 'pagos' && <PagosView circuits={socioMode ? visibleCircuits : circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
           {view.type === 'circuit' && activeCircuit && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode}
@@ -676,8 +705,16 @@ function Dashboard({ session }) {
           </div>
         </Modal>
       )}
+      {socioConfigModal && (
+        <SocioConfigModal
+          allMonths={allMonthsSorted}
+          currentRange={socioRange}
+          onCancel={() => setSocioConfigModal(false)}
+          onConfirm={(range) => { setSocioRange(range); setSocioMode(true); setSocioConfigModal(false) }}
+        />
+      )}
     </div>
-    {presentacion && <PresentacionMode circuits={circuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onClose={()=>setPresentacion(false)}/>}
+    {presentacion && <PresentacionMode circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onClose={()=>setPresentacion(false)}/>}
     </>
   )
 }
@@ -1497,6 +1534,75 @@ function KPICard({ label, val, sub, cls }) {
 // ═══════════════════════════════════════════════
 function HBtn({ children, onClick, style }) {
   return <button onClick={onClick} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,.25)', color: 'rgba(255,255,255,.75)', padding: '5px 13px', borderRadius: 7, cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', fontWeight: 500, ...(style||{}) }}>{children}</button>
+}
+
+// Modal de configuración de Vista Socio: rango de meses a presentar
+function SocioConfigModal({ allMonths, currentRange, onCancel, onConfirm }) {
+  // Meses reales (no "Sin mes")
+  const months = allMonths.filter(m => m && m !== 'Sin mes')
+  // Estado: si hay rango previo lo usamos, si no, por defecto "sin filtro"
+  const [mode, setMode] = useState(currentRange ? 'rango' : 'todos')
+  const [from, setFrom] = useState(currentRange?.from || months[0] || '')
+  const [to, setTo] = useState(currentRange?.to || months[months.length - 1] || '')
+
+  const handleConfirm = () => {
+    if (mode === 'todos') onConfirm(null)
+    else onConfirm({ from, to })
+  }
+
+  // Validación: from no puede ser mayor que to
+  const invalid = mode === 'rango' && (!from || !to || monthKeySortable(from) > monthKeySortable(to))
+
+  return (
+    <Modal title="Configurar Vista Socio" onClose={onCancel}>
+      <p style={{ color: '#8a8278', fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+        Selecciona qué período de meses se mostrará en la presentación. El socio solo verá los meses dentro del rango.
+      </p>
+
+      {/* Switch: todos los meses vs rango */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, background: '#f5f3ef', padding: 4, borderRadius: 8 }}>
+        <button onClick={() => setMode('todos')} style={{ flex: 1, padding: '8px 12px', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13, background: mode === 'todos' ? '#fff' : 'transparent', color: mode === 'todos' ? '#121512' : '#8a8278', boxShadow: mode === 'todos' ? '0 1px 3px rgba(0,0,0,.08)' : 'none' }}>
+          📅 Todos los meses
+        </button>
+        <button onClick={() => setMode('rango')} style={{ flex: 1, padding: '8px 12px', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13, background: mode === 'rango' ? '#fff' : 'transparent', color: mode === 'rango' ? '#121512' : '#8a8278', boxShadow: mode === 'rango' ? '0 1px 3px rgba(0,0,0,.08)' : 'none' }}>
+          🎯 Rango específico
+        </button>
+      </div>
+
+      {mode === 'rango' && (
+        <div style={{ background: '#fafafa', border: '1px solid #e8e3da', borderRadius: 10, padding: 16 }}>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Desde</label>
+            <select value={from} onChange={e => setFrom(e.target.value)} style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none', cursor: 'pointer' }}>
+              {months.map(m => <option key={m} value={m}>{cap(m)}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Hasta</label>
+            <select value={to} onChange={e => setTo(e.target.value)} style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none', cursor: 'pointer' }}>
+              {months.map(m => <option key={m} value={m}>{cap(m)}</option>)}
+            </select>
+          </div>
+          {invalid && (
+            <div style={{ marginTop: 10, padding: '8px 12px', background: '#fff5f5', border: '1px solid #fca5a5', borderRadius: 6, fontSize: 12, color: '#b83232' }}>
+              ⚠️ El mes "Desde" debe ser anterior o igual al mes "Hasta".
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === 'todos' && (
+        <div style={{ background: '#f0faf4', border: '1px solid #c5e8d3', borderRadius: 10, padding: 14, fontSize: 13, color: '#1f6e3f' }}>
+          ✓ Se mostrarán todos los meses con circuitos al socio.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+        <Btn outline onClick={onCancel}>Cancelar</Btn>
+        <Btn disabled={invalid} onClick={handleConfirm}>Activar Vista Socio ✓</Btn>
+      </div>
+    </Modal>
+  )
 }
 
 // ═══════════════════════════════════════════════
