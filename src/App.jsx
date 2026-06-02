@@ -143,6 +143,8 @@ function Dashboard({ session }) {
   const [circuits, setCircuits] = useState([])
   const [tarifario, setTarifario] = useState([])
   const [TC, setTC] = useState(17.5)
+  const [pietroFeeEur, setPietroFeeEur] = useState(500)
+  const [tcEur, setTcEur] = useState(21.30)
   const [dataLoading, setDataLoading] = useState(true)
   const [view, setView] = useState({ type: 'empty' })
   const [F, setFilters] = useState({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' })
@@ -204,8 +206,12 @@ function Dashboard({ session }) {
     try {
       const { data: tar } = await supabase.from('tarifario').select('*').order('proveedor')
       if (tar) setTarifario(tar)
-      const { data: settings } = await supabase.from('team_settings').select('tc').eq('id', 1).single()
-      if (settings) setTC(settings.tc)
+      const { data: settings } = await supabase.from('team_settings').select('tc, pietro_fee_eur, tc_eur').eq('id', 1).single()
+      if (settings) {
+        setTC(settings.tc)
+        if (settings.pietro_fee_eur != null) setPietroFeeEur(parseFloat(settings.pietro_fee_eur))
+        if (settings.tc_eur != null) setTcEur(parseFloat(settings.tc_eur))
+      }
       const { data: circs } = await supabase.from('circuits').select('*').order('created_at', { ascending: false })
       if (circs && circs.length > 0) {
         // Cargar TODAS las filas en páginas de 1000 para evitar el límite de Supabase
@@ -469,6 +475,14 @@ function Dashboard({ session }) {
     const v = parseFloat(val); if (!v || v <= 0) return
     setTC(v); await supabase.from('team_settings').update({ tc: v }).eq('id', 1)
   }
+  const updatePietroFeeEur = async (val) => {
+    const v = parseFloat(val); if (isNaN(v) || v < 0) return
+    setPietroFeeEur(v); await supabase.from('team_settings').update({ pietro_fee_eur: v }).eq('id', 1)
+  }
+  const updateTcEur = async (val) => {
+    const v = parseFloat(val); if (!v || v <= 0) return
+    setTcEur(v); await supabase.from('team_settings').update({ tc_eur: v }).eq('id', 1)
+  }
   const logout = () => supabase.auth.signOut()
 
   // Filtrar circuitos por rango de meses si Vista Socio está activa con rango
@@ -553,6 +567,14 @@ function Dashboard({ session }) {
             <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>TC:</span>
             <input type="number" value={TC} step="0.01" onChange={(e) => updateTC(e.target.value)} style={{ width: 52, background: 'none', border: 'none', color: '#e0c96a', fontSize: 12, fontWeight: 600, outline: 'none' }} />
             <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>MXN/USD</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(149,213,178,.12)', border: '1px solid rgba(149,213,178,.3)', borderRadius: 20, padding: '3px 12px' }} title="Fee mensual a Pietro Lamprati">
+            <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>💼 Fee:</span>
+            <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>€</span>
+            <input type="number" value={pietroFeeEur} step="1" min="0" onChange={(e) => updatePietroFeeEur(e.target.value)} style={{ width: 42, background: 'none', border: 'none', color: '#95d5b2', fontSize: 12, fontWeight: 600, outline: 'none' }} />
+            <span style={{ color: 'rgba(255,255,255,.25)', fontSize: 11 }}>×</span>
+            <input type="number" value={tcEur} step="0.01" min="0" onChange={(e) => updateTcEur(e.target.value)} style={{ width: 45, background: 'none', border: 'none', color: '#95d5b2', fontSize: 12, fontWeight: 600, outline: 'none' }} />
+            <span style={{ color: 'rgba(255,255,255,.4)', fontSize: 11 }}>MXN/EUR</span>
           </div>
           <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,.15)' }} />
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.4)' }}>{session?.user?.email}</span>
@@ -645,8 +667,8 @@ function Dashboard({ session }) {
           {view.type === 'empty' && <EmptyState onAdd={() => { setPendingCircuit(null); setModal('upload') }} />}
           {view.type === 'all' && <AllView circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
-          {view.type === 'resultados_all' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} />}
-          {view.type === 'resultados_mes' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} initModo="mes" initMes={view.monthKey} />}
+          {view.type === 'resultados_all' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} socioMode={socioMode} />}
+          {view.type === 'resultados_mes' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} socioMode={socioMode} initModo="mes" initMes={view.monthKey} />}
           {view.type === 'pagos' && <PagosView circuits={socioMode ? visibleCircuits : circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
           {view.type === 'circuit' && activeCircuit && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
@@ -722,7 +744,7 @@ function Dashboard({ session }) {
 // ═══════════════════════════════════════════════
 //  ESTADO DE RESULTADOS
 // ═══════════════════════════════════════════════
-function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, socioMode, initModo, initMes }) {
+function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pietroFeeEur, tcEur, socioMode, initModo, initMes }) {
   const [modo, setModo] = useState(initModo || 'todos')
   const [mesSel, setMesSel] = useState(initMes || sortedMonths[0] || '')
   const [circSel, setCircSel] = useState(circuits[0]?.id || '')
@@ -781,15 +803,21 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
 
   // Ordenar meses cronológicamente para los nuevos componentes
   const monthsOrdered = Object.keys(byMonth).sort((a,b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
-  // Mejor mes por utilidad bruta
+  // Cantidad de meses (excluyendo "Sin mes")
+  const monthsWithCircuits = monthsOrdered.filter(m => m && m !== 'Sin mes')
+  // Fee mensual a Pietro: €500/mes × (meses con circuitos en la vista) × TC EUR
+  const feeMensualEur = (pietroFeeEur || 0) * monthsWithCircuits.length
+  const feeMensualMXN = feeMensualEur * (tcEur || 0)
+  // Mejor mes por utilidad bruta (sin contar fee, porque éste no se asigna a mes individual)
   const bestMonth = monthsOrdered.length > 0
     ? monthsOrdered.reduce((best, mk) => byMonth[mk].utilidadBruta > byMonth[best].utilidadBruta ? mk : best, monthsOrdered[0])
     : null
-  const avgUtilPerCircuit = circsMostrar.length > 0 ? (totalIngMXN - totalCosto - totalComision) / circsMostrar.length : 0
-  const avgMargin = totalIngMXN > 0 ? ((totalIngMXN - totalCosto - totalComision) / totalIngMXN) * 100 : 0
+  const avgUtilPerCircuit = circsMostrar.length > 0 ? (totalIngMXN - totalCosto - totalComision - feeMensualMXN) / circsMostrar.length : 0
+  const avgMargin = totalIngMXN > 0 ? ((totalIngMXN - totalCosto - totalComision - feeMensualMXN) / totalIngMXN) * 100 : 0
 
   const utilidad     = totalIngMXN   - totalCosto
-  const utilidadNeta = utilidad - totalComision
+  const utilidadAntesFee = utilidad - totalComision  // utilidad después de comisión, antes de fee
+  const utilidadNeta = utilidadAntesFee - feeMensualMXN  // utilidad bruta final (después de fee)
   const utilidadOpc  = totalIngOpcTotal - totalCostoOpc
   const hayIngreso   = totalIngMXN   > 0
   const hayIngOpc    = totalIngOpcTotal > 0
@@ -843,7 +871,8 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
           {label:'💰 Cobrado',val:totalIngUSD>0?fmtUSD(totalIngUSD):'—',sub:totalIngUSD>0?fmtMXN(totalIngMXN)+' MN':'Sin capturar',cls:'forest'},
           {label:'📤 Costo',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
           ...(totalComision>0 ? [{label:'👥 Comisión Pietro',val:fmtMXN(totalComision)+' MN',cls:'rust'}] : []),
-          {label:hayIngreso?(utilidadNeta>=0?'✅ Utilidad'+(totalComision>0?' Bruta':''):'❌ Pérdida'+(totalComision>0?' Bruta':'')):'💡 Utilidad',val:hayIngreso?fmtMXN(Math.abs(utilidadNeta))+' MN':'—',sub:hayIngreso&&totalIngMXN>0?((utilidadNeta/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidadNeta>=0?'forest':'rust'):'sky'},
+          ...(feeMensualMXN>0 ? [{label:'💼 Fee Mensual',val:fmtMXN(feeMensualMXN)+' MN',sub:`€${pietroFeeEur} × ${monthsWithCircuits.length} ${monthsWithCircuits.length===1?'mes':'meses'}`,cls:'rust'}] : []),
+          {label:hayIngreso?(utilidadNeta>=0?'✅ Utilidad Bruta':'❌ Pérdida Bruta'):'💡 Utilidad',val:hayIngreso?fmtMXN(Math.abs(utilidadNeta))+' MN':'—',sub:hayIngreso&&totalIngMXN>0?((utilidadNeta/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidadNeta>=0?'forest':'rust'):'sky'},
           {label:'✅ Pagado',val:fmtMXN(totalPaidMXN)+' MN',sub:fmtUSD(totalPaidUSD)+' USD',cls:'forest'},
           {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
         ] : [
@@ -853,7 +882,9 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
           {label:'💰 Cobrado OPCIONAL',val:(totalIngOpcMXN>0||totalIngOpcUSD>0)?(totalIngOpcMXN>0?fmtMXN(totalIngOpcMXN)+' MN':''):'—',sub:totalIngOpcUSD>0?fmtUSD(totalIngOpcUSD):'Sin capturar',cls:'sky'},
           {label:'📤 Costo LIBERO',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
           {label:'📤 Costo OPCIONAL',val:fmtMXN(totalCostoOpc)+' MN',cls:'rust'},
-          {label:hayIngreso?(utilidad>=0?'✅ Utilidad LIB':'❌ Pérdida LIB'):'💡 LIBERO',val:hayIngreso?fmtMXN(Math.abs(utilidad))+' MN':'—',sub:hayIngreso&&totalCosto>0?((utilidad/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidad>=0?'forest':'rust'):'sky'},
+          ...(totalComision>0 ? [{label:'👥 Comisión Pietro',val:fmtMXN(totalComision)+' MN',cls:'rust'}] : []),
+          ...(feeMensualMXN>0 ? [{label:'💼 Fee Mensual',val:fmtMXN(feeMensualMXN)+' MN',sub:`€${pietroFeeEur} × ${monthsWithCircuits.length} ${monthsWithCircuits.length===1?'mes':'meses'}`,cls:'rust'}] : []),
+          {label:hayIngreso?(utilidad>=0?'✅ Utilidad LIB':'❌ Pérdida LIB'):'💡 LIBERO',val:hayIngreso?fmtMXN(Math.abs(utilidadNeta))+' MN':'—',sub:hayIngreso&&totalCosto>0?((utilidadNeta/totalIngMXN)*100).toFixed(1)+'%':undefined,cls:hayIngreso?(utilidadNeta>=0?'forest':'rust'):'sky'},
           {label:hayIngOpc?(utilidadOpc>=0?'✅ Utilidad OPC':'❌ Pérdida OPC'):'💡 OPCIONAL',val:hayIngOpc?fmtMXN(Math.abs(utilidadOpc))+' MN':'—',sub:hayIngOpc&&totalCostoOpc>0?((utilidadOpc/totalIngOpcTotal)*100).toFixed(1)+'%':undefined,cls:hayIngOpc?(utilidadOpc>=0?'forest':'rust'):'sky'},
           {label:'✅ Pagado',val:fmtMXN(totalPaidMXN)+' MN',sub:fmtUSD(totalPaidUSD)+' USD',cls:'forest'},
           {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
@@ -875,6 +906,13 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
               <DRow
                 label={<>👥 Comisión Pietro <span style={{fontSize:10,fontWeight:400,color:'#8a8278'}}>({totalIngMXN>0?((totalComision/totalIngMXN)*100).toFixed(2):'0.00'}% sobre ingreso)</span></>}
                 val={'−'+fmtMXN(totalComision)+' MN'}
+                color="#a05a00"
+              />
+            )}
+            {feeMensualMXN>0 && (
+              <DRow
+                label={<>💼 Fee mensual Pietro <span style={{fontSize:10,fontWeight:400,color:'#8a8278'}}>(€{pietroFeeEur} × {monthsWithCircuits.length} {monthsWithCircuits.length===1?'mes':'meses'} × {tcEur.toFixed(2)})</span></>}
+                val={'−'+fmtMXN(feeMensualMXN)+' MN'}
                 color="#a05a00"
               />
             )}
@@ -1080,7 +1118,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
                 <thead>
                   <tr style={{background:'#070a12',color:'#fff'}}>
-                    {['Mes','Circuitos','PAX','Cobrado','Costo','Comisión','Utilidad Bruta','Margen'].map(h=>(
+                    {(feeMensualMXN>0 ? ['Mes','Circuitos','PAX','Cobrado','Costo','Comisión','Fee €','Utilidad Bruta','Margen'] : ['Mes','Circuitos','PAX','Cobrado','Costo','Comisión','Utilidad Bruta','Margen']).map(h=>(
                       <th key={h} style={{padding:'10px 12px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.5,whiteSpace:'nowrap'}}>{h}</th>
                     ))}
                   </tr>
@@ -1088,7 +1126,10 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
                 <tbody>
                   {monthsOrdered.map((mk,i) => {
                     const m = byMonth[mk]
-                    const margin = m.ingreso > 0 ? (m.utilidadBruta / m.ingreso) * 100 : null
+                    // El fee se cobra por mes (€500 × TC EUR cada mes con circuitos)
+                    const feeMes = (mk && mk !== 'Sin mes') ? (pietroFeeEur || 0) * (tcEur || 0) : 0
+                    const utilBrutaConFee = m.utilidadBruta - feeMes
+                    const margin = m.ingreso > 0 ? (utilBrutaConFee / m.ingreso) * 100 : null
                     return (
                       <tr key={mk} style={{borderBottom:'1px solid #ece7df',background:i%2===0?'#fafaf8':'#fff'}}>
                         <td style={{padding:'10px 12px',fontWeight:700,textTransform:'capitalize'}}>{cap(mk)}</td>
@@ -1097,8 +1138,11 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
                         <td style={{padding:'10px 12px',color:'#1565a0',fontWeight:600}}>{m.ingreso>0 ? fmtMXN(m.ingreso)+' MN' : <span style={{color:'#ccc',fontSize:11}}>—</span>}</td>
                         <td style={{padding:'10px 12px',color:'#b83232',fontWeight:600}}>{fmtMXN(m.costo)+' MN'}</td>
                         <td style={{padding:'10px 12px',color:'#a05a00'}}>{m.comision>0 ? '−'+fmtMXN(m.comision)+' MN' : <span style={{color:'#ccc',fontSize:11}}>—</span>}</td>
-                        <td style={{padding:'10px 12px',fontWeight:700,color:m.utilidadBruta>=0?'#1e5c3a':'#b83232'}}>
-                          {m.ingreso>0 ? <>{m.utilidadBruta>=0?'✅':'❌'} {fmtMXN(Math.abs(m.utilidadBruta))} MN</> : <span style={{color:'#ccc',fontSize:11,fontWeight:400}}>—</span>}
+                        {feeMensualMXN>0 && (
+                          <td style={{padding:'10px 12px',color:'#a05a00'}}>{feeMes>0 ? '−'+fmtMXN(feeMes)+' MN' : <span style={{color:'#ccc',fontSize:11}}>—</span>}</td>
+                        )}
+                        <td style={{padding:'10px 12px',fontWeight:700,color:utilBrutaConFee>=0?'#1e5c3a':'#b83232'}}>
+                          {m.ingreso>0 ? <>{utilBrutaConFee>=0?'✅':'❌'} {fmtMXN(Math.abs(utilBrutaConFee))} MN</> : <span style={{color:'#ccc',fontSize:11,fontWeight:400}}>—</span>}
                         </td>
                         <td style={{padding:'10px 12px',fontWeight:600,color:margin!==null ? (margin>=0?'#1e5c3a':'#b83232') : '#ccc'}}>
                           {margin!==null ? margin.toFixed(1)+'%' : '—'}
@@ -1114,6 +1158,9 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
                     <td style={{padding:'12px',color:'#1565a0'}}>{fmtMXN(totalIngMXN)+' MN'}</td>
                     <td style={{padding:'12px',color:'#b83232'}}>{fmtMXN(totalCosto)+' MN'}</td>
                     <td style={{padding:'12px',color:'#a05a00'}}>{totalComision>0 ? '−'+fmtMXN(totalComision)+' MN' : '—'}</td>
+                    {feeMensualMXN>0 && (
+                      <td style={{padding:'12px',color:'#a05a00'}}>{'−'+fmtMXN(feeMensualMXN)+' MN'}</td>
+                    )}
                     <td style={{padding:'12px',color:utilidadNeta>=0?'#1e5c3a':'#b83232'}}>{hayIngreso ? <>{utilidadNeta>=0?'✅':'❌'} {fmtMXN(Math.abs(utilidadNeta))} MN</> : '—'}</td>
                     <td style={{padding:'12px',color:hayIngreso ? (avgMargin>=0?'#1e5c3a':'#b83232') : '#ccc'}}>{hayIngreso ? avgMargin.toFixed(1)+'%' : '—'}</td>
                   </tr>
