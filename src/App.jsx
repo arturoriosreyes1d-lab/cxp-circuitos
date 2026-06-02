@@ -3,6 +3,7 @@ import { supabase } from './supabase'
 import Login from './Login'
 import { Badge, TipoBadge, Btn, KPIGrid, Modal, Spinner } from './components'
 import { norm, clean, parseAmt, fmtMXN, fmtUSD, cap, getDC, parseCircuito, monthKeySortable, dateToMonthKey } from './helpers'
+import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts'
 
 function useXLSX() {
   const [ready, setReady] = useState(!!window.XLSX)
@@ -736,7 +737,10 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
   let totalCostoOpc=0, totalIngOpcMXN=0, totalIngOpcUSD=0, totalIngOpcTotal=0
   let totalPaidOpcMXN=0, totalPaidOpcUSD=0
   let totalComision=0
+  let totalPax=0
   const catCosto={}, catPaidMXN={}, catPaidUSD={}, catPendMXN={}, catPendUSD={}
+  // Agrupar datos por mes (para Vista Socio: tendencia + tabla + indicadores)
+  const byMonth = {} // mk -> { circuits, pax, ingreso, costo, comision, utilidadBruta }
 
   circsMostrar.forEach(c => {
     totalIngUSD += c.importe_cobrado || 0
@@ -750,6 +754,18 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
     totalIngOpcTotal += T.ingresoOpcTotal
     totalPaidOpcMXN += T.paidOpcMXN;   totalPaidOpcUSD += T.paidOpcUSD
     totalComision  += T.comision
+    const paxC = parseInt(c.info?.pax) || 0
+    totalPax += paxC
+
+    // Acumular por mes (en modo socio: solo LIBERO; en modo normal: LIBERO+OPC para que sea consistente con totales)
+    const mk = c.month_key || 'Sin mes'
+    if (!byMonth[mk]) byMonth[mk] = { circuits:0, pax:0, ingreso:0, costo:0, comision:0, utilidadBruta:0 }
+    byMonth[mk].circuits += 1
+    byMonth[mk].pax += paxC
+    byMonth[mk].ingreso += T.ingresoMXN
+    byMonth[mk].costo += T.costoTotal
+    byMonth[mk].comision += T.comision
+    byMonth[mk].utilidadBruta += T.utilidadNeta
 
     c.rows.forEach(r => {
       // En modo socio, ignoramos OPCIONAL en gráficas por categoría
@@ -762,6 +778,15 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
       else{catPendMXN[cat]+=mxn;catPendUSD[cat]+=usd}
     })
   })
+
+  // Ordenar meses cronológicamente para los nuevos componentes
+  const monthsOrdered = Object.keys(byMonth).sort((a,b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
+  // Mejor mes por utilidad bruta
+  const bestMonth = monthsOrdered.length > 0
+    ? monthsOrdered.reduce((best, mk) => byMonth[mk].utilidadBruta > byMonth[best].utilidadBruta ? mk : best, monthsOrdered[0])
+    : null
+  const avgUtilPerCircuit = circsMostrar.length > 0 ? (totalIngMXN - totalCosto - totalComision) / circsMostrar.length : 0
+  const avgMargin = totalIngMXN > 0 ? ((totalIngMXN - totalCosto - totalComision) / totalIngMXN) * 100 : 0
 
   const utilidad     = totalIngMXN   - totalCosto
   const utilidadNeta = utilidad - totalComision
@@ -814,6 +839,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12,marginBottom:20}}>
         {(socioMode ? [
           {label:'Circuitos',val:circsMostrar.length,cls:'gold'},
+          {label:'👥 PAX',val:totalPax.toLocaleString('es-MX'),cls:'sky'},
           {label:'💰 Cobrado',val:totalIngUSD>0?fmtUSD(totalIngUSD):'—',sub:totalIngUSD>0?fmtMXN(totalIngMXN)+' MN':'Sin capturar',cls:'forest'},
           {label:'📤 Costo',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
           ...(totalComision>0 ? [{label:'👥 Comisión Pietro',val:fmtMXN(totalComision)+' MN',cls:'rust'}] : []),
@@ -822,6 +848,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
           {label:'⏳ Pendiente',val:fmtMXN(totalPendMXN)+' MN',sub:fmtUSD(totalPendUSD)+' USD',cls:'rust'},
         ] : [
           {label:'Circuitos',val:circsMostrar.length,cls:'gold'},
+          {label:'👥 PAX',val:totalPax.toLocaleString('es-MX'),cls:'sky'},
           {label:'💰 Cobrado LIBERO',val:totalIngUSD>0?fmtUSD(totalIngUSD):'—',sub:totalIngUSD>0?fmtMXN(totalIngMXN)+' MN':'Sin capturar',cls:'forest'},
           {label:'💰 Cobrado OPCIONAL',val:(totalIngOpcMXN>0||totalIngOpcUSD>0)?(totalIngOpcMXN>0?fmtMXN(totalIngOpcMXN)+' MN':''):'—',sub:totalIngOpcUSD>0?fmtUSD(totalIngOpcUSD):'Sin capturar',cls:'sky'},
           {label:'📤 Costo LIBERO',val:fmtMXN(totalCosto)+' MN',cls:'rust'},
@@ -874,7 +901,8 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
         )}
       </div>
 
-      {/* Distribución categorías + proveedores */}
+      {/* Distribución categorías + proveedores — solo en modo normal */}
+      {!socioMode && (
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:16}}>
         <Card>
           <CH t="📊 Distribución por Categoría"/>
@@ -944,9 +972,10 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
           })()}
         </Card>
       </div>
+      )}
 
-      {/* Desglose por circuito con dos utilidades */}
-      {circsMostrar.length>0&&(
+      {/* Desglose por circuito — solo en modo normal */}
+      {!socioMode && circsMostrar.length>0&&(
         <div style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginTop:16}}>
           <CH t="🗂 Desglose por Circuito"/>
           <div style={{overflowX:'auto'}}>
@@ -1003,6 +1032,96 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, soc
             </table>
           </div>
         </div>
+      )}
+
+      {/* ════ Vista Socio: 3 secciones ejecutivas (Indicadores / Tendencia / Resumen) ════ */}
+      {socioMode && circsMostrar.length>0 && (
+        <>
+          {/* Indicadores clave */}
+          <div style={{marginTop:16}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12}}>
+              <KPICard cls="sky" label="👥 PAX totales" val={totalPax.toLocaleString('es-MX')} sub={`${circsMostrar.length} circuitos`} />
+              <KPICard cls="forest" label="💵 Utilidad promedio/circuito" val={fmtMXN(avgUtilPerCircuit)+' MN'} sub={hayIngreso ? null : 'Sin ingreso capturado'} />
+              <KPICard cls="gold" label="📊 Margen promedio" val={hayIngreso ? avgMargin.toFixed(1)+'%' : '—'} sub={hayIngreso ? 'sobre ingreso' : null} />
+              <KPICard cls="forest" label="🏆 Mejor mes" val={bestMonth ? cap(bestMonth) : '—'} sub={bestMonth ? fmtMXN(byMonth[bestMonth].utilidadBruta)+' MN' : null} />
+            </div>
+          </div>
+
+          {/* Tendencia mensual */}
+          {monthsOrdered.length>0 && (
+            <div style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginTop:16}}>
+              <CH t="📈 Tendencia mensual"/>
+              <div style={{height:320}}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={monthsOrdered.map(mk => ({
+                    mes: cap(mk).replace(/ de /, ' ').replace(/2025|2026/g, m => "'"+m.slice(2)),
+                    Ingreso: Math.round(byMonth[mk].ingreso),
+                    Costo: Math.round(byMonth[mk].costo),
+                    'Utilidad Bruta': Math.round(byMonth[mk].utilidadBruta),
+                  }))} margin={{top:10,right:20,left:10,bottom:5}}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ece7df"/>
+                    <XAxis dataKey="mes" tick={{fontSize:11,fill:'#8a8278'}} />
+                    <YAxis tick={{fontSize:10,fill:'#8a8278'}} tickFormatter={(v)=> v>=1e6 ? `${(v/1e6).toFixed(1)}M` : v>=1e3 ? `${(v/1e3).toFixed(0)}K` : v} />
+                    <Tooltip formatter={(value) => fmtMXN(value)+' MN'} contentStyle={{borderRadius:8,border:'1px solid #d8d2c8',fontSize:12}}/>
+                    <Legend wrapperStyle={{fontSize:12}}/>
+                    <Line type="monotone" dataKey="Ingreso" stroke="#1565a0" strokeWidth={2.5} dot={{r:4}} activeDot={{r:6}}/>
+                    <Line type="monotone" dataKey="Costo" stroke="#b83232" strokeWidth={2.5} dot={{r:4}} activeDot={{r:6}}/>
+                    <Line type="monotone" dataKey="Utilidad Bruta" stroke="#1e5c3a" strokeWidth={2.5} dot={{r:4}} activeDot={{r:6}}/>
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Resumen por mes */}
+          <div style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginTop:16}}>
+            <CH t="📋 Resumen por mes"/>
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+                <thead>
+                  <tr style={{background:'#070a12',color:'#fff'}}>
+                    {['Mes','Circuitos','PAX','Cobrado','Costo','Comisión','Utilidad Bruta','Margen'].map(h=>(
+                      <th key={h} style={{padding:'10px 12px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.5,whiteSpace:'nowrap'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthsOrdered.map((mk,i) => {
+                    const m = byMonth[mk]
+                    const margin = m.ingreso > 0 ? (m.utilidadBruta / m.ingreso) * 100 : null
+                    return (
+                      <tr key={mk} style={{borderBottom:'1px solid #ece7df',background:i%2===0?'#fafaf8':'#fff'}}>
+                        <td style={{padding:'10px 12px',fontWeight:700,textTransform:'capitalize'}}>{cap(mk)}</td>
+                        <td style={{padding:'10px 12px'}}>{m.circuits}</td>
+                        <td style={{padding:'10px 12px'}}>{m.pax.toLocaleString('es-MX')}</td>
+                        <td style={{padding:'10px 12px',color:'#1565a0',fontWeight:600}}>{m.ingreso>0 ? fmtMXN(m.ingreso)+' MN' : <span style={{color:'#ccc',fontSize:11}}>—</span>}</td>
+                        <td style={{padding:'10px 12px',color:'#b83232',fontWeight:600}}>{fmtMXN(m.costo)+' MN'}</td>
+                        <td style={{padding:'10px 12px',color:'#a05a00'}}>{m.comision>0 ? '−'+fmtMXN(m.comision)+' MN' : <span style={{color:'#ccc',fontSize:11}}>—</span>}</td>
+                        <td style={{padding:'10px 12px',fontWeight:700,color:m.utilidadBruta>=0?'#1e5c3a':'#b83232'}}>
+                          {m.ingreso>0 ? <>{m.utilidadBruta>=0?'✅':'❌'} {fmtMXN(Math.abs(m.utilidadBruta))} MN</> : <span style={{color:'#ccc',fontSize:11,fontWeight:400}}>—</span>}
+                        </td>
+                        <td style={{padding:'10px 12px',fontWeight:600,color:margin!==null ? (margin>=0?'#1e5c3a':'#b83232') : '#ccc'}}>
+                          {margin!==null ? margin.toFixed(1)+'%' : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {/* Fila de total */}
+                  <tr style={{borderTop:'2px solid #121512',background:'#f5f3ef',fontWeight:700}}>
+                    <td style={{padding:'12px',fontSize:12,textTransform:'uppercase',letterSpacing:.5}}>Total</td>
+                    <td style={{padding:'12px'}}>{circsMostrar.length}</td>
+                    <td style={{padding:'12px'}}>{totalPax.toLocaleString('es-MX')}</td>
+                    <td style={{padding:'12px',color:'#1565a0'}}>{fmtMXN(totalIngMXN)+' MN'}</td>
+                    <td style={{padding:'12px',color:'#b83232'}}>{fmtMXN(totalCosto)+' MN'}</td>
+                    <td style={{padding:'12px',color:'#a05a00'}}>{totalComision>0 ? '−'+fmtMXN(totalComision)+' MN' : '—'}</td>
+                    <td style={{padding:'12px',color:utilidadNeta>=0?'#1e5c3a':'#b83232'}}>{hayIngreso ? <>{utilidadNeta>=0?'✅':'❌'} {fmtMXN(Math.abs(utilidadNeta))} MN</> : '—'}</td>
+                    <td style={{padding:'12px',color:hayIngreso ? (avgMargin>=0?'#1e5c3a':'#b83232') : '#ccc'}}>{hayIngreso ? avgMargin.toFixed(1)+'%' : '—'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   )
