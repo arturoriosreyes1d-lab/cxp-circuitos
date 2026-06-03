@@ -1178,7 +1178,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pie
                       <Pie
                         data={[
                           { name: 'Comisión + Fee Pietro', value: Math.max(0, totalComisionFee), color: '#a05a00' },
-                          { name: 'Utilidad Neta (nosotros)', value: Math.max(0, utilidadNeta), color: '#1e5c3a' },
+                          { name: 'Utilidad Neta (Viajes Libero)', value: Math.max(0, utilidadNeta), color: '#1e5c3a' },
                         ]}
                         dataKey="value"
                         nameKey="name"
@@ -1211,7 +1211,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pie
                     </div>
                   </div>
                   <div style={{padding:14,background:'#f0faf4',border:'1px solid #95d5b2',borderRadius:10}}>
-                    <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#1e5c3a'}}>✅ Nosotros (Utilidad Neta)</div>
+                    <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#1e5c3a'}}>✅ Viajes Libero (Utilidad Neta)</div>
                     <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:24,fontWeight:700,color:'#1e5c3a',marginTop:4}}>
                       {fmtMXN(utilidadNeta)} <span style={{fontSize:13,fontWeight:600,color:'#8a8278'}}>MN</span>
                     </div>
@@ -1236,9 +1236,9 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pie
                   <tr style={{background:'#070a12',color:'#fff'}}>
                     {(() => {
                       const cols = ['Mes','Circuitos','PAX','Cobrado','Costo','Utilidad Bruta']
-                      if (gastosOperativosTotal>0) { cols.push('Gastos Op.'); cols.push('Util. Operativa') }
-                      cols.push('Comisión')
-                      if (feeMensualMXN>0) cols.push('Fee €')
+                      if (gastosOperativosTotal>0) { cols.push('Gastos Operativos'); cols.push('Utilidad Operativa') }
+                      cols.push('Comisión Pietro')
+                      if (feeMensualMXN>0) cols.push('Fee Mensual')
                       cols.push('Utilidad Neta')
                       cols.push('Margen Neto')
                       return cols
