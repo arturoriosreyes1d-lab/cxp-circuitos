@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import * as XLSX from "xlsx";
+import { parsearEstadoCuenta } from "./EstadoCuentaImporter";
+import EgresosNFModal from "./EgresosNFModal";
 import html2canvas from "html2canvas";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -13,7 +15,7 @@ import {
   fetchIngresos, fetchCobros, fetchInvoiceIngresos, fetchCategoriasIngreso,
   upsertInvoiceIngreso, deleteInvoiceIngreso,
   fetchClientes, upsertCliente, deleteCliente,
-  fetchPorFacturar, insertPorFacturar, updatePorFacturar, deletePorFacturar, bulkInsertPorFacturar,
+  fetchPorFacturar, insertPorFacturar, updatePorFacturar, deletePorFacturar, bulkInsertPorFacturar, bulkInsertPorFacturarPlain,
   fetchFinanciamientos, insertFinanciamiento, updateFinanciamiento, deleteFinanciamiento,
   fetchFinanciamientoPagos, insertFinanciamientoPago, deleteFinanciamientoPago,
   fetchTarjetas, updateTarjetaSaldo, fetchTarjetaMovimientos, bulkInsertMovimientos,
@@ -27,8 +29,15 @@ import {
   fetchSaldosTotalesPorFecha,
   fetchSaldoReporteDia, upsertSaldoReporteDia,
   fetchUltimoSaldoReporteAntes, fetchMovimientosDia,
+  fetchAuditLog,
+  fetchPrestamos, upsertPrestamo, deletePrestamo,
+  fetchPrestamoMovimientos, upsertPrestamoMovimiento, deletePrestamoMovimiento,
+  calcularUtilizadoPrestamo,
+  buscarPlanesActivosDeFactura, marcarAbonoPagado,
 } from "./db.js";
 import CxcView from "./CxcView.jsx";
+import ReportesView from "./ReportesView.jsx";
+import FlujoIngresos from "./FlujoIngresos.jsx";
 import { EMPRESAS } from "./empresas.js";
 
 /* ── Palette ─────────────────────────────────────────────────────────────── */
@@ -137,6 +146,7 @@ const KpiCard = ({label,value,sub,color=C.navy,icon,onClick}) => (
    ═══════════════════════════════════════════════════════════════════════════ */
 export default function CxpApp({ user, onLogout }) {
   const esConsulta = user?.rol === 'consulta';
+  const esSuperadmin = (user?.rol || '').toLowerCase() === 'superadmin';
   const [view, setView] = useState("dashboard");
   const [currency, setCurrency] = useState("MXN");
   const [suppliers, setSuppliers] = useState([]);
@@ -161,6 +171,11 @@ export default function CxpApp({ user, onLogout }) {
   const [grupoPor, setGrupoPor] = useState("proveedor");
   const [grupo2, setGrupo2] = useState(""); // secondary grouping
   const [modalInv, setModalInv] = useState(null);
+  // Egresos No Facturados
+  const [modalEgreso, setModalEgreso] = useState(null);
+  const [modalImportarEgresos, setModalImportarEgresos] = useState(null);
+  const [modalListaNF, setModalListaNF] = useState(false);
+  const [filtroTipo, setFiltroTipo] = useState('todos'); // 'todos' | 'facturas' | 'egresos'
   const [modalSup, setModalSup] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // {id, cur}
   const [importMsg, setImportMsg] = useState("");
@@ -192,6 +207,8 @@ export default function CxpApp({ user, onLogout }) {
   const [sortDir, setSortDir] = useState("asc");
   const [payments, setPayments] = useState([]); // all payments from DB
   const [payModal, setPayModal] = useState(null); // {invoiceId, proveedor, folio, total, moneda}
+  const [planMatchModal, setPlanMatchModal] = useState(null); // {planes, montoPago, invoiceId, fechaPago, ...}
+  const [planMatchQueue, setPlanMatchQueue] = useState([]); // cola pendiente cuando viene de bulk: array de {planes, montoPago, invoiceId, fechaPago, proveedor, folio, moneda}
   const [pagosFechaFrom, setPagosFechaFrom] = useState("");
   const [pagosFechaTo, setPagosFechaTo] = useState("");
   const fileRef = useRef();
@@ -335,6 +352,9 @@ export default function CxpApp({ user, onLogout }) {
   const filtered = useMemo(() => {
     const getSupGrupo = (nombre) => suppliers.find(s=>s.nombre===nombre)?.grupo || "";
     let result = curInvoices.filter(inv => {
+      // Filtro Tipo: facturas / egresos / todos
+      if (filtroTipo === 'facturas' && inv.tipo === 'EgresoNF') return false;
+      if (filtroTipo === 'egresos'  && inv.tipo !== 'EgresoNF') return false;
       // Tab filter
       if(carteraTab === "activas" && inv.estatus === "Pagado") return false;
       if(carteraTab === "pagadas" && inv.estatus !== "Pagado") return false;
@@ -374,7 +394,7 @@ export default function CxpApp({ user, onLogout }) {
       });
     }
     return result;
-  }, [curInvoices, filters, search, sortCol, sortDir, carteraTab, filtroGrupo, filtroProveedoresKey, suppliers, filtroMesConcepto]);
+  }, [curInvoices, filters, search, sortCol, sortDir, carteraTab, filtroGrupo, filtroProveedoresKey, suppliers, filtroMesConcepto, filtroTipo]);
 
   const kpis = useMemo(() => {
     const allInvs = [...invoices.MXN,...invoices.USD,...invoices.EUR];
@@ -500,23 +520,62 @@ export default function CxpApp({ user, onLogout }) {
   const applyBulkPayment = async (tipo, montoMode, montoFijo, fecha, notas) => {
     if(selectedIds.size === 0 || !fecha) return;
     const ids = [...selectedIds];
+    // Vamos recopilando los pagos realizados para luego verificar planes activos
+    const pagosRealizados = []; // {invoiceId, monto, inv}
     for(const id of ids) {
       let monto = 0;
+      let invRef = null;
       if(montoMode === "saldo") {
         // Pay each invoice's full remaining saldo
         let inv = null;
         ["MXN","USD","EUR"].forEach(c => { const f = invoices[c].find(i=>i.id===id); if(f) inv=f; });
         if(inv) {
+          invRef = inv;
           const paid = realizedPayments(id).reduce((s,p)=>s+p.monto,0);
           monto = (+inv.total||0) - paid;
         }
       } else {
         monto = +montoFijo;
+        // Encontrar la factura para tener datos del proveedor/folio
+        ["MXN","USD","EUR"].forEach(c => { const f = invoices[c].find(i=>i.id===id); if(f) invRef=f; });
       }
-      if(monto > 0) await addPayment(id, monto, fecha, notas, tipo);
+      if(monto > 0) {
+        await addPayment(id, monto, fecha, notas, tipo);
+        if (tipo === 'realizado' && invRef) {
+          pagosRealizados.push({ invoiceId: id, monto, inv: invRef });
+        }
+      }
     }
     setSelectedIds(new Set());
     setBulkPayModal(null);
+    // Después de procesar todos, verificar planes activos (solo para pagos REALIZADOS)
+    if (tipo === 'realizado' && pagosRealizados.length > 0) {
+      try {
+        const cola = [];
+        for (const pago of pagosRealizados) {
+          const planesActivos = await buscarPlanesActivosDeFactura(pago.invoiceId, empresaId);
+          if (planesActivos && planesActivos.length > 0) {
+            cola.push({
+              planes: planesActivos,
+              montoPago: pago.monto,
+              fechaPago: fecha,
+              invoiceId: pago.invoiceId,
+              proveedor: pago.inv.proveedor || '',
+              folio: pago.inv.folio || '',
+              moneda: pago.inv.moneda || 'MXN',
+            });
+          }
+        }
+        // Si hay matches: abrir el primer modal y dejar el resto en cola
+        if (cola.length > 0) {
+          const [primero, ...resto] = cola;
+          setPlanMatchModal(primero);
+          setPlanMatchQueue(resto);
+        }
+      } catch (err) {
+        console.error('Verificando planes activos en bulk:', err);
+      }
+    }
   };
 
   /* ── Grouped (supports dual grouping) ────────────────────────────────── */
@@ -574,6 +633,75 @@ export default function CxpApp({ user, onLogout }) {
       return result;
     });
     setModalInv(null);
+  };
+
+  /* ── Egresos No Facturados ─────────────────────────────────────── */
+  // Generar folio interno NF-001, NF-002...
+  const generarFolioEgreso = () => {
+    const todos = ['MXN','USD','EUR'].flatMap(c => invoices[c] || [])
+      .filter(i => i.tipo === 'EgresoNF' && i.empresaId === empresaId);
+    const numeros = todos.map(i => {
+      const m = (i.folio || '').match(/^NF-(\d+)$/);
+      return m ? parseInt(m[1], 10) : 0;
+    });
+    const max = numeros.length > 0 ? Math.max(...numeros) : 0;
+    return `NF-${String(max + 1).padStart(3, '0')}`;
+  };
+
+  const saveEgreso = async (data) => {
+    const monedaFinal = data.moneda || currency;
+    const total = +(parseFloat(data.total) || 0);
+    if (total <= 0) { alert('El monto debe ser mayor a 0'); return; }
+    const folio = data.folio || generarFolioEgreso();
+    const ya = !!data._yaPagado;
+    // Construir factura virtual (tipo='EgresoNF')
+    const invObj = {
+      id: data.id || uid(),
+      tipo: 'EgresoNF',
+      fecha: data.fecha || today(),
+      serie: 'NF',
+      folio,
+      uuid: '',
+      proveedor: data.concepto || data.categoriaEgreso || 'Egreso',
+      clasificacion: data.categoriaEgreso || 'Otro',
+      subtotal: total, iva: 0, retIsr: 0, retIva: 0,
+      total,
+      montoPagado: ya ? total : 0,
+      concepto: data.concepto || '',
+      diasCredito: 0,
+      vencimiento: data.fecha || today(),
+      estatus: ya ? 'Pagado' : 'Pendiente',
+      fechaProgramacion: data.fechaProgramacion || data.fecha || today(),
+      diasFicticios: 0,
+      referencia: '',
+      notas: data.notas || '',
+      moneda: monedaFinal,
+      voBo: true,
+      autorizadoDireccion: true,
+      empresaId,
+      categoriaEgreso: data.categoriaEgreso || 'Otro',
+      segmentoEgreso: data.segmentoEgreso || '',
+    };
+    const saved = await upsertInvoice(invObj);
+    // Guardar en estado
+    setInvoices(prev => {
+      const result = { ...prev };
+      ['MXN','USD','EUR'].forEach(c => {
+        result[c] = (result[c]||[]).filter(i => i.id !== invObj.id && i.id !== saved.id);
+      });
+      result[monedaFinal] = [...(result[monedaFinal]||[]), saved];
+      return result;
+    });
+    // Si se marcó "ya pagado": crear pago realizado en la fecha que indicó
+    if (ya) {
+      await addPayment(saved.id, total, data.fechaProgramacion || data.fecha || today(),
+                       data.notas || 'Egreso no facturado', 'realizado', data.metodoPago || 'banco');
+    } else {
+      // Programar pago en fecha indicada (igual que se programan facturas)
+      await addPayment(saved.id, total, data.fechaProgramacion || data.fecha || today(),
+                       data.notas || 'Egreso programado', 'programado', data.metodoPago || 'banco');
+    }
+    setModalEgreso(null);
   };
 
   const confirmDelete = () => {
@@ -730,7 +858,7 @@ export default function CxpApp({ user, onLogout }) {
           const allNew = [...ni.MXN,...ni.USD,...ni.EUR];
           // Save to Supabase and then reload from DB to get correct UUIDs
           upsertManyInvoices(allNew).then(() => {
-            fetchInvoices().then(inv => setInvoices(inv));
+            fetchInvoices(empresaId).then(inv => setInvoices(inv));
           });
           // Optimistic local update
           setInvoices(prev=>({MXN:[...prev.MXN,...ni.MXN],USD:[...prev.USD,...ni.USD],EUR:[...prev.EUR,...ni.EUR]}));
@@ -837,8 +965,11 @@ export default function CxpApp({ user, onLogout }) {
         </td>
         <td style={{padding:"11px 8px",fontSize:14}}>{inv.tipo}</td>
         <td style={{padding:"11px 8px",whiteSpace:"nowrap",fontSize:14}}>{inv.fecha}</td>
-        {/* Folio — red if duplicate */}
-        <td style={{padding:"11px 8px",background:isDupe?"#FFEBEE":"transparent",color:isDupe?C.danger:C.text,fontWeight:isDupe?700:600,fontSize:14,borderLeft:isDupe?`3px solid ${C.danger}`:"none"}}>
+        {/* Folio — red if duplicate; badge NF si es Egreso No Facturado */}
+        <td style={{padding:"11px 8px",background:isDupe?"#FFEBEE":(inv.tipo==='EgresoNF'?"#FFF8F8":"transparent"),color:isDupe?C.danger:C.text,fontWeight:isDupe?700:600,fontSize:14,borderLeft:isDupe?`3px solid ${C.danger}`:(inv.tipo==='EgresoNF'?"3px solid #C62828":"none")}}>
+          {inv.tipo === 'EgresoNF' && (
+            <span title="Otro Pago (sin factura)" style={{display:'inline-block',background:'#C62828',color:'#fff',padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:800,marginRight:6,verticalAlign:'middle'}}>NF</span>
+          )}
           {inv.serie}{inv.folio}
           {isDupe && <span style={{fontSize:11,marginLeft:4}} title="Folio duplicado">⚠️</span>}
         </td>
@@ -989,7 +1120,9 @@ export default function CxpApp({ user, onLogout }) {
 
   /* ── DASHBOARD ──────────────────────────────────────────────────────── */
   const renderDashboard = () => {
-    const allInvs = [...invoices.MXN.map(i=>({...i,moneda:"MXN"})),...invoices.USD.map(i=>({...i,moneda:"USD"})),...invoices.EUR.map(i=>({...i,moneda:"EUR"}))];
+    // Excluimos los Egresos No Facturados del dashboard, métricas y gráficas
+    const allInvs = [...invoices.MXN.map(i=>({...i,moneda:"MXN"})),...invoices.USD.map(i=>({...i,moneda:"USD"})),...invoices.EUR.map(i=>({...i,moneda:"EUR"}))]
+      .filter(i => i.tipo !== 'EgresoNF');
     const pendAll = allInvs.filter(i=>i.estatus!=="Pagado"&&((+i.total||0)-(+i.montoPagado||0))>0);
     const saldoOf = i => (+i.total||0)-(+i.montoPagado||0);
     const daysOf = i => daysUntil(i.vencimiento);
@@ -2605,6 +2738,14 @@ export default function CxpApp({ user, onLogout }) {
               </select>
             )}
 
+            {/* Filtro Tipo: Todos / Facturas / Egresos NF */}
+            <select value={filtroTipo} onChange={e=>setFiltroTipo(e.target.value)}
+              style={{...selectStyle,width:160,borderColor:filtroTipo!=='todos'?'#C62828':C.border,color:filtroTipo!=='todos'?'#C62828':C.text,fontWeight:filtroTipo!=='todos'?700:400,flex:"0 0 auto"}}>
+              <option value="todos">📋 Todos los tipos</option>
+              <option value="facturas">📄 Solo Facturas</option>
+              <option value="egresos">💵 Solo Otros Pagos</option>
+            </select>
+
             {(()=>{
               const mesesEnConcepto=[...new Set(curInvoices.filter(i=>i.estatus!=="Pagado").map(i=>detectarMesCxP(i.concepto)).filter(Boolean))];
               const hayNoIdent=curInvoices.filter(i=>i.estatus!=="Pagado"&&!detectarMesCxP(i.concepto)).length>0;
@@ -2655,10 +2796,16 @@ export default function CxpApp({ user, onLogout }) {
                 </select>
                 <div style={{flex:1}}/>
                 {!esConsulta && (
-                  <button onClick={()=>setModalInv({tipo:"Factura",fecha:today(),serie:"",folio:"",uuid:"",proveedor:"",clasificacion:clases[0],subtotal:"",iva:"",retIsr:0,retIva:0,total:"",montoPagado:0,concepto:"",diasCredito:30,vencimiento:"",estatus:"Pendiente",fechaProgramacion:"",diasFicticios:0,referencia:"",notas:"",moneda:currency})}
-                    style={{...btnStyle,padding:"7px 18px",fontSize:13,whiteSpace:"nowrap"}}>
-                    + Nueva Factura
-                  </button>
+                  <>
+                    <button onClick={()=>setModalListaNF(true)}
+                      style={{padding:"7px 14px",fontSize:13,whiteSpace:"nowrap",border:`1px solid #C62828`,borderRadius:10,background:"#FFEBEE",color:"#C62828",cursor:"pointer",fontWeight:700,fontFamily:"inherit"}}>
+                      💵 Otros Pagos
+                    </button>
+                    <button onClick={()=>setModalInv({tipo:"Factura",fecha:today(),serie:"",folio:"",uuid:"",proveedor:"",clasificacion:clases[0],subtotal:"",iva:"",retIsr:0,retIva:0,total:"",montoPagado:0,concepto:"",diasCredito:30,vencimiento:"",estatus:"Pendiente",fechaProgramacion:"",diasFicticios:0,referencia:"",notas:"",moneda:currency})}
+                      style={{...btnStyle,padding:"7px 18px",fontSize:13,whiteSpace:"nowrap"}}>
+                      + Nueva Factura
+                    </button>
+                  </>
                 )}
               </>
             ) : (
@@ -2673,10 +2820,16 @@ export default function CxpApp({ user, onLogout }) {
                 )}
                 <div style={{flex:1}}/>
                 {!esConsulta && (
-                  <button onClick={()=>setModalInv({tipo:"Factura",fecha:today(),serie:"",folio:"",uuid:"",proveedor:"",clasificacion:clases[0],subtotal:"",iva:"",retIsr:0,retIva:0,total:"",montoPagado:0,concepto:"",diasCredito:30,vencimiento:"",estatus:"Pendiente",fechaProgramacion:"",diasFicticios:0,referencia:"",notas:"",moneda:currency})}
-                    style={{...btnStyle,padding:"7px 18px",fontSize:13,whiteSpace:"nowrap"}}>
-                    + Nueva Factura
-                  </button>
+                  <>
+                    <button onClick={()=>setModalListaNF(true)}
+                      style={{padding:"7px 14px",fontSize:13,whiteSpace:"nowrap",border:`1px solid #C62828`,borderRadius:10,background:"#FFEBEE",color:"#C62828",cursor:"pointer",fontWeight:700,fontFamily:"inherit"}}>
+                      💵 Otros Pagos
+                    </button>
+                    <button onClick={()=>setModalInv({tipo:"Factura",fecha:today(),serie:"",folio:"",uuid:"",proveedor:"",clasificacion:clases[0],subtotal:"",iva:"",retIsr:0,retIva:0,total:"",montoPagado:0,concepto:"",diasCredito:30,vencimiento:"",estatus:"Pendiente",fechaProgramacion:"",diasFicticios:0,referencia:"",notas:"",moneda:currency})}
+                      style={{...btnStyle,padding:"7px 18px",fontSize:13,whiteSpace:"nowrap"}}>
+                      + Nueva Factura
+                    </button>
+                  </>
                 )}
               </>
             )}
@@ -3116,10 +3269,16 @@ export default function CxpApp({ user, onLogout }) {
     const [fechaSeleccionada, setFechaSeleccionada] = useState(today());
     const esHoy = fechaSeleccionada === today();
     const esVistaHistorica = !esHoy;
+    
+    // Modal de detalle (drill-down al hacer clic en importes)
+    const [detalleModal, setDetalleModal] = useState(null); // { pago, tipo: 'adeudo' | 'pago' }
+    
+    // Modal de importación de Ingresos del Día (estado de cuenta)
+    const [importarIngresosModal, setImportarIngresosModal] = useState(null);
 
     // Edición histórica: solo admin, requiere confirmación
     const [edicionHistoricaHabilitada, setEdicionHistoricaHabilitada] = useState(false);
-    const esAdmin = (user?.rol || '').toLowerCase() === 'admin';
+    const esAdmin = (user?.rol || '').toLowerCase() === 'superadmin';
     // bloqueoEdicion = true cuando NO se puede editar
     const bloqueoEdicion = esVistaHistorica && !edicionHistoricaHabilitada;
 
@@ -3235,6 +3394,10 @@ export default function CxpApp({ user, onLogout }) {
           });
           const pagosPorMon = { MXN:0, USD:0, EUR:0 };
           pagosFecha.forEach(p => {
+            // SOLO los pagos por BANCO afectan el saldo bancario.
+            // Los pagos con TDC u Otro NO salen del banco (se cargan a TDC y se pagan después).
+            const metodo = (p.metodo_pago || p.metodoPago || 'banco').toLowerCase();
+            if (metodo !== 'banco') return;
             let monedaFactura = 'MXN';
             for (const mon of ['MXN','USD','EUR']) {
               if ((invoices[mon] || []).find(f2 => f2.id === p.invoiceId && f2.empresaId === empresaId)) {
@@ -3318,7 +3481,7 @@ export default function CxpApp({ user, onLogout }) {
     const cancelarCeldaCambio = () => { setEditandoCambio(null); setValorCambio(''); };
 
     // Agregar fila vacía
-    const agregarIngreso = async () => {
+    const agregarIngreso = async (esEsperado = false) => {
       if (esConsulta || bloqueoEdicion) return;
       const nuevo = {
         empresaId,
@@ -3328,7 +3491,7 @@ export default function CxpApp({ user, onLogout }) {
         concepto: '',
         montoMXN: 0, montoUSD: 0, montoEUR: 0,
         orden: ingresosDia.length,
-        confirmado: true, // por defecto: real
+        confirmado: !esEsperado, // si esEsperado=true → confirmado=false (proyectado)
       };
       const id = await upsertIngresoDia(nuevo, user?.nombre || 'desconocido');
       if (id) {
@@ -3352,17 +3515,30 @@ export default function CxpApp({ user, onLogout }) {
 
     // Guardar cambio de una celda
     const guardarCeldaIngreso = async () => {
-      if (bloqueoEdicion) { setEditandoIngreso(null); setValorIngreso(""); return; }
       if (!editandoIngreso) return;
-      const [id, campo] = editandoIngreso.split('_');
+      // Si el bloqueo está activo Y es vista histórica, no guardamos
+      // (se permite edición solo si edicionHistoricaHabilitada === true)
+      if (esVistaHistorica && !edicionHistoricaHabilitada) {
+        console.warn('[ingreso] edición bloqueada (vista histórica sin habilitar)');
+        setEditandoIngreso(null); setValorIngreso(""); return;
+      }
+      // Buscar el ingreso usando rfind con startsWith para soportar UUIDs con guiones
+      // (la key tiene formato `${id}_${campo}` donde id es un UUID y campo es: rubro/cliente/concepto/MXN/USD/EUR)
+      const ultimoSubrayado = editandoIngreso.lastIndexOf('_');
+      if (ultimoSubrayado === -1) { setEditandoIngreso(null); return; }
+      const id = editandoIngreso.substring(0, ultimoSubrayado);
+      const campo = editandoIngreso.substring(ultimoSubrayado + 1);
       const ing = ingresosDia.find(x => x.id === id);
-      if (!ing) { setEditandoIngreso(null); return; }
+      if (!ing) {
+        console.warn('[ingreso] no se encontró el id:', id, 'campo:', campo, 'ingresosDia:', ingresosDia.length);
+        setEditandoIngreso(null); setValorIngreso(""); return;
+      }
       const esTexto = ['rubro', 'cliente', 'concepto'].includes(campo);
       let valor;
       if (esTexto) {
         valor = valorIngreso.trim();
       } else {
-        valor = parseFloat(valorIngreso.replace(/[,$€]/g, '')) || 0;
+        valor = parseFloat(valorIngreso.replace(/[,$€\s]/g, '')) || 0;
       }
       const nuevo = { ...ing };
       if (campo === 'rubro') nuevo.rubro = valor;
@@ -3371,7 +3547,10 @@ export default function CxpApp({ user, onLogout }) {
       if (campo === 'MXN') nuevo.montoMXN = valor;
       if (campo === 'USD') nuevo.montoUSD = valor;
       if (campo === 'EUR') nuevo.montoEUR = valor;
-      await upsertIngresoDia(nuevo, user?.nombre || 'desconocido');
+      const result = await upsertIngresoDia(nuevo, user?.nombre || 'desconocido');
+      if (result === null) {
+        console.error('[ingreso] upsertIngresoDia retornó null - guardado falló');
+      }
       setIngresosDia(prev => prev.map(x => x.id === id ? nuevo : x));
       setEditandoIngreso(null);
       setValorIngreso("");
@@ -3413,6 +3592,53 @@ export default function CxpApp({ user, onLogout }) {
       return t;
     }, [ingresosDia]);
 
+    // Helper: ordena un array de ingresos por bloques de moneda y monto
+    // Bloques: USD → EUR → MXN. Dentro de cada bloque: mayor a menor.
+    // Filas vacías (sin montos) van al final.
+    const ordenarIngresosBloques = (arr) => {
+      const conMonto = arr.filter(x => (+x.montoUSD || 0) > 0 || (+x.montoEUR || 0) > 0 || (+x.montoMXN || 0) > 0);
+      const sinMonto = arr.filter(x => (+x.montoUSD || 0) === 0 && (+x.montoEUR || 0) === 0 && (+x.montoMXN || 0) === 0);
+      // Asignar bloque y monto del bloque a cada ingreso con monto
+      const conBloque = conMonto.map(x => {
+        const usd = +x.montoUSD || 0, eur = +x.montoEUR || 0, mxn = +x.montoMXN || 0;
+        // Si tiene varios, va al bloque del que tenga monto más alto (con prioridad USD > EUR > MXN)
+        if (usd > 0) return { ing: x, bloque: 0, monto: usd };
+        if (eur > 0) return { ing: x, bloque: 1, monto: eur };
+        return { ing: x, bloque: 2, monto: mxn };
+      });
+      // Ordenar por bloque ascendente (0=USD, 1=EUR, 2=MXN), monto descendente
+      conBloque.sort((a, b) => {
+        if (a.bloque !== b.bloque) return a.bloque - b.bloque;
+        return b.monto - a.monto;
+      });
+      return [...conBloque.map(x => x.ing), ...sinMonto];
+    };
+
+    // Lista de ingresos ordenada — el orden solo se recalcula al cargar/agregar/eliminar/cambiar moneda dominante,
+    // NO durante edición de montos. Esto se logra usando una "signatura" estable.
+    // Usamos el conjunto de IDs + el bloque dominante de cada uno como dependencia.
+    const ordenSignatura = useMemo(() => {
+      // signatura: lista de "id|bloque|tieneMonto" — solo cambia si se agrega/elimina o cambia el bloque dominante
+      return ingresosDia.map(x => {
+        const usd = +x.montoUSD || 0, eur = +x.montoEUR || 0, mxn = +x.montoMXN || 0;
+        const tieneMonto = (usd > 0 || eur > 0 || mxn > 0) ? 1 : 0;
+        const bloque = usd > 0 ? 0 : (eur > 0 ? 1 : (mxn > 0 ? 2 : 3));
+        return `${x.id}|${bloque}|${tieneMonto}|${x.confirmado === false ? 'P' : 'R'}`;
+      }).join(',');
+    }, [ingresosDia]);
+
+    const ingresosRealesOrdenados = useMemo(() => {
+      const reales = ingresosDia.filter(x => x.confirmado !== false);
+      return ordenarIngresosBloques(reales);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ordenSignatura]);
+
+    const ingresosProyectadosOrdenados = useMemo(() => {
+      const proyectados = ingresosDia.filter(x => x.confirmado === false);
+      return ordenarIngresosBloques(proyectados);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ordenSignatura]);
+
     // En vista histórica: la fecha de referencia para "qué se programó pagar"
     // En vista actual: hoy
     const fechaRef = fechaSeleccionada;
@@ -3427,28 +3653,7 @@ export default function CxpApp({ user, onLogout }) {
         facturas.forEach(factura => {
           if (factura.empresaId !== empresaId) return;
           
-          const saldoFactura = (+factura.total || 0) - (+factura.montoPagado || 0);
-          // En vista de hoy: solo facturas con saldo pendiente
-          // En vista histórica: incluir también las que ya están pagadas (saldo 0) si tenían pago programado para esa fecha
-          if (saldoFactura <= 0 && esHoy) return;
-          
-          const proveedorKey = `${factura.proveedor}-${moneda}`;
-          
-          // Acumular adeudo total del proveedor (solo cuenta el saldo actual real)
-          if (saldoFactura > 0) {
-            if (adeudoTotal.has(proveedorKey)) {
-              const ex = adeudoTotal.get(proveedorKey);
-              ex.adeudado += saldoFactura;
-              ex.facturasActivas += 1;
-            } else {
-              adeudoTotal.set(proveedorKey, {
-                proveedor: factura.proveedor,
-                moneda,
-                adeudado: saldoFactura,
-                facturasActivas: 1
-              });
-            }
-          }
+          const saldoActual = (+factura.total || 0) - (+factura.montoPagado || 0);
           
           // Buscar pagos programados para fechaRef (puede ser hoy o histórico)
           const pagosProgFecha = payments.filter(p => 
@@ -3457,12 +3662,53 @@ export default function CxpApp({ user, onLogout }) {
             p.fechaPago === fechaRef
           );
           
-          // En vista histórica también buscamos pagos realizados que se hicieron en esa fecha
-          const pagosRealizadosFecha = !esHoy ? payments.filter(p =>
+          // Buscar pagos realizados en esa fecha (tanto hoy como histórico)
+          // Esto es importante para Otros Pagos pagados hoy: aunque saldo=0, el pago ocurrió hoy
+          // y debe aparecer en el reporte para reflejar correctamente los saldos del día.
+          const pagosRealizadosFecha = payments.filter(p =>
             p.invoiceId === factura.id &&
             p.tipo === 'realizado' &&
             p.fechaPago === fechaRef
-          ) : [];
+          );
+          
+          // SALDO INICIAL DEL DÍA: lo que se debía cuando empezó este día.
+          // = saldo actual + pagos realizados hoy (porque esos pagos redujeron el saldo durante el día)
+          // Esto hace que el "Importe Adeudado" sea consistente independientemente
+          // de si ya aplicaste o no los pagos del día.
+          const totalRealizadosFecha = pagosRealizadosFecha.reduce((s, p) => s + (+p.monto || 0), 0);
+          const saldoInicialDia = saldoActual + totalRealizadosFecha;
+          
+          // Filtro: solo descartar si NO hay pagos en esta fecha Y la factura está pagada
+          // (caso típico: factura pagada hace tiempo, ningún pago hoy → no nos interesa)
+          const tienePagoEnFecha = pagosProgFecha.length > 0 || pagosRealizadosFecha.length > 0;
+          if (saldoActual <= 0 && !tienePagoEnFecha) return;
+          
+          // Egresos No Facturados se agrupan todos bajo "Otros Pagos" (no por concepto)
+          const esEgresoNF = factura.tipo === 'EgresoNF';
+          const proveedorKey = esEgresoNF
+            ? `__EGRESOS_NF__-${moneda}`
+            : `${factura.proveedor}-${moneda}`;
+          const proveedorDisplay = esEgresoNF ? 'Otros Pagos' : factura.proveedor;
+          
+          // Acumular adeudo del DÍA del proveedor (saldo inicial del día)
+          // Cuenta tanto facturas con saldo actual > 0 como las pagadas hoy (que tenían saldo a inicio del día)
+          if (saldoInicialDia > 0) {
+            if (adeudoTotal.has(proveedorKey)) {
+              const ex = adeudoTotal.get(proveedorKey);
+              ex.adeudado += saldoInicialDia;
+              ex.facturasActivas += 1;
+            } else {
+              adeudoTotal.set(proveedorKey, {
+                proveedor: proveedorDisplay,
+                moneda,
+                adeudado: saldoInicialDia,
+                facturasActivas: 1
+              });
+            }
+          }
+          
+          // (Las variables pagosProgFecha y pagosRealizadosFecha ya se calcularon arriba
+          //  con la lógica correcta — no las recalculamos)
           
           // Combinar: si hay pagos realizados, esos son la fuente de verdad (el programado ya se ejecutó).
           // Si no hay realizados, usar los programados.
@@ -3508,17 +3754,33 @@ export default function CxpApp({ user, onLogout }) {
             const metodoPrincipal = Object.keys(metodosEstefacha).reduce((a, b) => 
               metodosEstefacha[a] > metodosEstefacha[b] ? a : b, 'banco');
             
-            const detalleFactura = {
-              serie: factura.serie || '',
-              folio: factura.folio || '',
-              concepto: factura.concepto || '',
-              pagoHoy: totalPagoHoy,
-              estado,
-              metodoPago: metodoPrincipal,
-              pagoBanco: metodosEstefacha.banco || 0,
-              pagoTDC:   metodosEstefacha.tdc   || 0,
-              pagoOtro:  metodosEstefacha.otro  || 0,
-            };
+            const detalleFactura = esEgresoNF
+              ? {
+                  // Para egresos NF: el "folio" muestra el beneficiario (Konfio Banco)
+                  // y el "concepto" muestra las notas reales (EDO CTA 14 MZO AL 14 ABR)
+                  serie: '',
+                  folio: factura.proveedor || factura.concepto || '',  // beneficiario
+                  concepto: factura.notas || factura.concepto || '',   // descripción real
+                  pagoHoy: totalPagoHoy,
+                  estado,
+                  metodoPago: metodoPrincipal,
+                  pagoBanco: metodosEstefacha.banco || 0,
+                  pagoTDC:   metodosEstefacha.tdc   || 0,
+                  pagoOtro:  metodosEstefacha.otro  || 0,
+                  esEgresoNF: true,
+                }
+              : {
+                  serie: factura.serie || '',
+                  folio: factura.folio || '',
+                  concepto: factura.concepto || '',
+                  pagoHoy: totalPagoHoy,
+                  estado,
+                  metodoPago: metodoPrincipal,
+                  pagoBanco: metodosEstefacha.banco || 0,
+                  pagoTDC:   metodosEstefacha.tdc   || 0,
+                  pagoOtro:  metodosEstefacha.otro  || 0,
+                  esEgresoNF: false,
+                };
             if (pagosHoy.has(proveedorKey)) {
               const ex = pagosHoy.get(proveedorKey);
               ex.pagoHoy += totalPagoHoy;
@@ -3547,9 +3809,11 @@ export default function CxpApp({ user, onLogout }) {
       // PASO 3: Combinar — proveedores con pago en la fecha
       const resultado = [];
       pagosHoy.forEach((pagoInfo, key) => {
+        // Detectar si es el grupo especial de Egresos NF (Otros Pagos)
+        const esGrupoNF = key.startsWith('__EGRESOS_NF__-');
         const adeudoInfo = adeudoTotal.get(key) || { 
-          proveedor: key.split('-')[0],
-          moneda: key.split('-')[1] || 'MXN',
+          proveedor: esGrupoNF ? 'Otros Pagos' : key.split('-')[0],
+          moneda: esGrupoNF ? key.replace('__EGRESOS_NF__-', '') : (key.split('-')[1] || 'MXN'),
           adeudado: 0,
           facturasActivas: 0
         };
@@ -3657,10 +3921,18 @@ export default function CxpApp({ user, onLogout }) {
       const convUSD = parseSaldo(conversiones.usd_to_mxn) * parseTc(tiposCambio.usdMxn);
       const convEUR = parseSaldo(conversiones.eur_to_mxn) * parseTc(tiposCambio.eurMxn);
       
-      // Ingresos del día (sumados por moneda)
-      const ingresosMXN = ingresosDia.reduce((s, i) => s + (+i.montoMXN || 0), 0);
-      const ingresosUSD = ingresosDia.reduce((s, i) => s + (+i.montoUSD || 0), 0);
-      const ingresosEUR = ingresosDia.reduce((s, i) => s + (+i.montoEUR || 0), 0);
+      // Ingresos del día — SEPARADOS por confirmado (real) vs esperado
+      // Los esperados NO suman al saldo disponible "real", solo al "esperado"
+      const ingresosRealesMXN = ingresosDia.reduce((s, i) => i.confirmado !== false ? s + (+i.montoMXN || 0) : s, 0);
+      const ingresosRealesUSD = ingresosDia.reduce((s, i) => i.confirmado !== false ? s + (+i.montoUSD || 0) : s, 0);
+      const ingresosRealesEUR = ingresosDia.reduce((s, i) => i.confirmado !== false ? s + (+i.montoEUR || 0) : s, 0);
+      const ingresosEsperadosMXN = ingresosDia.reduce((s, i) => i.confirmado === false ? s + (+i.montoMXN || 0) : s, 0);
+      const ingresosEsperadosUSD = ingresosDia.reduce((s, i) => i.confirmado === false ? s + (+i.montoUSD || 0) : s, 0);
+      const ingresosEsperadosEUR = ingresosDia.reduce((s, i) => i.confirmado === false ? s + (+i.montoEUR || 0) : s, 0);
+      // Compat: ingresosMXN/USD/EUR ahora solo son los reales (para no romper código existente)
+      const ingresosMXN = ingresosRealesMXN;
+      const ingresosUSD = ingresosRealesUSD;
+      const ingresosEUR = ingresosRealesEUR;
       
       // Cambios de divisa de HOY (efecto neto por moneda)
       // direcciones: 'USD_MXN', 'MXN_USD', 'EUR_MXN', 'MXN_EUR'
@@ -3684,23 +3956,38 @@ export default function CxpApp({ user, onLogout }) {
       const saldoInicialUSD = saldoUSD - parseSaldo(conversiones.usd_to_mxn) + cambiosNetoUSD;
       const saldoInicialEUR = saldoEUR - parseSaldo(conversiones.eur_to_mxn) + cambiosNetoEUR;
       
-      // Saldo disponible = saldo inicial + ingresos del día
+      // Saldo disponible REAL = saldo inicial + ingresos REALES del día
       const disponibleMXN = saldoInicialMXN + ingresosMXN;
       const disponibleUSD = saldoInicialUSD + ingresosUSD;
       const disponibleEUR = saldoInicialEUR + ingresosEUR;
-      
-      // Déficit/Excedente = disponible - pagos
+
+      // Saldo disponible ESPERADO = saldo disponible REAL + ingresos esperados
+      const disponibleEsperadoMXN = disponibleMXN + ingresosEsperadosMXN;
+      const disponibleEsperadoUSD = disponibleUSD + ingresosEsperadosUSD;
+      const disponibleEsperadoEUR = disponibleEUR + ingresosEsperadosEUR;
+
+      // Déficit/Excedente = disponible - pagos (versión real)
       const deficitMXN = disponibleMXN - totalesPagos.MXN;
       const deficitUSD = disponibleUSD - totalesPagos.USD;
       const deficitEUR = disponibleEUR - totalesPagos.EUR;
-      
+
+      // Déficit/Excedente ESPERADO = disponible esperado - pagos
+      const deficitEsperadoMXN = disponibleEsperadoMXN - totalesPagos.MXN;
+      const deficitEsperadoUSD = disponibleEsperadoUSD - totalesPagos.USD;
+      const deficitEsperadoEUR = disponibleEsperadoEUR - totalesPagos.EUR;
+
       return {
         saldoInicial: { MXN: saldoInicialMXN, USD: saldoInicialUSD, EUR: saldoInicialEUR },
-        ingresos: { MXN: ingresosMXN, USD: ingresosUSD, EUR: ingresosEUR },
+        ingresos: { MXN: ingresosMXN, USD: ingresosUSD, EUR: ingresosEUR }, // solo reales (compat)
+        ingresosReales: { MXN: ingresosRealesMXN, USD: ingresosRealesUSD, EUR: ingresosRealesEUR },
+        ingresosEsperados: { MXN: ingresosEsperadosMXN, USD: ingresosEsperadosUSD, EUR: ingresosEsperadosEUR },
+        hayEsperados: (ingresosEsperadosMXN + ingresosEsperadosUSD + ingresosEsperadosEUR) > 0,
         cambios: { MXN: cambiosNetoMXN, USD: cambiosNetoUSD, EUR: cambiosNetoEUR },
         disponible: { MXN: disponibleMXN, USD: disponibleUSD, EUR: disponibleEUR },
-        saldoFinal: { MXN: disponibleMXN, USD: disponibleUSD, EUR: disponibleEUR }, // compat: ahora es el disponible
+        disponibleEsperado: { MXN: disponibleEsperadoMXN, USD: disponibleEsperadoUSD, EUR: disponibleEsperadoEUR },
+        saldoFinal: { MXN: disponibleMXN, USD: disponibleUSD, EUR: disponibleEUR },
         deficit: { MXN: deficitMXN, USD: deficitUSD, EUR: deficitEUR },
+        deficitEsperado: { MXN: deficitEsperadoMXN, USD: deficitEsperadoUSD, EUR: deficitEsperadoEUR },
         statusMXN: deficitMXN >= 0 ? '✅' : deficitMXN > -50000 ? '🟡' : '🔴',
         statusUSD: deficitUSD >= 0 ? '✅' : deficitUSD > -5000 ? '🟡' : '🔴',
         statusEUR: deficitEUR >= 0 ? '✅' : '🟡'
@@ -3748,8 +4035,12 @@ export default function CxpApp({ user, onLogout }) {
 
     const construirHtmlReporte = (modo = 'resumen', orientacion = 'portrait') => {
       const detallado = modo === 'detallado';
-      const fechaTexto = new Date().toLocaleDateString('es-MX', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+      // fechaTexto = fecha del REPORTE (la seleccionada), no la de hoy
+      const fechaTexto = new Date(fechaSeleccionada + 'T12:00:00').toLocaleDateString('es-MX', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+      // horaTexto = hora actual (cuando se generó la imagen)
       const horaTexto = new Date().toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' });
+      // Si es histórico, también lo señalamos en el subtítulo
+      const tituloPDF = esVistaHistorica ? 'Reporte de Tesorería Histórico' : 'Reporte de Tesorería del Día';
       const sym = (m) => m === 'EUR' ? '€' : '$';
       const saldosCap = saldosEmpresas[empresaId] || { mxn:0, usd:0, eur:0 };
       const saldoNum = (k) => parseFloat(String(saldosCap[k] || '0').replace(/[,$]/g, '')) || 0;
@@ -3959,7 +4250,7 @@ export default function CxpApp({ user, onLogout }) {
 <div class="header">
   <div>
     <div class="brand">CxP Manager</div>
-    <h1>Reporte de Tesorería del Día</h1>
+    <h1>${tituloPDF}</h1>
     <div class="empresa">${empresa.nombre}</div>
   </div>
   <div class="meta-right">
@@ -4195,6 +4486,13 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
       // Header elegante
       const header = document.createElement('div');
       header.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:3px solid #1A237E;margin-bottom:20px;';
+      // fechaReporte = fecha del reporte (la seleccionada)
+      const fechaReporte = new Date(fechaSeleccionada + 'T12:00:00').toLocaleDateString('es-MX', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+      // fechaGen = fecha actual de generación (puede ser distinta si el reporte es histórico)
+      const fechaGen = new Date().toLocaleDateString('es-MX', { day:'numeric', month:'short', year:'numeric' });
+      const horaGen = new Date().toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' });
+      // Si la fecha de generación coincide con la del reporte, no la repetimos para no saturar
+      const mostrarFechaGen = fechaSeleccionada !== today();
       header.innerHTML = `
         <div>
           <div style="font-size:10px;font-weight:700;color:#6366F1;letter-spacing:3px;text-transform:uppercase;margin-bottom:4px;">CxP Manager</div>
@@ -4202,18 +4500,26 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
           <div style="font-size:13px;color:#1F2937;margin-top:4px;font-weight:500;">${subtitulo}</div>
         </div>
         <div style="text-align:right;">
-          <div style="font-size:12px;color:#4B5563;font-weight:600;">${new Date().toLocaleDateString('es-MX', { weekday:'long', day:'numeric', month:'long', year:'numeric' })}</div>
-          <div style="font-size:11px;color:#6B7280;margin-top:2px;">Generado ${new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'})} hrs · ${user?.nombre || 'usuario'}</div>
+          <div style="font-size:12px;color:#4B5563;font-weight:600;">${fechaReporte}</div>
+          <div style="font-size:11px;color:#6B7280;margin-top:2px;">Generado${mostrarFechaGen ? ' el ' + fechaGen + ' a las ' : ' '}${horaGen} hrs · ${user?.nombre || 'usuario'}</div>
         </div>
       `;
       wrapper.appendChild(header);
 
       // Clones de los contenidos
+      // Si no hay cambios de divisa activos, ocultar esa sección en el export
+      // (se conserva visible en pantalla para capturar nuevos, pero no se exporta)
+      const hayCambiosDivisa = cambiosHoy.some(c => (+c.montoVendido || 0) > 0 || (+c.montoComprado || 0) > 0);
       contenidos.forEach((nodoOriginal, idx) => {
         if (!nodoOriginal) return;
         const clon = nodoOriginal.cloneNode(true);
         // Remover bordes redondeados externos para look más continuo
         clon.style.marginBottom = idx === contenidos.length - 1 ? '0' : '18px';
+        // Quitar la sección de Cambio de Divisas si está vacía
+        if (!hayCambiosDivisa) {
+          const seccionDivisas = clon.querySelectorAll('[data-seccion="cambio-divisas"]');
+          seccionDivisas.forEach(n => n.remove());
+        }
         wrapper.appendChild(clon);
       });
 
@@ -4351,18 +4657,27 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
     const generarPNG = async (modo) => {
       setExportModalOpen(false);
       setGenerandoPng(true);
-      const fechaStr = today();
+      // Usar la fecha del REPORTE (la seleccionada), no la de hoy
+      const fechaStr = fechaSeleccionada;
       const empresaSlug = empresa.nombre.replace(/\s+/g, '_');
-      const fechaBonita = new Date().toLocaleDateString('es-MX', { day:'numeric', month:'long', year:'numeric' });
+      // fechaBonita refleja el día del REPORTE, no el día de generación
+      const fechaBonita = new Date(fechaSeleccionada + 'T12:00:00').toLocaleDateString('es-MX', { day:'numeric', month:'long', year:'numeric' });
+      // Título e identificación de histórico
+      const tituloReporte = esVistaHistorica ? 'Reporte de Tesorería Histórico' : 'Reporte de Tesorería del Día';
+      const prefijoSubtitulo = esVistaHistorica ? `📅 Datos del ${fechaBonita}` : `Resumen financiero · ${fechaBonita}`;
+      const subtituloDetalle = esVistaHistorica ? `📅 Detalle del ${fechaBonita}` : `Proveedores y saldos después de pagos · ${fechaBonita}`;
+      const subtituloCompleto = esVistaHistorica ? `📅 Reporte completo del ${fechaBonita}` : `Reporte completo · ${fechaBonita}`;
+      // Sufijo de archivo: si es histórico agrega -historico
+      const sufijoHist = esVistaHistorica ? '_historico' : '';
       try {
         if (modo === 'resumen') {
           // Solo la parte superior (saldos, ingresos, cambios, saldo disponible)
           const w = construirNodoCapturable(
-            'Reporte de Tesorería del Día',
-            `Resumen financiero · ${fechaBonita}`,
+            tituloReporte,
+            prefijoSubtitulo,
             [refResumen.current]
           );
-          await capturarWrapper(w, `Tesoreria_Resumen_${empresaSlug}_${fechaStr}.png`);
+          await capturarWrapper(w, `Tesoreria_Resumen_${empresaSlug}_${fechaStr}${sufijoHist}.png`);
         } else if (modo === 'detalle') {
           // Particionar el detalle en múltiples imágenes (~20 filas por imagen)
           const partesDetalle = particionarDetalle(20);
@@ -4370,11 +4685,11 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
 
           // Imagen 1: resumen (arriba)
           const w1 = construirNodoCapturable(
-            'Reporte de Tesorería del Día',
-            `Resumen financiero · ${fechaBonita} · Parte 1/${totalImagenes}`,
+            tituloReporte,
+            `${prefijoSubtitulo} · Parte 1/${totalImagenes}`,
             [refResumen.current]
           );
-          await capturarWrapper(w1, `1_Tesoreria_Resumen_${empresaSlug}_${fechaStr}.png`);
+          await capturarWrapper(w1, `1_Tesoreria_Resumen_${empresaSlug}_${fechaStr}${sufijoHist}.png`);
           await new Promise(r => setTimeout(r, 300));
 
           // Imágenes 2..N: partes del detalle
@@ -4388,20 +4703,20 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
               : `Detalle_${i + 1}de${partesDetalle.length}`;
             const wParte = construirNodoCapturable(
               `Detalle de Pagos Programados${parteLabel}`,
-              `Proveedores y saldos después de pagos · ${fechaBonita} · Parte ${numParte}/${totalImagenes}`,
+              `${subtituloDetalle} · Parte ${numParte}/${totalImagenes}`,
               [partesDetalle[i]]
             );
-            await capturarWrapper(wParte, `${numParte}_Tesoreria_${sufijoArchivo}_${empresaSlug}_${fechaStr}.png`);
+            await capturarWrapper(wParte, `${numParte}_Tesoreria_${sufijoArchivo}_${empresaSlug}_${fechaStr}${sufijoHist}.png`);
             await new Promise(r => setTimeout(r, 300));
           }
         } else if (modo === 'completo') {
           // Todo en una imagen larga: resumen + detalle sin duplicación
           const w = construirNodoCapturable(
-            'Reporte de Tesorería del Día',
-            `Reporte completo · ${fechaBonita}`,
+            tituloReporte,
+            subtituloCompleto,
             [refResumen.current, refDetalle.current]
           );
-          await capturarWrapper(w, `Tesoreria_Completo_${empresaSlug}_${fechaStr}.png`);
+          await capturarWrapper(w, `Tesoreria_Completo_${empresaSlug}_${fechaStr}${sufijoHist}.png`);
         }
       } catch (err) {
         console.error('generarPNG error:', err);
@@ -4534,7 +4849,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
 
         <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:20,marginBottom:20}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:8}}>
-            <h3 style={{fontSize:16,fontWeight:700,color:C.navy,margin:0}}>🏦 Saldos Bancarios - {empresa.nombre}</h3>
+            <h3 style={{fontSize:20,fontWeight:800,color:C.navy,margin:0,letterSpacing:0.2}}>🏦 Saldos Bancarios - {empresa.nombre}</h3>
             <div style={{fontSize:11,color:C.muted,display:"flex",alignItems:"center",gap:6}}>
               {saldosLoading && <span>⏳ Cargando...</span>}
               {saldosSaving && <span style={{color:"#FB8C00"}}>💾 Guardando...</span>}
@@ -4631,14 +4946,30 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
           {/* Sub-sección: Ingresos del Día */}
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,flexWrap:'wrap',gap:8}}>
             <div style={{display:'flex',alignItems:'center',gap:10}}>
-              <div style={{width:36,height:36,borderRadius:10,background:'#E8F5E9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>💵</div>
+              <div style={{width:42,height:42,borderRadius:10,background:'#E8F5E9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22}}>💵</div>
               <div>
-                <h4 style={{fontSize:15,fontWeight:700,color:'#1B5E20',margin:0}}>Ingresos del Día</h4>
-                <p style={{fontSize:11,color:C.muted,margin:'2px 0 0'}}>Captura manual · {ingresosDia.length} {ingresosDia.length === 1 ? 'entrada' : 'entradas'}</p>
+                <h4 style={{fontSize:20,fontWeight:800,color:'#1B5E20',margin:0,letterSpacing:0.2}}>Ingresos del Día</h4>
+                <p style={{fontSize:12,color:C.muted,margin:'3px 0 0'}}>Captura manual · {ingresosDia.length} {ingresosDia.length === 1 ? 'entrada' : 'entradas'}</p>
               </div>
             </div>
             {!esConsulta && (
-              <button onClick={agregarIngreso} style={{background:'#1B5E20',color:'#fff',border:'none',padding:'8px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',boxShadow:'0 1px 3px rgba(27,94,32,0.25)'}}>+ Agregar ingreso</button>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <button
+                  onClick={() => agregarIngreso(false)}
+                  title="Ingreso que YA entró al banco (real, confirmado)"
+                  style={{background:'#1B5E20',color:'#fff',border:'none',padding:'8px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',boxShadow:'0 1px 3px rgba(27,94,32,0.25)'}}
+                >
+                  ✅ + Ingreso Real
+                </button>
+                <button
+                  onClick={() => agregarIngreso(true)}
+                  title="Ingreso que esperas recibir HOY (cobranza probable, aún no entra)"
+                  style={{background:'#6A1B9A',color:'#fff',border:'none',padding:'8px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',boxShadow:'0 1px 3px rgba(106,27,154,0.25)'}}
+                >
+                  ⏳ + Ingreso Esperado
+                </button>
+                <button onClick={() => setImportarIngresosModal({ open: true, monedaGlobal: 'MXN', archivo: null, textoPegado: '', rows: [] })} style={{background:'#1976D2',color:'#fff',border:'none',padding:'8px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',boxShadow:'0 1px 3px rgba(25,118,210,0.25)'}}>📥 Importar Excel</button>
+              </div>
             )}
           </div>
 
@@ -4649,7 +4980,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             <div style={{padding:'22px 20px',textAlign:'center',color:C.muted,display:'flex',alignItems:'center',justifyContent:'center',gap:10,flexWrap:'wrap'}}>
               <div style={{fontSize:22}}>💵</div>
               <div style={{fontSize:13,color:'#1B5E20',fontWeight:600}}>Aún no hay ingresos capturados hoy.</div>
-              <div style={{fontSize:12,color:C.muted}}>Usa "+ Agregar ingreso" para la primera entrada.</div>
+              <div style={{fontSize:12,color:C.muted}}>Usa "+ Ingreso Real" o "+ Ingreso Esperado" para la primera entrada.</div>
             </div>
           ) : (
             <>
@@ -4677,9 +5008,9 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                   </thead>
                   <tbody>
                     {(() => {
-                      // Separar ingresos en reales (confirmado!==false) y proyectados
-                      const reales = ingresosDia.filter(x => x.confirmado !== false);
-                      const proyectados = ingresosDia.filter(x => x.confirmado === false);
+                      // Usar las listas memoizadas ordenadas (USD → EUR → MXN, mayor a menor)
+                      const reales = ingresosRealesOrdenados;
+                      const proyectados = ingresosProyectadosOrdenados;
 
                       const renderFila = (ing, esProyectado) => {
                       const keyRubro = `${ing.id}_rubro`;
@@ -4878,12 +5209,12 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         </div>
 
         {/* ═══════════ CAMBIO DE DIVISAS ═══════════ */}
-        <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:16,marginBottom:20}}>
-          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-            <div style={{width:34,height:34,borderRadius:10,background:'#E3F2FD',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17}}>💱</div>
+        <div data-seccion="cambio-divisas" style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:16,marginBottom:20}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+            <div style={{width:42,height:42,borderRadius:10,background:'#E3F2FD',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22}}>💱</div>
             <div>
-              <h3 style={{fontSize:15,fontWeight:700,color:C.navy,margin:0}}>Cambio de Divisas</h3>
-              <p style={{fontSize:11,color:C.muted,margin:'2px 0 0'}}>Operaciones de cambio del día · afectan el Saldo Disponible</p>
+              <h3 style={{fontSize:20,fontWeight:800,color:C.navy,margin:0,letterSpacing:0.2}}>Cambio de Divisas</h3>
+              <p style={{fontSize:12,color:C.muted,margin:'3px 0 0'}}>Operaciones de cambio del día · afectan el Saldo Disponible</p>
             </div>
           </div>
 
@@ -4984,20 +5315,31 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         {/* Saldo Disponible = Saldos + Ingresos ± Cambio de Divisas */}
         <div style={{background:'linear-gradient(135deg, #E3F2FD 0%, #F5FAFF 50%, #E1F5FE 100%)',border:`2px solid #1976D2`,borderRadius:14,padding:16,marginBottom:20,position:'relative',overflow:'hidden'}}>
           <div style={{position:'relative',zIndex:1}}>
-            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
-              <div style={{fontSize:20}}>💰</div>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+              <div style={{fontSize:26}}>💰</div>
               <div>
-                <h3 style={{fontSize:15,fontWeight:800,color:"#0D47A1",margin:0}}>Saldo Disponible</h3>
-                <p style={{fontSize:11,color:"#1565C0",margin:"1px 0 0",opacity:0.8}}>Saldos bancarios + Ingresos ± Cambio de divisas</p>
+                <h3 style={{fontSize:20,fontWeight:800,color:"#0D47A1",margin:0,letterSpacing:0.2}}>
+                  Saldo Disponible
+                  {analisisLiquidez.hayEsperados && (
+                    <span style={{fontSize:12,fontWeight:600,color:'#6A1B9A',marginLeft:10,padding:'3px 10px',background:'#F3E5F5',borderRadius:6,verticalAlign:'middle'}}>
+                      ⏳ Con cobranza esperada disponible
+                    </span>
+                  )}
+                </h3>
+                <p style={{fontSize:12,color:"#1565C0",margin:"3px 0 0",opacity:0.85}}>
+                  {analisisLiquidez.hayEsperados
+                    ? 'Saldos bancarios + Ingresos reales · Versión esperada incluye cobranzas probables'
+                    : 'Saldos bancarios + Ingresos ± Cambio de divisas'}
+                </p>
               </div>
             </div>
 
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
               {[
-                {moneda: 'MXN', disponible: analisisLiquidez.disponible.MXN, color: C.mxn, bg: '#E3F2FD', border: '#90CAF9', sym: '$'},
-                {moneda: 'USD', disponible: analisisLiquidez.disponible.USD, color: C.usd, bg: '#E8F5E9', border: '#A5D6A7', sym: '$'},
-                {moneda: 'EUR', disponible: analisisLiquidez.disponible.EUR, color: C.eur, bg: '#F3E5F5', border: '#CE93D8', sym: '€'}
-              ].map(({moneda, disponible, color, bg, border, sym}) => (
+                {moneda: 'MXN', disponible: analisisLiquidez.disponible.MXN, esperado: analisisLiquidez.disponibleEsperado.MXN, espIng: analisisLiquidez.ingresosEsperados.MXN, color: C.mxn, bg: '#E3F2FD', border: '#90CAF9', sym: '$'},
+                {moneda: 'USD', disponible: analisisLiquidez.disponible.USD, esperado: analisisLiquidez.disponibleEsperado.USD, espIng: analisisLiquidez.ingresosEsperados.USD, color: C.usd, bg: '#E8F5E9', border: '#A5D6A7', sym: '$'},
+                {moneda: 'EUR', disponible: analisisLiquidez.disponible.EUR, esperado: analisisLiquidez.disponibleEsperado.EUR, espIng: analisisLiquidez.ingresosEsperados.EUR, color: C.eur, bg: '#F3E5F5', border: '#CE93D8', sym: '€'}
+              ].map(({moneda, disponible, esperado, espIng, color, bg, border, sym}) => (
                 <div key={moneda} style={{
                   background:bg,
                   border:`2px solid ${border}`,
@@ -5009,6 +5351,22 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                   <div style={{fontSize:24,fontWeight:800,color,lineHeight:1.1,fontVariantNumeric:'tabular-nums'}}>
                     {sym}{fmt(disponible)}
                   </div>
+                  <div style={{fontSize:10,fontWeight:600,color,marginTop:4,opacity:0.75,letterSpacing:0.3,textTransform:'uppercase'}}>
+                    ✓ Real
+                  </div>
+                  {espIng > 0 && (
+                    <div style={{marginTop:12,paddingTop:12,borderTop:`1px dashed ${border}`}}>
+                      <div style={{fontSize:24,fontWeight:800,color:'#6A1B9A',lineHeight:1.1,fontVariantNumeric:'tabular-nums'}}>
+                        {sym}{fmt(esperado)}
+                      </div>
+                      <div style={{fontSize:11,fontWeight:700,color:'#6A1B9A',marginTop:4,letterSpacing:0.3,textTransform:'uppercase'}}>
+                        ⏳ Con cobranza esperada
+                      </div>
+                      <div style={{fontSize:11,color:'#6A1B9A',marginTop:3,opacity:0.75,fontWeight:500}}>
+                        (+{sym}{fmt(espIng)} probable)
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -5022,9 +5380,9 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         <div ref={refDetalle}>
 
         <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,overflow:"hidden",marginBottom:20}}>
-          <div style={{padding:"16px 20px",background:C.navy,color:"#fff"}}>
-            <h3 style={{fontSize:16,fontWeight:700,margin:0}}>📋 Pagos Programados para Hoy</h3>
-            <p style={{fontSize:13,margin:"4px 0 0",opacity:0.8}}>Total: {pagosProgramadosHoy.length} proveedores</p>
+          <div style={{padding:"18px 22px",background:C.navy,color:"#fff"}}>
+            <h3 style={{fontSize:20,fontWeight:800,margin:0,letterSpacing:0.2}}>📋 Pagos Programados para Hoy</h3>
+            <p style={{fontSize:14,margin:"4px 0 0",opacity:0.85}}>Total: {pagosProgramadosHoy.length} proveedores</p>
           </div>
           
           {pagosProgramadosHoy.length === 0 ? (
@@ -5035,7 +5393,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             </div>
           ) : (
             <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:15}}>
                 <thead>
                   <tr style={{background:"#F8FAFC"}}>
                     {[
@@ -5050,7 +5408,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                       <th key={h.k}
                           onClick={() => toggleSort(h.k)}
                           title="Clic para ordenar"
-                          style={{padding:"12px 16px",textAlign:h.align,color:C.navy,fontWeight:700,fontSize:12,textTransform:"uppercase",borderBottom:`2px solid ${C.border}`,cursor:"pointer",userSelect:"none",background:sortBy===h.k?"#E3F2FD":"transparent"}}>
+                          style={{padding:"14px 18px",textAlign:h.align,color:C.navy,fontWeight:800,fontSize:13,textTransform:"uppercase",borderBottom:`2px solid ${C.border}`,cursor:"pointer",userSelect:"none",background:sortBy===h.k?"#E3F2FD":"transparent",letterSpacing:0.3}}>
                         {h.label}{sortIcon(h.k)}
                       </th>
                     ))}
@@ -5068,12 +5426,18 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                     return (
                     <React.Fragment key={i}>
                       <tr style={{borderBottom:(pago.detalleFacturas && pago.detalleFacturas.length > 0) ? 'none' : `1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
-                        <td style={{padding:"12px 16px",fontWeight:600,color:C.navy}}>{pago.proveedor}</td>
-                        <td style={{padding:"12px 16px",textAlign:"center"}}>
-                          <span style={{background:{MXN:"#E3F2FD",USD:"#E8F5E9",EUR:"#F3E5F5"}[pago.moneda],color:{MXN:C.mxn,USD:C.usd,EUR:C.eur}[pago.moneda],padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:700}}>{pago.moneda}</span>
+                        <td style={{padding:"14px 18px",fontWeight:700,fontSize:15,color:C.navy}}>{pago.proveedor}</td>
+                        <td style={{padding:"14px 18px",textAlign:"center"}}>
+                          <span style={{background:{MXN:"#E3F2FD",USD:"#E8F5E9",EUR:"#F3E5F5"}[pago.moneda],color:{MXN:C.mxn,USD:C.usd,EUR:C.eur}[pago.moneda],padding:"3px 10px",borderRadius:20,fontSize:13,fontWeight:700}}>{pago.moneda}</span>
                         </td>
-                        <td style={{padding:"12px 16px",textAlign:"right",fontWeight:700,fontSize:13}}>{monedaSym(pago.moneda)}{fmt(pago.importeAdeudado)}</td>
-                        <td style={{padding:"12px 16px",textAlign:"right",fontWeight:800,fontSize:14,color:"#D32F2F"}}>
+                        <td onClick={() => setDetalleModal({ pago, tipo: 'adeudo' })}
+                          title="Clic para ver desglose del importe adeudado"
+                          style={{padding:"14px 18px",textAlign:"right",fontWeight:700,fontSize:15,cursor:'pointer',color:'#1976D2',textDecoration:'underline',textDecorationStyle:'dotted',textDecorationColor:'#1976D2'}}>
+                          {monedaSym(pago.moneda)}{fmt(pago.importeAdeudado)}
+                        </td>
+                        <td onClick={() => setDetalleModal({ pago, tipo: 'pago' })}
+                          title="Clic para ver desglose del pago del día"
+                          style={{padding:"14px 18px",textAlign:"right",fontWeight:800,fontSize:16,color:"#D32F2F",cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textDecorationColor:'#D32F2F'}}>
                           {monedaSym(pago.moneda)}{fmt(pago.pagoHoy)}
                           {pago.pagoTDC > 0 && (
                             <span title={`Pagado con TDC: ${monedaSym(pago.moneda)}${fmt(pago.pagoTDC)}`} style={{display:'inline-block',marginLeft:6,background:'#F3E5F5',color:'#6A1B9A',padding:'2px 7px',borderRadius:8,fontSize:10,fontWeight:700,verticalAlign:'middle'}}>💳 TDC</span>
@@ -5082,25 +5446,25 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                             <span title={`Otro método: ${monedaSym(pago.moneda)}${fmt(pago.pagoOtro)}`} style={{display:'inline-block',marginLeft:6,background:'#F5F5F5',color:'#616161',padding:'2px 7px',borderRadius:8,fontSize:10,fontWeight:700,verticalAlign:'middle'}}>➕ Otro</span>
                           )}
                         </td>
-                        <td style={{padding:"12px 16px",textAlign:"right",fontWeight:700,fontSize:13,color:pago.saldoDespuesPago <= 0 ? "#2E7D32" : "#F57C00"}}>{monedaSym(pago.moneda)}{fmt(pago.saldoDespuesPago)}</td>
-                        <td style={{padding:"12px 16px",textAlign:"center",color:C.muted}}>{pago.facturas}</td>
+                        <td style={{padding:"14px 18px",textAlign:"right",fontWeight:700,fontSize:15,color:pago.saldoDespuesPago <= 0 ? "#2E7D32" : "#F57C00"}}>{monedaSym(pago.moneda)}{fmt(pago.saldoDespuesPago)}</td>
+                        <td style={{padding:"14px 18px",textAlign:"center",fontSize:14,fontWeight:600,color:C.muted}}>{pago.facturas}</td>
                         {esVistaHistorica && (
-                          <td style={{padding:"12px 16px",textAlign:"center"}}>
-                            <span style={{background:estadoMeta.bg,color:estadoMeta.color,padding:"3px 10px",borderRadius:12,fontSize:11,fontWeight:700,whiteSpace:'nowrap'}}>{estadoMeta.label}</span>
+                          <td style={{padding:"14px 18px",textAlign:"center"}}>
+                            <span style={{background:estadoMeta.bg,color:estadoMeta.color,padding:"4px 12px",borderRadius:12,fontSize:13,fontWeight:700,whiteSpace:'nowrap'}}>{estadoMeta.label}</span>
                           </td>
                         )}
                       </tr>
                       {/* Subfilas: desglose de facturas que se pagan hoy */}
                       {pago.detalleFacturas && pago.detalleFacturas.length > 0 && pago.detalleFacturas.map((f, j) => (
                         <tr key={`${i}-f-${j}`} style={{borderBottom:j === pago.detalleFacturas.length - 1 ? `1px solid ${C.border}` : 'none', background:i%2===0?"#F9FAFB":"#F5F6F8"}}>
-                          <td style={{padding:"6px 16px 6px 32px",fontSize:11,color:"#6B7280",display:'flex',alignItems:'center',gap:6}}>
-                            <span style={{color:'#9CA3AF',fontSize:10}}>↳</span>
-                            <span style={{fontFamily:'monospace',fontWeight:700,background:'#E5E7EB',padding:'1px 6px',borderRadius:4,color:'#374151',fontSize:10,letterSpacing:0.3}}>{f.serie}{f.folio ? ` ${f.folio}` : ''}</span>
-                            <span style={{color:'#4B5563',fontSize:11}}>{f.concepto || '—'}</span>
+                          <td style={{padding:"10px 18px 10px 38px",fontSize:13,color:"#6B7280",display:'flex',alignItems:'center',gap:8}}>
+                            <span style={{color:'#9CA3AF',fontSize:13}}>↳</span>
+                            <span style={{fontFamily:'monospace',fontWeight:700,background:'#E5E7EB',padding:'2px 8px',borderRadius:4,color:'#374151',fontSize:12,letterSpacing:0.3}}>{f.serie}{f.folio ? ` ${f.folio}` : ''}</span>
+                            <span style={{color:'#4B5563',fontSize:13}}>{f.concepto || '—'}</span>
                           </td>
                           <td></td>
                           <td></td>
-                          <td style={{padding:"6px 16px",textAlign:"right",fontSize:12,fontWeight:600,color:"#6B7280",fontVariantNumeric:'tabular-nums'}}>
+                          <td style={{padding:"10px 18px",textAlign:"right",fontSize:14,fontWeight:700,color:"#6B7280",fontVariantNumeric:'tabular-nums'}}>
                             {monedaSym(pago.moneda)}{fmt(f.pagoHoy)}
                             {f.metodoPago === 'tdc' && (
                               <span style={{display:'inline-block',marginLeft:6,background:'#F3E5F5',color:'#6A1B9A',padding:'1px 6px',borderRadius:6,fontSize:9,fontWeight:700,verticalAlign:'middle'}}>💳</span>
@@ -5121,22 +5485,22 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                 <tfoot>
                   {['USD','MXN','EUR'].filter(m => totalesCompletos[m].pago > 0 || totalesCompletos[m].adeudado > 0).map((m, idx, arr) => (
                     <tr key={m} style={{background:"#EEF2FF",borderTop:idx===0?`2px solid ${C.blue}`:`1px solid ${C.border}`}}>
-                      <td style={{padding:"14px 16px",fontWeight:800,color:C.navy,fontSize:14}}>
+                      <td style={{padding:"16px 18px",fontWeight:800,color:C.navy,fontSize:16,letterSpacing:0.2}}>
                         TOTAL {m}
                       </td>
-                      <td style={{padding:"14px 16px",textAlign:"center"}}>
-                        <span style={{background:{MXN:"#E3F2FD",USD:"#E8F5E9",EUR:"#F3E5F5"}[m],color:{MXN:C.mxn,USD:C.usd,EUR:C.eur}[m],padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:800}}>{m}</span>
+                      <td style={{padding:"16px 18px",textAlign:"center"}}>
+                        <span style={{background:{MXN:"#E3F2FD",USD:"#E8F5E9",EUR:"#F3E5F5"}[m],color:{MXN:C.mxn,USD:C.usd,EUR:C.eur}[m],padding:"4px 12px",borderRadius:20,fontSize:13,fontWeight:800}}>{m}</span>
                       </td>
-                      <td style={{padding:"14px 16px",textAlign:"right",fontWeight:800,color:C.navy,fontSize:18}}>
+                      <td style={{padding:"16px 18px",textAlign:"right",fontWeight:800,color:C.navy,fontSize:20,fontVariantNumeric:'tabular-nums'}}>
                         {monedaSym(m)}{fmt(totalesCompletos[m].adeudado)}
                       </td>
-                      <td style={{padding:"14px 16px",textAlign:"right",fontWeight:800,color:"#D32F2F",fontSize:18}}>
+                      <td style={{padding:"16px 18px",textAlign:"right",fontWeight:800,color:"#D32F2F",fontSize:20,fontVariantNumeric:'tabular-nums'}}>
                         {monedaSym(m)}{fmt(totalesCompletos[m].pago)}
                       </td>
-                      <td style={{padding:"14px 16px",textAlign:"right",fontWeight:800,color:totalesCompletos[m].saldoDespues <= 0 ? "#2E7D32" : "#F57C00",fontSize:18}}>
+                      <td style={{padding:"16px 18px",textAlign:"right",fontWeight:800,color:totalesCompletos[m].saldoDespues <= 0 ? "#2E7D32" : "#F57C00",fontSize:20,fontVariantNumeric:'tabular-nums'}}>
                         {monedaSym(m)}{fmt(totalesCompletos[m].saldoDespues)}
                       </td>
-                      <td style={{padding:"14px 16px",textAlign:"center",fontWeight:800,color:C.navy,fontSize:14}}>
+                      <td style={{padding:"16px 18px",textAlign:"center",fontWeight:800,color:C.navy,fontSize:16}}>
                         {totalesCompletos[m].facturas}
                       </td>
                       {esVistaHistorica && <td></td>}
@@ -5149,23 +5513,44 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         </div>
 
         <div style={{background:"#F0FFF4",border:`1px solid #A5D6A7`,borderRadius:14,padding:20}}>
-          <h3 style={{fontSize:16,fontWeight:700,color:"#1B5E20",margin:"0 0 16px"}}>💰 Saldos Después de Pagos</h3>
+          <h3 style={{fontSize:20,fontWeight:800,color:"#1B5E20",margin:"0 0 18px",letterSpacing:0.2}}>
+            💰 Saldos Después de Pagos
+            {analisisLiquidez.hayEsperados && (
+              <span style={{fontSize:12,fontWeight:600,color:'#6A1B9A',marginLeft:10,padding:'3px 10px',background:'#F3E5F5',borderRadius:6,verticalAlign:'middle'}}>
+                ⏳ Comparativa con cobranza esperada
+              </span>
+            )}
+          </h3>
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
             {['MXN','USD','EUR'].map(mon => {
               const sym = mon === 'EUR' ? '€' : '$';
               const disponible = analisisLiquidez.disponible[mon];
+              const disponibleEsperado = analisisLiquidez.disponibleEsperado[mon];
+              const espIng = analisisLiquidez.ingresosEsperados[mon];
               const pagos = totalesPagos[mon];
               const saldoFinal = disponible - pagos;
+              const saldoFinalEsperado = disponibleEsperado - pagos;
               const esPositivo = saldoFinal >= 0;
+              const esPositivoEsp = saldoFinalEsperado >= 0;
               return (
                 <div key={mon} style={{textAlign:"center"}}>
                   <div style={{fontSize:14,fontWeight:600,color:"#2E7D32",marginBottom:4}}>{mon}</div>
-                  <div style={{fontSize:20,fontWeight:800,color:esPositivo ? "#1B5E20" : "#D32F2F",fontVariantNumeric:'tabular-nums',letterSpacing:0.2}}>
+                  <div style={{fontSize:22,fontWeight:800,color:esPositivo ? "#1B5E20" : "#D32F2F",fontVariantNumeric:'tabular-nums',letterSpacing:0.2}}>
                     {saldoFinal < 0 ? '-' : ''}{sym}{fmt(Math.abs(saldoFinal))}
                   </div>
                   <div style={{fontSize:11,color:esPositivo?"#2E7D32":"#C62828",marginTop:2,fontWeight:600}}>
-                    {esPositivo ? '+ Excedente' : '- Déficit'}
+                    {esPositivo ? '+ Excedente · ✓ Real' : '- Déficit · ✓ Real'}
                   </div>
+                  {espIng > 0 && (
+                    <div style={{marginTop:12,paddingTop:12,borderTop:'1px dashed #A5D6A7'}}>
+                      <div style={{fontSize:22,fontWeight:800,color:esPositivoEsp ? "#6A1B9A" : "#C62828",fontVariantNumeric:'tabular-nums',letterSpacing:0.2}}>
+                        {saldoFinalEsperado < 0 ? '-' : '+'}{sym}{fmt(Math.abs(saldoFinalEsperado))}
+                      </div>
+                      <div style={{fontSize:11,color:esPositivoEsp?"#6A1B9A":"#C62828",marginTop:3,fontWeight:700,letterSpacing:0.3,textTransform:'uppercase'}}>
+                        {esPositivoEsp ? '⏳ Con cobranza esperada' : '⏳ Aún con déficit'}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -5308,6 +5693,583 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             </div>
           </div>
         )}
+
+        {/* Modal de importación de Ingresos del Día */}
+        {importarIngresosModal?.open && (() => {
+          const m = importarIngresosModal;
+          const setM = (patch) => setImportarIngresosModal(prev => ({ ...prev, ...patch }));
+          
+          // Helper: detecta columnas en la primera fila del Excel
+          const detectarColsIngreso = (firstRow) => {
+            const norm = (s) => String(s || '').toUpperCase().trim();
+            let idxFecha = -1, idxDescripcion = -1, idxDeposito = -1, idxRetiro = -1, idxConcepto = -1, idxRubro = -1, idxCliente = -1;
+            firstRow.forEach((cel, i) => {
+              const c = norm(cel);
+              if (c === 'FECHA' || c === 'DATE') idxFecha = i;
+              else if (c === 'DESCRIPCION' || c === 'DESCRIPCIÓN' || c === 'DESCRIPTION') idxDescripcion = i;
+              else if (c === 'DEPOSITO' || c === 'DEPOSITOS' || c === 'DEPÓSITO' || c === 'DEPÓSITOS' || c === 'INGRESO' || c === 'INGRESOS' || c === 'ABONO' || c === 'ABONOS') idxDeposito = i;
+              else if (c === 'RETIRO' || c === 'RETIROS' || c === 'CARGO' || c === 'CARGOS') idxRetiro = i;
+              else if (c === 'CONCEPTO' || c === 'CONCEPT') idxConcepto = i;
+              else if (c === 'RUBRO' || c === 'CATEGORIA' || c === 'CATEGORÍA') idxRubro = i;
+              else if (c === 'CLIENTE' || c === 'CLIENTE / PROVEEDOR' || c === 'CLIENTE/PROVEEDOR' || c === 'PROVEEDOR') idxCliente = i;
+            });
+            const hayHeader = idxFecha !== -1 || idxDeposito !== -1 || idxConcepto !== -1 || idxRubro !== -1;
+            if (!hayHeader) {
+              // Fallback: asumir orden A=Fecha, B=Descripcion, C=Depositos, D=Retiros, E=Saldo, F=Concepto, G=Rubro, H=Cliente
+              idxFecha = 0; idxDescripcion = 1; idxDeposito = 2; idxRetiro = 3;
+              idxConcepto = 5; idxRubro = 6; idxCliente = 7;
+            }
+            return { idxFecha, idxDescripcion, idxDeposito, idxRetiro, idxConcepto, idxRubro, idxCliente, hayHeader };
+          };
+          
+          // Helper: parsea fecha (mismo que en Otros Pagos)
+          const parsearFechaIng = (raw) => {
+            if (!raw && raw !== 0) return null;
+            if (raw instanceof Date) {
+              if (isNaN(raw.getTime())) return null;
+              return `${raw.getFullYear()}-${String(raw.getMonth()+1).padStart(2,'0')}-${String(raw.getDate()).padStart(2,'0')}`;
+            }
+            const s = String(raw).trim();
+            if (!s) return null;
+            if (/^\d+(\.\d+)?$/.test(s) && +s > 25569 && +s < 60000) {
+              const dias = Math.floor(+s);
+              const ms = (dias - 25569) * 86400 * 1000;
+              const d = new Date(ms);
+              if (!isNaN(d.getTime())) {
+                return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+              }
+            }
+            const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+            if (iso) return `${iso[1]}-${String(+iso[2]).padStart(2,'0')}-${String(+iso[3]).padStart(2,'0')}`;
+            const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+            if (dmy) {
+              const a = +dmy[1], b = +dmy[2];
+              let yyyy = dmy[3];
+              if (yyyy.length === 2) yyyy = (+yyyy > 50 ? '19' : '20') + yyyy;
+              let dd, mm;
+              if (a > 12 && b <= 12)       { dd = a; mm = b; }
+              else if (b > 12 && a <= 12)  { dd = b; mm = a; }
+              else                          { dd = a; mm = b; }
+              if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+              return `${yyyy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+            }
+            return null;
+          };
+          
+          // Auto-excluir basado en RUBRO o CONCEPTO
+          const debeExcluir = (rubro, concepto) => {
+            const norm = (s) => String(s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const r = norm(rubro), c = norm(concepto);
+            const palabrasClave = ['INVERSION', 'INVERSIONES', 'TRASPASO', 'TRASPASOS', 'DIVISA', 'DIVISAS', 'CAMBIO DE DIVISA'];
+            for (const p of palabrasClave) {
+              if (r.includes(p) || c.includes(p)) return true;
+            }
+            // Concepto-específico: "RETIRO DE INVERSION", "COMPRA DIVISA", etc.
+            if (c.includes('RETIRO') && (c.includes('INVERSION') || c.includes('FONDO'))) return true;
+            if (c.includes('COMPRA') && c.includes('DIVISA')) return true;
+            if (c.includes('VENTA') && c.includes('DIVISA')) return true;
+            return false;
+          };
+          
+          const cellToStrIng = (v) => {
+            if (v === null || v === undefined) return '';
+            if (v instanceof Date) {
+              if (isNaN(v.getTime())) return '';
+              return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`;
+            }
+            return String(v).trim();
+          };
+          
+          const parsearFilasIngreso = (filas) => {
+            if (!filas || filas.length === 0) return [];
+            const cols = detectarColsIngreso(filas[0]);
+            const datos = cols.hayHeader ? filas.slice(1) : filas;
+            const result = [];
+            datos.forEach(fila => {
+              if (!fila || fila.length === 0) return;
+              const fechaCelda = cols.idxFecha >= 0 ? fila[cols.idxFecha] : null;
+              let fecha = null;
+              if (fechaCelda instanceof Date) fecha = parsearFechaIng(fechaCelda);
+              else if (fechaCelda !== null && fechaCelda !== undefined && String(fechaCelda).trim()) fecha = parsearFechaIng(String(fechaCelda).trim());
+              const descripcion = cols.idxDescripcion >= 0 ? cellToStrIng(fila[cols.idxDescripcion]) : '';
+              const depositoStr = cols.idxDeposito >= 0 ? cellToStrIng(fila[cols.idxDeposito]) : '';
+              const retiroStr = cols.idxRetiro >= 0 ? cellToStrIng(fila[cols.idxRetiro]) : '';
+              const deposito = parseFloat(depositoStr.replace(/[\$,\s]/g, '')) || 0;
+              const retiro = parseFloat(retiroStr.replace(/[\$,\s]/g, '')) || 0;
+              // Solo nos interesan ingresos (deposito > 0, no retiros)
+              if (deposito <= 0) return;
+              if (retiro > 0) return; // si por error trae retiro, ignorar
+              const concepto = cols.idxConcepto >= 0 ? cellToStrIng(fila[cols.idxConcepto]) : '';
+              const rubro = cols.idxRubro >= 0 ? cellToStrIng(fila[cols.idxRubro]) : '';
+              const cliente = cols.idxCliente >= 0 ? cellToStrIng(fila[cols.idxCliente]) : '';
+              const autoExcluir = debeExcluir(rubro, concepto || descripcion);
+              result.push({
+                fecha: fecha || fechaSeleccionada,
+                descripcion,
+                concepto: concepto || descripcion.slice(0, 60),
+                rubro: rubro || 'Ingreso',
+                cliente,
+                monto: deposito,
+                incluir: !autoExcluir,
+                autoExcluido: autoExcluir,
+              });
+            });
+            return result;
+          };
+          
+          const handleArchivoIngreso = (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+              try {
+                const data = new Uint8Array(ev.target.result);
+                const wb = XLSX.read(data, { type: 'array', cellDates: true });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const filas = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+                const filasNoVacias = filas.filter(f => f.some(c => {
+                  if (c instanceof Date) return true;
+                  return String(c || '').trim();
+                }));
+                const rows = parsearFilasIngreso(filasNoVacias);
+                if (rows.length === 0) {
+                  alert('No se detectaron ingresos válidos en el archivo.\n\nAsegúrate que tenga columnas: Fecha, Depositos (con valor > 0), y opcionalmente CONCEPTO/RUBRO/CLIENTE.');
+                  return;
+                }
+                setM({ rows });
+              } catch (err) {
+                console.error(err);
+                alert('Error al leer el archivo: ' + err.message);
+              }
+            };
+            reader.readAsArrayBuffer(file);
+            e.target.value = '';
+          };
+          
+          const handleParsearTextoIngreso = () => {
+            if (!m.textoPegado.trim()) return;
+            const lineas = m.textoPegado.split('\n').map(l => l).filter(l => l.trim());
+            const filas = lineas.map(l => l.split(/\t|;/).map(p => p.trim()));
+            const rows = parsearFilasIngreso(filas);
+            if (rows.length === 0) {
+              alert('No se detectaron ingresos válidos en el texto pegado.');
+              return;
+            }
+            setM({ rows });
+          };
+          
+          const descargarPlantillaIng = () => {
+            const data = [
+              ['Fecha', 'Descripción', 'Depósitos', 'Retiros', 'Saldo', 'CONCEPTO', 'RUBRO', 'CLIENTE / PROVEEDOR'],
+              ['29/04/2026', 'Ventas netas tarjetas Sucursal: 342', 16310.00, '', 29309.29, 'HOSPEDAJE Y TRASLADO', 'CLIENTE', 'PUBLICO EN GENERAL'],
+              ['29/04/2026', 'Abono Interbancario Sucursal: 859', 9187.53, '', 38496.82, 'BOLETO, VTA DE CUBA', 'CLIENTE', 'OPERADORA PAYPAL'],
+              ['29/04/2026', 'Traspaso Ref Sucursal: 519', 100000.00, '', 138496.82, 'RETIRO DE INVERSION', 'INVERSION', 'INVERSION'],
+              ['', '', '', '', '', '', '', ''],
+            ];
+            const ws = XLSX.utils.aoa_to_sheet(data);
+            ws['!cols'] = [{ wch: 12 }, { wch: 40 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 28 }, { wch: 16 }, { wch: 24 }];
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Ingresos');
+            XLSX.writeFile(wb, 'Plantilla_Ingresos_Estado_Cuenta.xlsx');
+          };
+          
+          const toggleIncluir = (idx) => {
+            setM({ rows: m.rows.map((r, i) => i === idx ? { ...r, incluir: !r.incluir } : r) });
+          };
+          
+          const updateRow = (idx, campo, valor) => {
+            setM({ rows: m.rows.map((r, i) => i === idx ? { ...r, [campo]: valor } : r) });
+          };
+          
+          const handleGuardar = async () => {
+            const aImportar = m.rows.filter(r => r.incluir && r.monto > 0);
+            if (aImportar.length === 0) { alert('No hay ingresos seleccionados para importar.'); return; }
+            let creados = 0;
+            for (const r of aImportar) {
+              const ingreso = {
+                empresaId,
+                fecha: r.fecha || fechaSeleccionada,
+                rubro: r.rubro || '',
+                cliente: r.cliente || '',
+                concepto: r.concepto || '',
+                montoMXN: m.monedaGlobal === 'MXN' ? r.monto : 0,
+                montoUSD: m.monedaGlobal === 'USD' ? r.monto : 0,
+                montoEUR: m.monedaGlobal === 'EUR' ? r.monto : 0,
+                orden: ingresosDia.length + creados,
+                confirmado: true,  // todos los importados son reales (ya entraron al banco)
+              };
+              const id = await upsertIngresoDia(ingreso, user?.nombre || 'desconocido');
+              if (id) {
+                setIngresosDia(prev => [...prev, { ...ingreso, id }]);
+                creados++;
+              }
+            }
+            alert(`✅ Se importaron ${creados} ${creados === 1 ? 'ingreso' : 'ingresos'} correctamente.`);
+            setImportarIngresosModal(null);
+          };
+          
+          const totalAImportar = m.rows.filter(r => r.incluir && r.monto > 0).reduce((s, r) => s + r.monto, 0);
+          const countAImportar = m.rows.filter(r => r.incluir && r.monto > 0).length;
+          const countExcluir = m.rows.length - countAImportar;
+          const sym = m.monedaGlobal === 'EUR' ? '€' : '$';
+          const anchoModal = m.rows.length > 0 ? 1300 : 720;
+          
+          return (
+            <div onClick={(e) => { if (e.target === e.currentTarget) setImportarIngresosModal(null); }}
+              style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:14}}>
+              <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:anchoModal,maxHeight:'94vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.4)'}}>
+                {/* Header */}
+                <div style={{padding:'16px 22px',borderBottom:`1px solid ${C.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',background:'#E8F5E9'}}>
+                  <div>
+                    <h3 style={{margin:0,fontSize:16,fontWeight:800,color:'#1B5E20'}}>📥 Importar Ingresos del Estado de Cuenta</h3>
+                    <p style={{margin:'2px 0 0',fontSize:12,color:'#6B7280'}}>Sube tu Excel con depósitos · se asignan a la fecha de cada fila</p>
+                  </div>
+                  <button onClick={() => setImportarIngresosModal(null)} style={{background:'transparent',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
+                </div>
+                
+                {/* Body */}
+                <div style={{overflow:'auto',padding:18,flex:1}}>
+                  {m.rows.length === 0 ? (
+                    <>
+                      {/* Instrucciones */}
+                      <div style={{background:'#FFFDE7',border:'1px solid #FFE082',borderRadius:8,padding:'12px 14px',marginBottom:16,fontSize:12,color:'#5D4037'}}>
+                        <div style={{fontWeight:700,marginBottom:6,color:'#E65100'}}>📋 ESTRUCTURA DEL EXCEL</div>
+                        <div style={{display:'grid',gridTemplateColumns:'auto 1fr',gap:'4px 10px',fontSize:11}}>
+                          <span style={{fontWeight:700,color:'#1976D2'}}>① Fecha</span>
+                          <span>Fecha del depósito · ej: <i style={{color:C.muted}}>29/04/2026</i></span>
+                          <span style={{fontWeight:700,color:'#9E9E9E'}}>② Descripción</span>
+                          <span>Texto del banco · se guarda como referencia</span>
+                          <span style={{fontWeight:700,color:'#1976D2'}}>③ Depósitos</span>
+                          <span>Monto del ingreso · solo filas con depósito &gt; 0</span>
+                          <span style={{fontWeight:700,color:'#9E9E9E'}}>④ Retiros / Saldo</span>
+                          <span>Se ignoran (no son ingresos)</span>
+                          <span style={{fontWeight:700,color:'#1B5E20'}}>⑤ CONCEPTO</span>
+                          <span>Tu descripción corta · ej: <i style={{color:C.muted}}>HOSPEDAJE Y TRASLADO</i></span>
+                          <span style={{fontWeight:700,color:'#1B5E20'}}>⑥ RUBRO</span>
+                          <span>Categoría · ej: <i style={{color:C.muted}}>CLIENTE, INVERSION, REPROTECCION</i></span>
+                          <span style={{fontWeight:700,color:'#1B5E20'}}>⑦ CLIENTE / PROVEEDOR</span>
+                          <span>Quién pagó · ej: <i style={{color:C.muted}}>PUBLICO EN GENERAL</i></span>
+                        </div>
+                        <div style={{marginTop:8,padding:'6px 10px',background:'#FFF3E0',border:'1px solid #FFCC80',borderRadius:6,fontSize:11}}>
+                          ⚠️ Filas con RUBRO o CONCEPTO que contenga: <b>INVERSION, TRASPASO, DIVISA</b> se auto-excluyen (puedes incluirlas manualmente).
+                        </div>
+                      </div>
+                      
+                      {/* Configuración */}
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}}>
+                        <div>
+                          <label style={{fontSize:11,fontWeight:700,color:'#374151',display:'block',marginBottom:4,letterSpacing:0.3,textTransform:'uppercase'}}>Moneda del estado de cuenta</label>
+                          <select value={m.monedaGlobal} onChange={e => setM({ monedaGlobal: e.target.value })}
+                            style={{width:'100%',padding:'8px 12px',border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:'inherit',outline:'none'}}>
+                            <option value="MXN">MXN — Pesos</option>
+                            <option value="USD">USD — Dólares</option>
+                            <option value="EUR">EUR — Euros</option>
+                          </select>
+                        </div>
+                        <div style={{display:'flex',alignItems:'flex-end'}}>
+                          <button onClick={descargarPlantillaIng}
+                            style={{background:'transparent',color:'#1976D2',border:'1px solid #1976D2',padding:'8px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',width:'100%'}}>
+                            ⬇ Descargar plantilla .xlsx
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Métodos de importación */}
+                      <div style={{fontSize:11,fontWeight:700,color:'#1A237E',marginBottom:8,letterSpacing:0.3,textTransform:'uppercase'}}>Elegir método de importación</div>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                        <label style={{background:'#E8F5E9',border:'2px dashed #2E7D32',borderRadius:10,padding:20,textAlign:'center',cursor:'pointer',display:'block'}}>
+                          <div style={{fontSize:32,marginBottom:6}}>📁</div>
+                          <div style={{fontSize:13,fontWeight:700,color:'#1B5E20',marginBottom:4}}>Subir archivo</div>
+                          <div style={{fontSize:11,color:'#388E3C'}}>.xlsx o .xls</div>
+                          <input type="file" accept=".xlsx,.xls" onChange={handleArchivoIngreso} style={{display:'none'}}/>
+                        </label>
+                        <div style={{background:'#E3F2FD',border:'2px dashed #1565C0',borderRadius:10,padding:14}}>
+                          <div style={{textAlign:'center',marginBottom:8}}>
+                            <div style={{fontSize:28}}>✏️</div>
+                            <div style={{fontSize:13,fontWeight:700,color:'#0D47A1'}}>Pegar datos</div>
+                          </div>
+                          <textarea value={m.textoPegado} onChange={e => setM({ textoPegado: e.target.value })}
+                            placeholder={`Fecha\tDescripción\tDepósitos\tRetiros\tSaldo\tCONCEPTO\tRUBRO\tCLIENTE / PROVEEDOR\n29/04/2026\tVentas netas\t16310\t\t29309\tHOSPEDAJE\tCLIENTE\tPUBLICO EN GENERAL`}
+                            style={{width:'100%',minHeight:80,padding:8,border:`1px solid ${C.border}`,borderRadius:6,fontSize:11,fontFamily:'monospace',outline:'none',resize:'vertical',boxSizing:'border-box'}}/>
+                          <button onClick={handleParsearTextoIngreso} disabled={!m.textoPegado.trim()}
+                            style={{marginTop:8,width:'100%',background:m.textoPegado.trim() ? '#1565C0' : '#B0BEC5',color:'#fff',border:'none',padding:'7px 12px',borderRadius:6,fontSize:11,fontWeight:700,cursor:m.textoPegado.trim() ? 'pointer' : 'not-allowed',fontFamily:'inherit'}}>
+                            Procesar texto
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Vista previa */}
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
+                        <div style={{fontSize:13,fontWeight:700,color:C.navy}}>
+                          📥 Vista previa · {m.rows.length} {m.rows.length === 1 ? 'fila detectada' : 'filas detectadas'}
+                        </div>
+                        <div style={{fontSize:11,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                          <span style={{background:'#E8F5E9',color:'#1B5E20',padding:'2px 8px',borderRadius:6,fontWeight:700}}>✅ {countAImportar} a importar</span>
+                          {countExcluir > 0 && <span style={{background:'#FFEBEE',color:'#C62828',padding:'2px 8px',borderRadius:6,fontWeight:700}}>⚠ {countExcluir} excluidas</span>}
+                          <span style={{background:'#E3F2FD',color:'#1565C0',padding:'2px 8px',borderRadius:6,fontWeight:700}}>{m.monedaGlobal}</span>
+                          <button onClick={() => setM({ rows: [] })} style={{background:'transparent',border:'none',color:'#1976D2',cursor:'pointer',fontSize:11,fontWeight:600}}>← Empezar de nuevo</button>
+                        </div>
+                      </div>
+                      
+                      {/* Toolbar selección masiva */}
+                      <div style={{display:'flex',gap:8,marginBottom:8,fontSize:11}}>
+                        <button onClick={() => setM({ rows: m.rows.map(r => ({ ...r, incluir: true })) })}
+                          style={{background:'#E8F5E9',color:'#1B5E20',border:'1px solid #A5D6A7',padding:'5px 10px',borderRadius:6,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>☑️ Incluir todas</button>
+                        <button onClick={() => setM({ rows: m.rows.map(r => ({ ...r, incluir: false })) })}
+                          style={{background:'#FFEBEE',color:'#C62828',border:'1px solid #FFCDD2',padding:'5px 10px',borderRadius:6,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>☐ Excluir todas</button>
+                        <button onClick={() => setM({ rows: m.rows.map(r => ({ ...r, incluir: !r.autoExcluido })) })}
+                          style={{background:'#FFF3E0',color:'#E65100',border:'1px solid #FFCC80',padding:'5px 10px',borderRadius:6,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>↺ Restaurar auto-exclusión</button>
+                      </div>
+                      
+                      {/* Tabla */}
+                      <div style={{border:`1px solid ${C.border}`,borderRadius:8,overflow:'auto',maxHeight:'50vh'}}>
+                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                          <thead>
+                            <tr style={{background:'#F8FAFC',borderBottom:`2px solid ${C.border}`,position:'sticky',top:0,zIndex:1}}>
+                              <th style={{padding:'8px',width:50,textAlign:'center',color:C.navy,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Incluir</th>
+                              <th style={{padding:'8px',width:110,textAlign:'left',color:C.navy,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Fecha</th>
+                              <th style={{padding:'8px',width:130,textAlign:'left',color:C.navy,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Rubro</th>
+                              <th style={{padding:'8px',width:200,textAlign:'left',color:C.navy,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Cliente</th>
+                              <th style={{padding:'8px',textAlign:'left',color:C.navy,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Concepto</th>
+                              <th style={{padding:'8px',width:120,textAlign:'right',color:C.navy,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Monto</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {m.rows.map((r, i) => {
+                              const excluida = !r.incluir;
+                              return (
+                                <tr key={i} style={{borderBottom:`1px solid ${C.border}`,background: excluida ? '#FAFAFA' : (i % 2 === 0 ? '#fff' : '#FAFBFC'),opacity: excluida ? 0.5 : 1}}>
+                                  <td style={{padding:'5px',textAlign:'center'}}>
+                                    <input type="checkbox" checked={r.incluir} onChange={() => toggleIncluir(i)}
+                                      title={r.autoExcluido && !r.incluir ? 'Auto-excluida (rubro/concepto contiene INVERSION/TRASPASO/DIVISA)' : ''}
+                                      style={{cursor:'pointer',transform:'scale(1.2)'}}/>
+                                  </td>
+                                  <td style={{padding:'4px 6px'}}>
+                                    <input type="date" value={r.fecha || ''} onChange={e => updateRow(i, 'fecha', e.target.value)}
+                                      style={{width:'100%',fontSize:11,padding:'4px',border:`1px solid ${C.border}`,borderRadius:5,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+                                  </td>
+                                  <td style={{padding:'4px 6px'}}>
+                                    <input type="text" value={r.rubro} onChange={e => updateRow(i, 'rubro', e.target.value)}
+                                      style={{width:'100%',fontSize:11,padding:'4px 6px',border:`1px solid ${C.border}`,borderRadius:5,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+                                  </td>
+                                  <td style={{padding:'4px 6px'}}>
+                                    <input type="text" value={r.cliente} onChange={e => updateRow(i, 'cliente', e.target.value)}
+                                      style={{width:'100%',fontSize:11,padding:'4px 6px',border:`1px solid ${C.border}`,borderRadius:5,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+                                  </td>
+                                  <td style={{padding:'4px 6px'}}>
+                                    <input type="text" value={r.concepto} onChange={e => updateRow(i, 'concepto', e.target.value)}
+                                      title={r.descripcion ? `Descripción del banco: ${r.descripcion}` : ''}
+                                      style={{width:'100%',fontSize:11,padding:'4px 6px',border:`1px solid ${C.border}`,borderRadius:5,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+                                  </td>
+                                  <td style={{padding:'4px 6px'}}>
+                                    <input type="number" step="0.01" value={r.monto} onChange={e => updateRow(i, 'monto', parseFloat(e.target.value) || 0)}
+                                      style={{width:'100%',fontSize:11,padding:'4px 6px',border:`1px solid ${C.border}`,borderRadius:5,fontFamily:'monospace',outline:'none',textAlign:'right',fontWeight:700,color:'#1B5E20',boxSizing:'border-box'}}/>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr style={{background:'#E8F5E9',borderTop:'2px solid #2E7D32'}}>
+                              <td colSpan={5} style={{padding:'10px',fontWeight:700,color:'#1B5E20'}}>TOTAL A IMPORTAR ({countAImportar} {countAImportar === 1 ? 'fila' : 'filas'} en {m.monedaGlobal})</td>
+                              <td style={{padding:'10px',textAlign:'right',fontFamily:'monospace',fontWeight:800,color:'#1B5E20',fontSize:14}}>{sym}{fmt(totalAImportar)}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </div>
+                
+                {/* Footer botones */}
+                {m.rows.length > 0 && (
+                  <div style={{padding:'12px 22px',borderTop:`1px solid ${C.border}`,display:'flex',justifyContent:'flex-end',gap:10}}>
+                    <button onClick={() => setImportarIngresosModal(null)} style={{background:'#F1F5F9',color:'#374151',border:'none',padding:'10px 20px',borderRadius:8,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>Cancelar</button>
+                    <button onClick={handleGuardar} disabled={countAImportar === 0}
+                      style={{background:countAImportar > 0 ? '#1B5E20' : '#B0BEC5',color:'#fff',border:'none',padding:'10px 20px',borderRadius:8,fontSize:13,fontWeight:700,cursor:countAImportar > 0 ? 'pointer' : 'not-allowed',fontFamily:'inherit'}}>
+                      💾 Guardar {countAImportar} {countAImportar === 1 ? 'ingreso' : 'ingresos'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Modal de detalle de importe (drill-down) */}
+        {detalleModal && (() => {
+          const { pago, tipo } = detalleModal;
+          const esGrupoNF = pago.proveedor === 'Otros Pagos';
+          let facturasMostrar = [];
+          if (tipo === 'adeudo') {
+            facturasMostrar = (invoices[pago.moneda] || [])
+              .filter(f => f.empresaId === empresaId)
+              .filter(f => esGrupoNF ? f.tipo === 'EgresoNF' : (f.proveedor === pago.proveedor && f.tipo !== 'EgresoNF'))
+              .map(f => {
+                const saldoActual = (+f.total || 0) - (+f.montoPagado || 0);
+                // Pagos realizados HOY a esta factura
+                const pagadoHoy = payments
+                  .filter(p => p.invoiceId === f.id && p.tipo === 'realizado' && p.fechaPago === fechaSeleccionada)
+                  .reduce((s, p) => s + (+p.monto || 0), 0);
+                // Saldo inicial del día = saldo actual + lo que se pagó hoy
+                const saldoInicial = saldoActual + pagadoHoy;
+                // Pagado antes de hoy = total pagado − pagado hoy
+                const pagadoAntes = (+f.montoPagado || 0) - pagadoHoy;
+                return {
+                  folio: esGrupoNF ? (f.proveedor || f.concepto || f.folio) : `${f.serie || ''}${f.folio || ''}`,
+                  fecha: f.fecha,
+                  total: +f.total || 0,
+                  pagadoAntes: Math.max(0, pagadoAntes),
+                  pagadoHoy,
+                  saldo: saldoInicial,        // saldo inicio del día (antes de pagos de hoy)
+                  saldoActual,                // saldo después de pagos de hoy
+                  concepto: esGrupoNF ? (f.notas || '') : (f.concepto || ''),
+                  esEgresoNF: f.tipo === 'EgresoNF',
+                };
+              })
+              .filter(f => f.saldo > 0)         // mostrar solo las que tenían saldo a inicio del día
+              .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+          } else {
+            facturasMostrar = (pago.detalleFacturas || []).map(d => ({
+              folio: d.esEgresoNF ? d.folio : `${d.serie || ''}${d.folio || ''}`,
+              concepto: d.concepto || '',
+              pagoHoy: d.pagoHoy,
+              estado: d.estado,
+              metodoPago: d.metodoPago,
+              esEgresoNF: !!d.esEgresoNF,
+            }));
+          }
+          const totalCol = tipo === 'adeudo'
+            ? facturasMostrar.reduce((s, f) => s + f.saldo, 0)
+            : facturasMostrar.reduce((s, f) => s + f.pagoHoy, 0);
+          const sym = monedaSym(pago.moneda);
+          return (
+            <div onClick={(e) => { if (e.target === e.currentTarget) setDetalleModal(null); }}
+              style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:14}}>
+              <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:900,maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.4)'}}>
+                <div style={{padding:'16px 22px',borderBottom:`1px solid ${C.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',background: tipo === 'adeudo' ? '#E3F2FD' : '#FFEBEE'}}>
+                  <div>
+                    <h3 style={{margin:0,fontSize:16,fontWeight:800,color: tipo === 'adeudo' ? '#0D47A1' : '#C62828'}}>
+                      {tipo === 'adeudo' ? '📋 Detalle del Importe Adeudado' : '💰 Detalle del Pago del Día'}
+                    </h3>
+                    <p style={{margin:'2px 0 0',fontSize:12,color:'#6B7280'}}>
+                      <b>{pago.proveedor}</b> · {pago.moneda} · {fechaSeleccionada}
+                    </p>
+                  </div>
+                  <button onClick={() => setDetalleModal(null)} style={{background:'transparent',border:'none',fontSize:22,cursor:'pointer',color:'#6B7280'}}>×</button>
+                </div>
+
+                <div style={{overflow:'auto',padding:18,flex:1}}>
+                  <div style={{background:'#F8FAFC',border:`1px solid ${C.border}`,borderRadius:8,padding:'10px 14px',marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:13,flexWrap:'wrap',gap:8}}>
+                    <div style={{color:C.muted}}>
+                      {tipo === 'adeudo' 
+                        ? `${facturasMostrar.length} ${facturasMostrar.length === 1 ? 'factura activa' : 'facturas activas'} · saldo pendiente`
+                        : `${facturasMostrar.length} ${facturasMostrar.length === 1 ? 'factura' : 'facturas'} con pago en esta fecha`}
+                    </div>
+                    <div style={{fontWeight:800,fontSize:16,color: tipo === 'adeudo' ? '#0D47A1' : '#C62828',fontVariantNumeric:'tabular-nums'}}>
+                      Total: {sym}{fmt(totalCol)}
+                    </div>
+                  </div>
+
+                  {facturasMostrar.length === 0 ? (
+                    <div style={{textAlign:'center',padding:'30px 16px',color:'#9CA3AF',fontSize:13}}>
+                      No hay {tipo === 'adeudo' ? 'facturas activas' : 'pagos en esta fecha'}.
+                    </div>
+                  ) : (
+                    <div style={{border:`1px solid ${C.border}`,borderRadius:8,overflow:'hidden'}}>
+                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                        <thead>
+                          <tr style={{background:'#F8FAFC',borderBottom:`2px solid ${C.border}`}}>
+                            <th style={{padding:'8px 12px',textAlign:'left',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Folio</th>
+                            <th style={{padding:'8px 12px',textAlign:'left',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Concepto</th>
+                            {tipo === 'adeudo' ? (
+                              <>
+                                <th style={{padding:'8px 12px',textAlign:'left',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Fecha</th>
+                                <th style={{padding:'8px 12px',textAlign:'right',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Total</th>
+                                <th style={{padding:'8px 12px',textAlign:'right',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}} title="Pagado antes de este día">Pagado antes</th>
+                                <th style={{padding:'8px 12px',textAlign:'right',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}} title="Pagado en este día">Pagado hoy</th>
+                                <th style={{padding:'8px 12px',textAlign:'right',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}} title="Saldo al inicio del día (lo que se debía)">Adeudado</th>
+                              </>
+                            ) : (
+                              <>
+                                <th style={{padding:'8px 12px',textAlign:'right',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Monto</th>
+                                <th style={{padding:'8px 12px',textAlign:'center',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Método</th>
+                                <th style={{padding:'8px 12px',textAlign:'center',color:C.navy,fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Estado</th>
+                              </>
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {facturasMostrar.map((f, idx) => (
+                            <tr key={idx} style={{borderBottom:`1px solid ${C.border}`,background:idx % 2 === 0 ? '#fff' : '#FAFBFC'}}>
+                              <td style={{padding:'8px 12px',fontFamily:'monospace',fontWeight:700,color: f.esEgresoNF ? '#C62828' : C.text}}>{f.folio}</td>
+                              <td style={{padding:'8px 12px',color:'#374151'}}>{f.concepto || <span style={{color:'#D1D5DB'}}>—</span>}</td>
+                              {tipo === 'adeudo' ? (
+                                <>
+                                  <td style={{padding:'8px 12px',color:C.muted,whiteSpace:'nowrap'}}>{f.fecha || '—'}</td>
+                                  <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'monospace',color:C.text}}>{sym}{fmt(f.total)}</td>
+                                  <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'monospace',color:'#1B5E20'}}>{sym}{fmt(f.pagadoAntes)}</td>
+                                  <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'monospace',color: f.pagadoHoy > 0 ? '#1565C0' : '#9CA3AF',fontWeight: f.pagadoHoy > 0 ? 700 : 400}}>{sym}{fmt(f.pagadoHoy)}</td>
+                                  <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#0D47A1'}}>{sym}{fmt(f.saldo)}</td>
+                                </>
+                              ) : (
+                                <>
+                                  <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#C62828'}}>{sym}{fmt(f.pagoHoy)}</td>
+                                  <td style={{padding:'8px 12px',textAlign:'center'}}>
+                                    {f.metodoPago === 'tdc' ? <span style={{background:'#F3E5F5',color:'#6A1B9A',padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700}}>💳 TDC</span> :
+                                     f.metodoPago === 'otro' ? <span style={{background:'#F5F5F5',color:'#616161',padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700}}>➕ Otro</span> :
+                                     <span style={{background:'#E3F2FD',color:'#1565C0',padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700}}>🏦 Banco</span>}
+                                  </td>
+                                  <td style={{padding:'8px 12px',textAlign:'center'}}>
+                                    {(() => {
+                                      const meta = {
+                                        atrasado: { label: '⚠️ Atrasado', bg: '#FFEBEE', color: '#C62828' },
+                                        pagado: { label: '✅ Pagado', bg: '#E8F5E9', color: '#1B5E20' },
+                                        pagado_atraso: { label: '🟡 Pagado tarde', bg: '#FFF3E0', color: '#E65100' },
+                                        programado: { label: '📅 Programado', bg: '#E3F2FD', color: '#1565C0' },
+                                      }[f.estado] || { label: f.estado, bg: '#F5F5F5', color: '#666' };
+                                      return <span style={{background:meta.bg,color:meta.color,padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700}}>{meta.label}</span>;
+                                    })()}
+                                  </td>
+                                </>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr style={{background: tipo === 'adeudo' ? '#E3F2FD' : '#FFEBEE',borderTop:`2px solid ${tipo === 'adeudo' ? '#1976D2' : '#C62828'}`}}>
+                            <td colSpan={tipo === 'adeudo' ? 6 : 2} style={{padding:'10px 12px',fontWeight:700,color: tipo === 'adeudo' ? '#0D47A1' : '#C62828'}}>TOTAL</td>
+                            <td style={{padding:'10px 12px',textAlign:'right',fontFamily:'monospace',fontWeight:800,color: tipo === 'adeudo' ? '#0D47A1' : '#C62828',fontSize:13}}>
+                              {sym}{fmt(totalCol)}
+                            </td>
+                            {tipo === 'pago' && <td colSpan={2}/>}
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+
+                  {tipo === 'adeudo' && pago.pagoHoy > 0 && (
+                    <div style={{marginTop:14,padding:'10px 14px',background:'#FFFDE7',border:'1px solid #FFE082',borderRadius:8,fontSize:12,color:'#E65100'}}>
+                      💡 Pago programado para el {fechaSeleccionada}: <b>{sym}{fmt(pago.pagoHoy)}</b>
+                      {pago.pagoHoy > totalCol && (
+                        <span style={{marginLeft:8,color:'#C62828',fontWeight:700}}>
+                          ⚠️ El pago programado es MAYOR al saldo adeudado (diferencia: {sym}{fmt(pago.pagoHoy - totalCol)})
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{padding:'12px 22px',borderTop:`1px solid ${C.border}`,display:'flex',justifyContent:'flex-end'}}>
+                  <button onClick={() => setDetalleModal(null)} style={{background:'#1976D2',color:'#fff',border:'none',padding:'8px 20px',borderRadius:8,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>Cerrar</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -5328,7 +6290,16 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
     const [pendientesMomento, setPendientesMomento] = useState('inicio');
     const [showHistorico, setShowHistorico] = useState(false);
     const [verHistorico, setVerHistorico] = useState(null); // {fecha, momento}
+    const [edicionHistoricaSaldos, setEdicionHistoricaSaldos] = useState(false);
     const [showCopiarMenu, setShowCopiarMenu] = useState(false);
+    const [importarECModal, setImportarECModal] = useState(null);
+    // Préstamos: por ahora un solo préstamo activo por empresa
+    const [prestamo, setPrestamo] = useState(null);          // {id, banco, montoAutorizado, ...} o null
+    const [prestamoMovs, setPrestamoMovs] = useState([]);    // movimientos del préstamo activo
+    const [showPrestamoMov, setShowPrestamoMov] = useState(null);  // {tipo, mov} o null — modal nuevo/editar
+    const [showPrestamoHist, setShowPrestamoHist] = useState(false);
+    const [editandoMontoPrestamo, setEditandoMontoPrestamo] = useState(false);
+    const [valorMontoPrestamo, setValorMontoPrestamo] = useState('');
     const refInicio = useRef(null);
     const refCierre = useRef(null);
     const refAmbos = useRef(null);
@@ -5337,14 +6308,25 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
     const fechaConsulta = verHistorico?.fecha || fechaHoy;
     const esHoy = !verHistorico;
     const momentoConsulta = verHistorico?.momento || null; // null = mostrar ambos cuadros
+    
+    // Resetear el flag de edición histórica cuando cambia la fecha o se vuelve a hoy
+    useEffect(() => { setEdicionHistoricaSaldos(false); }, [fechaConsulta, verHistorico]);
+    
+    // Determinar si el usuario puede habilitar edición histórica
+    // Solo Admin y Usuario (no Consulta)
+    const puedeEditarHistorico = !esConsulta;
+    
+    // Bloqueo de edición: solo bloqueamos en histórico SIN edición habilitada
+    const bloqueoSaldos = !esHoy && !edicionHistoricaSaldos;
 
-    // Cargar cuentas + saldos del día (ambos momentos en paralelo)
+    // Cargar cuentas + saldos del día (ambos momentos en paralelo) + préstamo activo
     const recargar = async () => {
       setLoading(true);
-      const [cs, ssIni, ssCie] = await Promise.all([
+      const [cs, ssIni, ssCie, prestamos] = await Promise.all([
         fetchCuentasBancarias(empresaId),
         fetchSaldosDiarios(empresaId, fechaConsulta, 'inicio'),
         fetchSaldosDiarios(empresaId, fechaConsulta, 'cierre'),
+        fetchPrestamos(empresaId),
       ]);
       setCuentas(cs);
       const procesar = (arr) => {
@@ -5365,7 +6347,23 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
       setSaldosCierre(cie.map);
       setMetaInicio({ updatedAt: ini.lastUpdate, updatedBy: ini.lastBy });
       setMetaCierre({ updatedAt: cie.lastUpdate, updatedBy: cie.lastBy });
+      // Préstamo activo (por ahora tomamos el primero; futuro: soporte multi-préstamo)
+      const pActivo = prestamos[0] || null;
+      setPrestamo(pActivo);
+      if (pActivo) {
+        const movs = await fetchPrestamoMovimientos(pActivo.id);
+        setPrestamoMovs(movs);
+      } else {
+        setPrestamoMovs([]);
+      }
       setLoading(false);
+    };
+
+    // Recargar solo movimientos (después de crear/editar/borrar)
+    const recargarMovsPrestamo = async () => {
+      if (!prestamo) return;
+      const movs = await fetchPrestamoMovimientos(prestamo.id);
+      setPrestamoMovs(movs);
     };
 
     useEffect(() => { recargar(); /* eslint-disable-next-line */ }, [empresaId, fechaConsulta]);
@@ -5377,8 +6375,30 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
     const saldoReal = (cId, m) => getSaldosByMomento(m)[cId]?.saldoReal || 0;
     const movsPend  = (cId, m) => getSaldosByMomento(m)[cId]?.movsPendientes || 0;
     const reservaCta = (c) => +c.reservaMinima || 0;
-    const disponible = (c, m) => Math.max(0, saldoReal(c.id, m) - reservaCta(c) - movsPend(c.id, m));
+    // Permitir negativos: si saldo - reserva - pendientes da negativo,
+    // significa que la cuenta está por debajo de su reserva mínima.
+    // Ej: saldo $1,215 - reserva $2,000 = -$784 (debes meter $784 para cumplir reserva)
+    const disponible = (c, m) => saldoReal(c.id, m) - reservaCta(c) - movsPend(c.id, m);
     const ajusteVisible = (c, m) => reservaCta(c) > 0 || movsPend(c.id, m) !== 0;
+
+    // ─── Cálculos del préstamo ─────────────────────────────────────
+    // utilizado = suma de disposiciones - suma de pagos
+    // bloqueado = autorizado - utilizado  (lo que NO se ha tomado)
+    // El bloqueado se resta del Total Disponible MN para que el flujo
+    // proyectado no contemple ese dinero como operativo.
+    const prestamoCalc = useMemo(() => {
+      if (!prestamo) return null;
+      const utilizado = calcularUtilizadoPrestamo(prestamoMovs);
+      const autorizado = +prestamo.montoAutorizado || 0;
+      const bloqueado = Math.max(0, autorizado - utilizado);
+      const pctUtilizado = autorizado > 0 ? Math.round((utilizado / autorizado) * 100) : 0;
+      // Estado del chip: 'bloqueado' (sin uso) | 'enUso' (parcial) | 'agotado' (100%)
+      let estado = 'bloqueado';
+      if (utilizado > 0 && utilizado < autorizado) estado = 'enUso';
+      else if (utilizado >= autorizado && autorizado > 0) estado = 'agotado';
+      const movsContables = (prestamoMovs || []).filter(m => m.tipo !== 'inicial').length;
+      return { autorizado, utilizado, bloqueado, pctUtilizado, estado, movsContables };
+    }, [prestamo, prestamoMovs]);
 
     // Tema por momento
     const tema = (m) => {
@@ -5427,7 +6447,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
 
     // Editar saldo real
     const iniciarEdicion = (cuenta, m) => {
-      if (esConsulta || !esHoy) return;
+      if (esConsulta || bloqueoSaldos) return;
       const key = `${cuenta.id}_${m}`;
       setEditandoSaldo(key);
       setValorEdicion(String(saldoReal(cuenta.id, m) || ''));
@@ -5443,7 +6463,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
       const ok = await upsertSaldoDiario({
         cuentaId: cuenta.id,
         empresaId,
-        fecha: fechaHoy,
+        fecha: fechaConsulta,  // usa fecha del día consultado, no necesariamente hoy
         momento: m,
         saldoReal: nuevoReal,
         movsPendientes: pendiente,
@@ -5455,6 +6475,12 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         } else {
           setSaldosInicio(prev => ({ ...prev, [cuenta.id]: { saldoReal: nuevoReal, movsPendientes: pendiente } }));
           setMetaInicio({ updatedAt: new Date().toISOString(), updatedBy: user?.nombre || 'desconocido' });
+        }
+        // Si editaste un día histórico, avisar sobre el efecto cascada
+        if (!esHoy) {
+          setTimeout(() => {
+            alert('💡 Los saldos heredados de los días siguientes se actualizarán automáticamente al consultarlos.');
+          }, 100);
         }
       }
       setSavingCuenta(null);
@@ -5526,7 +6552,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
       const meta = getMetaByMomento(momento);
       const totales = calcTotales(momento);
       const titulo = momento === 'cierre' ? 'CIERRE DE DÍA' : 'INICIO DE DÍA';
-      const editable = esHoy && !esConsulta;
+      const editable = !esConsulta && (esHoy || edicionHistoricaSaldos);
 
       return (
         <div ref={innerRef} style={{width:820,maxWidth:'100%',background:'#fff',margin:'0 auto'}}>
@@ -5552,7 +6578,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
               {meta.updatedAt
                 ? <span><span style={{color:'#1B5E20'}}>✓</span> Actualizado: {new Date(meta.updatedAt).toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'})}{meta.updatedBy ? ` · ${meta.updatedBy}` : ''}</span>
                 : <span style={{color:'#999'}}>Sin captura</span>}
-              {esHoy && !esConsulta && (
+              {(esHoy || edicionHistoricaSaldos) && !esConsulta && (
                 <button onClick={() => abrirPendientes(momento)} style={{background:'transparent',border:`1px solid ${t.primario}`,color:t.primario,padding:'3px 10px',borderRadius:4,fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>⚡ Pendientes</button>
               )}
             </div>
@@ -5606,11 +6632,30 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                                 />
                               ) : isSaving ? (
                                 <span style={{background:t.claroFondo,padding:'6px 18px',borderRadius:6,fontWeight:800,color:t.claroTexto,fontSize:18,opacity:0.6}}>guardando...</span>
-                              ) : (
-                                <span style={{background:t.claroFondo,padding:'6px 18px',borderRadius:6,display:'inline-block',fontWeight:800,color:t.claroTexto,fontSize:18,userSelect:'none',fontVariantNumeric:'tabular-nums',letterSpacing:0.3}}>
-                                  {sym(c.moneda)}{fmt(disponible(c, momento))}
-                                </span>
-                              )}
+                              ) : (() => {
+                                const disp = disponible(c, momento);
+                                const esNeg = disp < 0;
+                                return (
+                                  <span
+                                    title={esNeg ? `Saldo por debajo de la reserva mínima ($${fmt(reservaCta(c))}). Falta ${sym(c.moneda)}${fmt(Math.abs(disp))} para alcanzarla.` : ''}
+                                    style={{
+                                      background: esNeg ? '#FFEBEE' : t.claroFondo,
+                                      border: esNeg ? '1px solid #EF9A9A' : 'none',
+                                      padding:'6px 18px',
+                                      borderRadius:6,
+                                      display:'inline-block',
+                                      fontWeight:800,
+                                      color: esNeg ? '#C62828' : t.claroTexto,
+                                      fontSize:18,
+                                      userSelect:'none',
+                                      fontVariantNumeric:'tabular-nums',
+                                      letterSpacing:0.3
+                                    }}
+                                  >
+                                    {disp < 0 ? '-' : ''}{sym(c.moneda)}{fmt(Math.abs(disp))}
+                                  </span>
+                                );
+                              })()}
                             </div>
                           </React.Fragment>
                         );
@@ -5645,14 +6690,127 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
 
               {/* Separador continuo de ancho completo */}
               <div style={{borderTop:`2px solid ${C.border}`,marginTop:12,paddingTop:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-                <div style={{color:t.primario,fontWeight:800,fontSize:17}}>Total Disponible</div>
+                <div>
+                  <div style={{color:t.primario,fontWeight:800,fontSize:17}}>Total Disponible</div>
+                  {prestamoCalc && prestamoCalc.bloqueado > 0 && (
+                    <div style={{fontSize:10,color:C.muted,marginTop:2,fontWeight:500}}>
+                      MN excluye <span style={{fontVariantNumeric:'tabular-nums',color:'#B45309'}}>${fmt(prestamoCalc.bloqueado)}</span> bloqueado del préstamo
+                    </div>
+                  )}
+                </div>
                 <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8}}>
-                  <span style={{background:t.primario,padding:'8px 18px',borderRadius:5,fontWeight:800,color:'#fff',fontSize:22,fontVariantNumeric:'tabular-nums',letterSpacing:0.3}}>${fmt(totales.dispMN + totales.dispInversion)} MN</span>
-                  {totales.dispDL > 0 && <span style={{background:t.primario,padding:'5px 14px',borderRadius:5,fontWeight:700,color:'#fff',fontSize:16,fontVariantNumeric:'tabular-nums',letterSpacing:0.3}}>${fmt(totales.dispDL)} USD</span>}
-                  {totales.dispEUR > 0 && <span style={{background:t.primario,padding:'5px 14px',borderRadius:5,fontWeight:700,color:'#fff',fontSize:16,fontVariantNumeric:'tabular-nums',letterSpacing:0.3}}>€{fmt(totales.dispEUR)} EUR</span>}
+                  {(() => {
+                    const bloq = prestamoCalc ? prestamoCalc.bloqueado : 0;
+                    const tot = totales.dispMN + totales.dispInversion - bloq;
+                    const esNeg = tot < 0;
+                    return (
+                      <span style={{background: esNeg ? '#C62828' : t.primario,padding:'8px 18px',borderRadius:5,fontWeight:800,color:'#fff',fontSize:22,fontVariantNumeric:'tabular-nums',letterSpacing:0.3}}>{esNeg ? '-' : ''}${fmt(Math.abs(tot))} MN</span>
+                    );
+                  })()}
+                  {(totales.dispDL !== 0) && (() => {
+                    const esNeg = totales.dispDL < 0;
+                    return <span style={{background: esNeg ? '#C62828' : t.primario,padding:'5px 14px',borderRadius:5,fontWeight:700,color:'#fff',fontSize:16,fontVariantNumeric:'tabular-nums',letterSpacing:0.3}}>{esNeg ? '-' : ''}${fmt(Math.abs(totales.dispDL))} USD</span>;
+                  })()}
+                  {(totales.dispEUR !== 0) && (() => {
+                    const esNeg = totales.dispEUR < 0;
+                    return <span style={{background: esNeg ? '#C62828' : t.primario,padding:'5px 14px',borderRadius:5,fontWeight:700,color:'#fff',fontSize:16,fontVariantNumeric:'tabular-nums',letterSpacing:0.3}}>{esNeg ? '-' : ''}€{fmt(Math.abs(totales.dispEUR))} EUR</span>;
+                  })()}
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ──── Sub-componente: Chip lateral del préstamo ────
+    const ChipPrestamo = () => {
+      if (!prestamo || !prestamoCalc) return null;
+      const pc = prestamoCalc;
+      // Paleta por estado
+      const skin = {
+        bloqueado: { headerBg:'#FEF3C7', headerText:'#92400E', icon:'🔒', estado:'PRÉSTAMO BLOQUEADO', sub:'Sin utilizar', barColor:'#F59E0B' },
+        enUso:     { headerBg:'#DBEAFE', headerText:'#1E40AF', icon:'⏳', estado:'PRÉSTAMO EN USO',     sub:'Parcialmente utilizado', barColor:'#3B82F6' },
+        agotado:   { headerBg:'#FEE2E2', headerText:'#991B1B', icon:'⚠️', estado:'PRÉSTAMO AGOTADO',     sub:'Totalmente utilizado', barColor:'#DC2626' },
+      }[pc.estado];
+      const colorUtilizado = pc.estado === 'agotado' ? '#DC2626' : (pc.estado === 'enUso' ? '#1E40AF' : '#1F2937');
+      return (
+        <div style={{width:300,flexShrink:0,background:'#fff',border:`1px solid ${C.border}`,borderRadius:8,overflow:'hidden',alignSelf:'flex-start'}}>
+          <div style={{background:skin.headerBg,padding:'12px 14px',borderBottom:`1px solid ${C.border}`}}>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:16}}>{skin.icon}</span>
+              <span style={{fontSize:11,fontWeight:800,color:skin.headerText,letterSpacing:0.6}}>{skin.estado}</span>
+            </div>
+            <div style={{fontSize:10,color:skin.headerText,opacity:0.85,marginTop:2}}>{skin.sub}</div>
+          </div>
+          <div style={{padding:14}}>
+            <div style={{fontSize:10,color:C.muted,marginBottom:2}}>Banco</div>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>{prestamo.banco}{prestamo.numeroCuenta ? ` · Cta. ${limpiaCta(prestamo.numeroCuenta)}` : ''}</div>
+
+            <div style={{fontSize:10,color:C.muted,marginBottom:2}}>Bloqueado</div>
+            {editandoMontoPrestamo ? (
+              <div style={{display:'flex',gap:4,marginBottom:10,alignItems:'center'}}>
+                <input
+                  autoFocus
+                  value={valorMontoPrestamo}
+                  onChange={(e) => setValorMontoPrestamo(e.target.value.replace(/[^\d.]/g, ''))}
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter') {
+                      const nuevoMonto = parseFloat(valorMontoPrestamo) || 0;
+                      await upsertPrestamo({ ...prestamo, montoAutorizado: nuevoMonto }, user?.nombre);
+                      setEditandoMontoPrestamo(false);
+                      await recargar();
+                    } else if (e.key === 'Escape') {
+                      setEditandoMontoPrestamo(false);
+                    }
+                  }}
+                  style={{flex:1,border:`2px solid ${C.navy}`,padding:'4px 8px',borderRadius:4,fontSize:14,fontFamily:'inherit',fontVariantNumeric:'tabular-nums'}}
+                />
+                <button onClick={() => setEditandoMontoPrestamo(false)} style={{background:'transparent',border:`1px solid ${C.border}`,padding:'4px 8px',borderRadius:4,fontSize:11,cursor:'pointer',fontFamily:'inherit'}}>×</button>
+              </div>
+            ) : (
+              <div style={{display:'flex',alignItems:'baseline',gap:6,marginBottom:10}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#1F2937',fontVariantNumeric:'tabular-nums'}}>${fmt(pc.bloqueado)}</div>
+                {esHoy && !esConsulta && (
+                  <button
+                    onClick={() => { setValorMontoPrestamo(String(prestamo.montoAutorizado)); setEditandoMontoPrestamo(true); }}
+                    title="Editar monto autorizado"
+                    style={{background:'transparent',border:`1px solid ${C.border}`,padding:'2px 6px',borderRadius:4,fontSize:10,cursor:'pointer',color:C.muted,fontFamily:'inherit'}}
+                  >✎</button>
+                )}
+              </div>
+            )}
+
+            {/* Barra de progreso */}
+            <div style={{height:6,background:'#F3F4F6',borderRadius:999,overflow:'hidden',marginBottom:5}}>
+              <div style={{width:`${Math.min(100, pc.pctUtilizado)}%`,height:'100%',background:skin.barColor,transition:'width 0.3s'}}/>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:C.muted,marginBottom:10}}>
+              <span>{pc.pctUtilizado}% utilizado</span>
+              <span style={{fontVariantNumeric:'tabular-nums'}}>${fmt(pc.autorizado)}</span>
+            </div>
+
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginTop:4,fontSize:11,color:C.muted}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                <span>Utilizado</span>
+                <span style={{color:colorUtilizado,fontWeight:700,fontVariantNumeric:'tabular-nums'}}>${fmt(pc.utilizado)}</span>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between'}}>
+                <span>Movimientos</span>
+                <span style={{color:'#1F2937',fontWeight:600}}>{pc.movsContables}</span>
+              </div>
+            </div>
+
+            {esHoy && !esConsulta && (
+              <button
+                onClick={() => setShowPrestamoMov({ tipo:'disposicion', mov:null })}
+                style={{width:'100%',marginTop:12,padding:'8px',background:C.navy,color:'#fff',border:'none',borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}
+              >+ Registrar movimiento</button>
+            )}
+            <button
+              onClick={() => setShowPrestamoHist(true)}
+              style={{width:'100%',marginTop:6,padding:'8px',background:'#fff',color:C.text,border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}
+            >📜 Ver histórico</button>
           </div>
         </div>
       );
@@ -5668,12 +6826,17 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
     }
 
     return (
-      <div>
+      <div style={{
+        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+        WebkitFontSmoothing: 'antialiased',
+        MozOsxFontSmoothing: 'grayscale',
+        textRendering: 'optimizeLegibility',
+      }}>
         {/* HEADER */}
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:14,paddingBottom:12,borderBottom:`1px solid ${C.border}`,flexWrap:'wrap',gap:12}}>
           <div>
             <h1 style={{fontSize:20,fontWeight:800,color:C.navy,margin:0}}>🏦 Saldos Bancarios · {empresa.nombre}</h1>
-            <p style={{fontSize:13,color:C.muted,margin:'4px 0 0',textTransform:'capitalize'}}>{fmtFechaLarga(fechaConsulta)}{!esHoy && <span style={{marginLeft:8,background:'#FFF3E0',color:'#E65100',padding:'2px 8px',borderRadius:8,fontSize:11,fontWeight:700,textTransform:'uppercase'}}>Histórico · solo lectura</span>}</p>
+            <p style={{fontSize:13,color:C.muted,margin:'4px 0 0',textTransform:'capitalize'}}>{fmtFechaLarga(fechaConsulta)}{!esHoy && !edicionHistoricaSaldos && <span style={{marginLeft:8,background:'#FFF3E0',color:'#E65100',padding:'2px 8px',borderRadius:8,fontSize:11,fontWeight:700,textTransform:'uppercase'}}>Histórico · solo lectura</span>}{!esHoy && edicionHistoricaSaldos && <span style={{marginLeft:8,background:'#FFEBEE',color:'#C62828',padding:'2px 8px',borderRadius:8,fontSize:11,fontWeight:700,textTransform:'uppercase'}}>✏️ EDITANDO histórico</span>}</p>
           </div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
             {!esHoy && (
@@ -5681,9 +6844,48 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             )}
             <button onClick={() => setShowCuentas(true)} disabled={esConsulta} style={{background:'#fff',border:`1px solid ${C.border}`,padding:'7px 12px',borderRadius:7,fontSize:11,color:C.text,fontWeight:600,cursor:esConsulta?'not-allowed':'pointer',opacity:esConsulta?0.5:1,fontFamily:'inherit'}}>⚙️ Cuentas</button>
             <button onClick={() => setShowHistorico(true)} style={{background:'#fff',border:`1px solid ${C.border}`,padding:'7px 12px',borderRadius:7,fontSize:11,color:C.text,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>📜 Histórico</button>
+            {!prestamo && esHoy && !esConsulta && (
+              <button onClick={() => setShowPrestamoMov({ tipo:'crear-prestamo', mov:null })} style={{background:'#fff',border:`1px solid #F59E0B`,color:'#92400E',padding:'7px 12px',borderRadius:7,fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>+ Registrar préstamo</button>
+            )}
+            <button onClick={() => setImportarECModal({ open: true, archivo: null, parseando: false, resultado: null, sobreescribir: new Set() })} disabled={esConsulta} style={{background:esConsulta?'#999':'#1976D2',color:'#fff',border:'none',padding:'7px 12px',borderRadius:7,fontSize:11,fontWeight:700,cursor:esConsulta?'not-allowed':'pointer',fontFamily:'inherit'}}>📥 Importar Excel</button>
             <button onClick={() => setShowCopiarMenu(true)} disabled={cuentas.length===0} style={{background:cuentas.length===0?'#999':C.navy,color:'#fff',border:'none',padding:'7px 12px',borderRadius:7,fontSize:11,fontWeight:700,cursor:cuentas.length===0?'not-allowed':'pointer',fontFamily:'inherit'}}>📸 Copiar Imagen</button>
           </div>
         </div>
+
+        {/* Banner: Vista histórica - solo lectura → habilitar edición */}
+        {!esHoy && !edicionHistoricaSaldos && puedeEditarHistorico && (
+          <div style={{background:'#FFF8E1',border:'1px solid #FFE082',borderRadius:10,padding:'12px 16px',marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:'#E65100'}}>📅 Vista histórica · solo lectura</div>
+              <div style={{fontSize:11,color:'#5D4037',marginTop:2}}>Estás viendo los saldos de una fecha pasada. Si necesitas modificarlos, habilita la edición.</div>
+            </div>
+            <button onClick={() => {
+              if (window.confirm('Vas a editar los saldos del histórico. Los cambios afectarán permanentemente y los saldos heredados de los días siguientes se actualizarán automáticamente.\n\n¿Continuar?')) {
+                setEdicionHistoricaSaldos(true);
+              }
+            }} style={{background:'#fff',border:'1px solid #FFB74D',color:'#E65100',padding:'8px 16px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+              🔓 Habilitar edición
+            </button>
+          </div>
+        )}
+
+        {/* Banner: EDITANDO histórico → terminar edición */}
+        {!esHoy && edicionHistoricaSaldos && (
+          <div style={{background:'#FFEBEE',border:'1px solid #EF9A9A',borderRadius:10,padding:'12px 16px',marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:'#C62828'}}>✏️ EDITANDO saldos históricos · {fmtFechaLarga(fechaConsulta)}</div>
+              <div style={{fontSize:11,color:'#7F1D1D',marginTop:2}}>Los cambios afectan el histórico permanentemente. Termina la edición cuando hayas terminado.</div>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={() => setEdicionHistoricaSaldos(false)} style={{background:'#fff',border:`1px solid ${C.border}`,color:C.text,padding:'8px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                🔒 Terminar edición
+              </button>
+              <button onClick={() => { setEdicionHistoricaSaldos(false); setVerHistorico(null); }} style={{background:'#FF9800',color:'#fff',border:'none',padding:'8px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                ↶ Volver a Hoy
+              </button>
+            </div>
+          </div>
+        )}
 
         {cuentas.length === 0 ? (
           <div style={{textAlign:'center',padding:60,background:C.surface,border:`1px dashed ${C.border}`,borderRadius:14,color:C.muted}}>
@@ -5693,15 +6895,37 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             {!esConsulta && <button onClick={() => setShowCuentas(true)} style={btnStyle}>⚙️ Configurar cuentas</button>}
           </div>
         ) : verHistorico ? (
-          /* MODO HISTÓRICO: solo el cuadro del momento seleccionado */
-          <div ref={refAmbos}>
-            <CuadroSaldos momento={momentoConsulta} innerRef={momentoConsulta==='cierre'?refCierre:refInicio}/>
-          </div>
+          /* MODO HISTÓRICO: si momento === null muestra ambos cuadros, si no solo el seleccionado.
+             Cada cuadro va dentro de un wrapper flex (ref de captura) que incluye el chip
+             del préstamo, para que las 3 opciones de "Copiar Imagen" lo incluyan. */
+          momentoConsulta === null ? (
+            <div ref={refAmbos} style={{display:'flex',flexDirection:'column',gap:24,alignItems:'center'}}>
+              <div ref={refInicio} style={{display:'flex',gap:16,alignItems:'flex-start',justifyContent:'center',flexWrap:'wrap',background:'#fff',padding:8}}>
+                <CuadroSaldos momento="inicio"/>
+                <ChipPrestamo/>
+              </div>
+              <div ref={refCierre} style={{display:'flex',gap:16,alignItems:'flex-start',justifyContent:'center',flexWrap:'wrap',background:'#fff',padding:8}}>
+                <CuadroSaldos momento="cierre"/>
+                <ChipPrestamo/>
+              </div>
+            </div>
+          ) : (
+            <div ref={refAmbos} style={{display:'flex',gap:16,alignItems:'flex-start',justifyContent:'center',flexWrap:'wrap',background:'#fff',padding:8}}>
+              <CuadroSaldos momento={momentoConsulta} innerRef={momentoConsulta==='cierre'?refCierre:refInicio}/>
+              <ChipPrestamo/>
+            </div>
+          )
         ) : (
-          /* MODO HOY: ambos cuadros apilados */
+          /* MODO HOY: chip al lado de CADA cuadro; refAmbos engloba todo. */
           <div ref={refAmbos} style={{display:'flex',flexDirection:'column',gap:24,alignItems:'center'}}>
-            <CuadroSaldos momento="inicio" innerRef={refInicio}/>
-            <CuadroSaldos momento="cierre" innerRef={refCierre}/>
+            <div ref={refInicio} style={{display:'flex',gap:16,alignItems:'flex-start',justifyContent:'center',flexWrap:'wrap',background:'#fff',padding:8}}>
+              <CuadroSaldos momento="inicio"/>
+              <ChipPrestamo/>
+            </div>
+            <div ref={refCierre} style={{display:'flex',gap:16,alignItems:'flex-start',justifyContent:'center',flexWrap:'wrap',background:'#fff',padding:8}}>
+              <CuadroSaldos momento="cierre"/>
+              <ChipPrestamo/>
+            </div>
           </div>
         )}
 
@@ -5731,7 +6955,21 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                     <div><div>Ambos (Inicio + Cierre)</div><div style={{fontSize:10,fontWeight:500,color:C.muted,marginTop:2}}>Comparativa del día completo · 1 imagen larga</div></div>
                   </button>
                 </>)}
-                {verHistorico && (
+                {verHistorico && momentoConsulta === null && (<>
+                  <button onClick={copiarSoloInicio} style={{background:'#fff',border:`2px solid ${C.navy}`,padding:'14px 16px',borderRadius:10,fontSize:13,color:C.navy,fontWeight:700,cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:12,fontFamily:'inherit'}}>
+                    <div style={{width:36,height:36,background:C.navy,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:18,flexShrink:0}}>🌅</div>
+                    <div><div>Solo INICIO de día</div><div style={{fontSize:10,fontWeight:500,color:C.muted,marginTop:2}}>Cuadro azul · 1 imagen</div></div>
+                  </button>
+                  <button onClick={copiarSoloCierre} style={{background:'#fff',border:'2px solid #1B5E20',padding:'14px 16px',borderRadius:10,fontSize:13,color:'#1B5E20',fontWeight:700,cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:12,fontFamily:'inherit'}}>
+                    <div style={{width:36,height:36,background:'#1B5E20',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:18,flexShrink:0}}>🌙</div>
+                    <div><div>Solo CIERRE de día</div><div style={{fontSize:10,fontWeight:500,color:C.muted,marginTop:2}}>Cuadro verde · 1 imagen</div></div>
+                  </button>
+                  <button onClick={copiarAmbos} style={{background:'#F3F4F6',border:'2px solid #6B7280',padding:'14px 16px',borderRadius:10,fontSize:13,color:'#1F2937',fontWeight:700,cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:12,fontFamily:'inherit'}}>
+                    <div style={{width:36,height:36,background:'#1F2937',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:18,flexShrink:0}}>📊</div>
+                    <div><div>Ambos (Inicio + Cierre)</div><div style={{fontSize:10,fontWeight:500,color:C.muted,marginTop:2}}>Comparativa del día completo · 1 imagen larga</div></div>
+                  </button>
+                </>)}
+                {verHistorico && momentoConsulta !== null && (
                   <button onClick={momentoConsulta==='cierre'?copiarSoloCierre:copiarSoloInicio} style={{background:'#fff',border:`2px solid ${tema(momentoConsulta).primario}`,padding:'14px 16px',borderRadius:10,fontSize:13,color:tema(momentoConsulta).primario,fontWeight:700,cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:12,fontFamily:'inherit'}}>
                     <div style={{width:36,height:36,background:tema(momentoConsulta).primario,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:18,flexShrink:0}}>{momentoConsulta==='cierre'?'🌙':'🌅'}</div>
                     <div><div>Copiar este cuadro</div><div style={{fontSize:10,fontWeight:500,color:C.muted,marginTop:2}}>{momentoConsulta==='cierre'?'CIERRE':'INICIO'} de día · 1 imagen</div></div>
@@ -5746,8 +6984,285 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         )}
 
         {showCuentas && <ModalCuentas onClose={() => { setShowCuentas(false); recargar(); }} />}
-        {showPendientes && <ModalPendientes onClose={() => { setShowPendientes(false); recargar(); }} cuentas={cuentas} saldosHoy={getSaldosByMomento(pendientesMomento)} fechaHoy={fechaHoy} momento={pendientesMomento} temaPrimario={tema(pendientesMomento).primario} />}
-        {showHistorico && <ModalHistorico onClose={() => setShowHistorico(false)} onSelectFecha={(f, m) => { setVerHistorico({fecha: f, momento: m}); setShowHistorico(false); }} />}
+        {showPendientes && <ModalPendientes onClose={() => { setShowPendientes(false); recargar(); }} cuentas={cuentas} saldosHoy={getSaldosByMomento(pendientesMomento)} fechaHoy={fechaConsulta} momento={pendientesMomento} temaPrimario={tema(pendientesMomento).primario} />}
+        {showHistorico && <ModalHistorico onClose={() => setShowHistorico(false)} onSelectFecha={(f, m) => {
+          if (f === null) {
+            // Volver a hoy
+            setVerHistorico(null);
+          } else {
+            // Mostrar la fecha seleccionada (con momento si vino, o ambos cuadros si momento=null)
+            setVerHistorico({fecha: f, momento: m});
+          }
+          setShowHistorico(false);
+        }} />}
+
+        {/* MODAL: Nuevo/editar movimiento de préstamo, o crear préstamo */}
+        {showPrestamoMov && (() => {
+          const isCrearPrestamo = showPrestamoMov.tipo === 'crear-prestamo';
+          const isEditarMov = !!showPrestamoMov.mov;
+          const movDefault = showPrestamoMov.mov || { tipo:'disposicion', fecha:today(), monto:'', concepto:'' };
+          return (
+            <PrestamoMovModal
+              isCrearPrestamo={isCrearPrestamo}
+              isEditarMov={isEditarMov}
+              movDefault={movDefault}
+              prestamo={prestamo}
+              prestamoCalc={prestamoCalc}
+              empresaId={empresaId}
+              empresa={empresa}
+              usuario={user}
+              onClose={() => setShowPrestamoMov(null)}
+              onSaved={async () => { setShowPrestamoMov(null); await recargar(); }}
+            />
+          );
+        })()}
+
+        {/* MODAL: Histórico de movimientos del préstamo */}
+        {showPrestamoHist && prestamo && (
+          <PrestamoHistoricoModal
+            prestamo={prestamo}
+            movimientos={prestamoMovs}
+            prestamoCalc={prestamoCalc}
+            esConsulta={esConsulta}
+            usuario={user}
+            onClose={() => setShowPrestamoHist(false)}
+            onEditar={(mov) => { setShowPrestamoHist(false); setShowPrestamoMov({ tipo:mov.tipo, mov }); }}
+            onBorrar={async (id) => {
+              if (window.confirm('¿Borrar este movimiento? No se puede deshacer.')) {
+                await deletePrestamoMovimiento(id);
+                await recargarMovsPrestamo();
+              }
+            }}
+            onNuevo={() => { setShowPrestamoHist(false); setShowPrestamoMov({ tipo:'disposicion', mov:null }); }}
+          />
+        )}
+        
+        {importarECModal?.open && (() => {
+          const m = importarECModal;
+          const setM = (patch) => setImportarECModal(prev => ({ ...prev, ...patch }));
+          
+          // Procesar archivo subido
+          const handleArchivo = async (ev) => {
+            const file = ev.target.files?.[0];
+            if (!file) return;
+            setM({ archivo: file, parseando: true, resultado: null });
+            try {
+              const buf = await file.arrayBuffer();
+              const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true });
+              const res = parsearEstadoCuenta(XLSX, wb, empresaId, fechaConsulta);
+              if (res.errores.length > 0 && res.saldos.length === 0) {
+                alert(`Error al procesar el archivo:\n\n${res.errores.join('\n')}`);
+                setM({ parseando: false, archivo: null });
+                return;
+              }
+              // Para cada saldo, encontrar la cuenta de la BD que matchea
+              const saldosConCuenta = res.saldos.map(s => {
+                const cuentaBD = cuentas.find(c => s.cuentaConfig.match(c));
+                return {
+                  ...s,
+                  cuentaId: cuentaBD?.id || null,
+                  cuentaInfo: cuentaBD ? `${cuentaBD.banco} (${cuentaBD.numeroCuenta || 's/n'})` : `${s.cuentaConfig.label} - NO ENCONTRADA EN BD`,
+                  saldoActualBD: cuentaBD ? null : null, // se llena después
+                };
+              });
+              setM({ parseando: false, resultado: { ...res, saldosConCuenta }, sobreescribir: new Set() });
+            } catch (err) {
+              console.error('Error procesando Excel:', err);
+              alert('Error al procesar el archivo: ' + err.message);
+              setM({ parseando: false, archivo: null });
+            }
+            ev.target.value = '';
+          };
+          
+          // Aplicar todos los saldos seleccionados
+          const aplicar = async () => {
+            if (!m.resultado) return;
+            const aGuardarRaw = m.resultado.saldosConCuenta.filter(s => s.cuentaId !== null);
+            if (aGuardarRaw.length === 0) { alert('No hay saldos para guardar.'); return; }
+            
+            // DEDUP: si para la misma (cuentaId, fecha) hay varios saldos
+            // (ejemplo: hojas ENE/FEB/MAR USD BNMX todas dan fallback INICIAL al mismo día),
+            // preferimos: (1) los que NO son INICIAL, (2) el de la hoja más reciente.
+            const dedupMap = new Map(); // key = `${cuentaId}_${fecha}` → saldo
+            const ordenMes = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC','INVERSION'];
+            const scoreHoja = (hoja) => {
+              const hojaUp = hoja.toUpperCase();
+              for (let i = ordenMes.length - 1; i >= 0; i--) {
+                if (hojaUp.includes(ordenMes[i])) return i;
+              }
+              return -1;
+            };
+            for (const s of aGuardarRaw) {
+              const key = `${s.cuentaId}_${s.fecha}`;
+              const prev = dedupMap.get(key);
+              if (!prev) { dedupMap.set(key, s); continue; }
+              // Preferir el que NO es INICIAL
+              if (prev.esInicial && !s.esInicial) { dedupMap.set(key, s); continue; }
+              if (!prev.esInicial && s.esInicial) continue;
+              // Ambos del mismo tipo → preferir hoja del mes más reciente
+              if (scoreHoja(s.hojaOrigen) > scoreHoja(prev.hojaOrigen)) dedupMap.set(key, s);
+            }
+            const aGuardar = Array.from(dedupMap.values());
+            
+            setM({ guardando: true });
+            let guardados = 0, errores = 0;
+            for (const s of aGuardar) {
+              const cuenta = cuentas.find(c => c.id === s.cuentaId);
+              if (!cuenta) { errores++; continue; }
+              const pendActual = (s.fecha === fechaConsulta ? movsPend(cuenta.id, 'cierre') : 0); // mantener pendientes existentes para hoy
+              const ok = await upsertSaldoDiario({
+                cuentaId: cuenta.id, empresaId, fecha: s.fecha, momento: 'cierre',
+                saldoReal: s.saldo, movsPendientes: pendActual,
+              }, user?.nombre || 'desconocido');
+              if (ok) guardados++; else errores++;
+            }
+            // Recargar saldos del día actual
+            await recargar();
+            setM({ guardando: false });
+            alert(`✅ Se importaron ${guardados} saldo${guardados === 1 ? '' : 's'} de cierre.${errores > 0 ? `\n⚠️ ${errores} con error.` : ''}`);
+            setImportarECModal(null);
+          };
+          
+          // Agrupar saldos por cuenta para vista previa
+          const saldosPorCuenta = (m.resultado?.saldosConCuenta || []).reduce((acc, s) => {
+            const k = s.cuentaConfig.label;
+            if (!acc[k]) acc[k] = { config: s.cuentaConfig, cuentaInfo: s.cuentaInfo, cuentaId: s.cuentaId, items: [] };
+            acc[k].items.push(s);
+            return acc;
+          }, {});
+          // Ordenar items de cada cuenta por fecha desc
+          Object.values(saldosPorCuenta).forEach(g => g.items.sort((a, b) => b.fecha.localeCompare(a.fecha)));
+          
+          const totalSaldos = m.resultado?.saldos.length || 0;
+          const totalSinCuenta = (m.resultado?.saldosConCuenta || []).filter(s => !s.cuentaId).length;
+          
+          return (
+            <div onClick={(e) => { if (e.target === e.currentTarget) setImportarECModal(null); }}
+              style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:14}}>
+              <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:m.resultado ? 900 : 600,maxHeight:'92vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.4)'}}>
+                <div style={{padding:'16px 22px',borderBottom:`1px solid ${C.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',background:'#E3F2FD'}}>
+                  <div>
+                    <h3 style={{margin:0,fontSize:16,fontWeight:800,color:'#0D47A1'}}>📥 Importar Saldos del Estado de Cuenta</h3>
+                    <p style={{margin:'2px 0 0',fontSize:12,color:'#1565C0'}}>{empresa.nombre} · Solo se importan saldos de CIERRE</p>
+                  </div>
+                  <button onClick={() => setImportarECModal(null)} style={{background:'transparent',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
+                </div>
+                
+                <div style={{overflow:'auto',padding:18,flex:1}}>
+                  {!m.resultado ? (
+                    <>
+                      <div style={{background:'#FFFDE7',border:'1px solid #FFE082',borderRadius:8,padding:'12px 14px',marginBottom:16,fontSize:12,color:'#5D4037'}}>
+                        <div style={{fontWeight:700,marginBottom:6,color:'#E65100'}}>📋 ¿Cómo funciona?</div>
+                        <div style={{lineHeight:1.6}}>
+                          1. Sube el Excel del estado de cuenta del banco<br/>
+                          2. La app detecta automáticamente cada hoja → cuenta correspondiente<br/>
+                          3. Por cada hoja, extrae el <b>saldo final de cada día</b> (última fila)<br/>
+                          4. Vista previa para que confirmes antes de guardar<br/>
+                          5. Solo se actualiza el saldo de <b>CIERRE</b>; el inicio se hereda automáticamente
+                        </div>
+                      </div>
+                      
+                      {m.parseando ? (
+                        <div style={{textAlign:'center',padding:40,color:'#1976D2',fontSize:14}}>
+                          ⏳ Procesando archivo...
+                        </div>
+                      ) : (
+                        <label style={{background:'#E3F2FD',border:'2px dashed #1976D2',borderRadius:10,padding:'30px 20px',textAlign:'center',cursor:'pointer',display:'block'}}>
+                          <div style={{fontSize:42,marginBottom:8}}>📁</div>
+                          <div style={{fontSize:14,fontWeight:700,color:'#0D47A1',marginBottom:4}}>Subir archivo Excel</div>
+                          <div style={{fontSize:11,color:'#1565C0'}}>.xlsx · clic aquí para seleccionar</div>
+                          <input type="file" accept=".xlsx,.xls" onChange={handleArchivo} style={{display:'none'}}/>
+                        </label>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,flexWrap:'wrap',gap:8}}>
+                        <div style={{fontSize:13,fontWeight:700,color:C.navy}}>
+                          📊 Vista previa · {totalSaldos} saldo{totalSaldos === 1 ? '' : 's'} detectado{totalSaldos === 1 ? '' : 's'}
+                        </div>
+                        <div style={{fontSize:11,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                          <span style={{background:'#E8F5E9',color:'#1B5E20',padding:'2px 8px',borderRadius:6,fontWeight:700}}>✅ {totalSaldos - totalSinCuenta} listos</span>
+                          {totalSinCuenta > 0 && <span style={{background:'#FFEBEE',color:'#C62828',padding:'2px 8px',borderRadius:6,fontWeight:700}}>⚠ {totalSinCuenta} sin cuenta</span>}
+                          <button onClick={() => setM({ resultado: null, archivo: null })} style={{background:'transparent',border:'none',color:'#1976D2',cursor:'pointer',fontSize:11,fontWeight:600}}>← Subir otro archivo</button>
+                        </div>
+                      </div>
+                      
+                      {m.resultado.errores.length > 0 && (
+                        <div style={{background:'#FFEBEE',border:'1px solid #EF9A9A',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#C62828'}}>
+                          ⚠️ {m.resultado.errores.join(' · ')}
+                        </div>
+                      )}
+                      
+                      {m.resultado.hojasNoMapeadas.length > 0 && (
+                        <div style={{background:'#FFF3E0',border:'1px solid #FFB74D',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:11,color:'#E65100'}}>
+                          ℹ️ Hojas ignoradas: {m.resultado.hojasNoMapeadas.join(', ')}
+                        </div>
+                      )}
+                      
+                      {/* Tabla agrupada por cuenta */}
+                      {Object.entries(saldosPorCuenta).map(([label, g]) => {
+                        const sinCuenta = !g.cuentaId;
+                        const sym = g.config.match.toString().includes('USD') || (cuentas.find(c => c.id === g.cuentaId)?.moneda === 'USD') ? '$' : '$';
+                        return (
+                          <div key={label} style={{border:`1px solid ${sinCuenta ? '#EF9A9A' : C.border}`,borderRadius:8,marginBottom:12,overflow:'hidden'}}>
+                            <div style={{background: sinCuenta ? '#FFEBEE' : '#F8FAFC', padding:'10px 14px', borderBottom:`1px solid ${C.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+                              <div>
+                                <div style={{fontSize:13,fontWeight:800,color: sinCuenta ? '#C62828' : C.navy}}>
+                                  {sinCuenta ? '⚠️' : '✅'} {g.config.label}
+                                </div>
+                                <div style={{fontSize:11,color:C.muted,marginTop:2}}>{g.cuentaInfo}</div>
+                              </div>
+                              <div style={{fontSize:11,color:C.muted}}>{g.items.length} día{g.items.length === 1 ? '' : 's'}</div>
+                            </div>
+                            {!sinCuenta && (
+                              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                                <thead>
+                                  <tr style={{background:'#FAFBFC',borderBottom:`1px solid ${C.border}`}}>
+                                    <th style={{padding:'6px 14px',textAlign:'left',color:C.muted,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Fecha</th>
+                                    <th style={{padding:'6px 14px',textAlign:'right',color:C.muted,fontWeight:700,fontSize:10,textTransform:'uppercase'}}>Saldo final</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {g.items.map((it, idx) => (
+                                    <tr key={`${it.fecha}_${idx}`} style={{borderBottom:`1px solid ${C.border}`}}>
+                                      <td style={{padding:'6px 14px',whiteSpace:'nowrap',color:C.text}}>
+                                        {it.fecha}
+                                        {it.esInicial && <span style={{marginLeft:6,background:'#FFF3E0',color:'#E65100',padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700}} title="Saldo inicial (sin movimientos en esta hoja)">INICIAL</span>}
+                                      </td>
+                                      <td style={{padding:'6px 14px',textAlign:'right',fontFamily:'monospace',fontWeight:700,color:C.navy}}>
+                                        ${(+it.saldo).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </div>
+                        );
+                      })}
+                      
+                      {totalSinCuenta > 0 && (
+                        <div style={{background:'#FFFDE7',border:'1px solid #FFE082',borderRadius:8,padding:'10px 14px',marginTop:8,fontSize:11,color:'#5D4037'}}>
+                          💡 Los saldos sin cuenta se omitirán. Verifica que las cuentas existan en ⚙️ Cuentas.
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+                
+                {m.resultado && (
+                  <div style={{padding:'12px 22px',borderTop:`1px solid ${C.border}`,display:'flex',justifyContent:'flex-end',gap:10}}>
+                    <button onClick={() => setImportarECModal(null)} disabled={m.guardando} style={{background:'#F1F5F9',color:'#374151',border:'none',padding:'10px 20px',borderRadius:8,fontSize:13,fontWeight:700,cursor:m.guardando?'not-allowed':'pointer',fontFamily:'inherit'}}>Cancelar</button>
+                    <button onClick={aplicar} disabled={m.guardando || (totalSaldos - totalSinCuenta) === 0} style={{background:m.guardando||(totalSaldos-totalSinCuenta)===0?'#B0BEC5':'#1B5E20',color:'#fff',border:'none',padding:'10px 20px',borderRadius:8,fontSize:13,fontWeight:700,cursor:m.guardando||(totalSaldos-totalSinCuenta)===0?'not-allowed':'pointer',fontFamily:'inherit'}}>
+                      {m.guardando ? '⏳ Guardando...' : `💾 Aplicar ${totalSaldos - totalSinCuenta} saldo${(totalSaldos-totalSinCuenta)===1?'':'s'}`}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -5984,6 +7499,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
     const [fechas, setFechas] = useState([]);
     const [loading, setLoading] = useState(true);
     const [periodo, setPeriodo] = useState(30);
+    const [fechaLibre, setFechaLibre] = useState('');
 
     useEffect(() => {
       const cargar = async () => {
@@ -6004,9 +7520,35 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
     };
     const hoy = today();
 
+    // Agrupar por fecha: {fecha: {momentos: ['inicio','cierre'], updatedByInicio, updatedByCierre}}
+    const fechasAgrupadas = (() => {
+      const map = new Map();
+      fechas.forEach(f => {
+        if (!map.has(f.fecha)) {
+          map.set(f.fecha, { fecha: f.fecha, tieneInicio: false, tieneCierre: false, byInicio: null, byCierre: null });
+        }
+        const g = map.get(f.fecha);
+        if (f.momento === 'inicio') { g.tieneInicio = true; g.byInicio = f.updatedBy; }
+        if (f.momento === 'cierre') { g.tieneCierre = true; g.byCierre = f.updatedBy; }
+      });
+      // Orden descendente por fecha (más reciente primero)
+      return Array.from(map.values()).sort((a, b) => b.fecha.localeCompare(a.fecha));
+    })();
+
+    const irAFechaLibre = () => {
+      if (!fechaLibre) { alert('Selecciona una fecha primero.'); return; }
+      // Si es hoy, cerrar modal (se vuelve al modo "hoy" normal)
+      if (fechaLibre === hoy) {
+        onSelectFecha(null, null); // null fecha = volver a hoy
+        return;
+      }
+      // Pasar la fecha sin momento → se mostrarán ambos cuadros (inicio y cierre)
+      onSelectFecha(fechaLibre, null);
+    };
+
     return (
       <div onClick={onClose} style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(31,41,55,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:20}}>
-        <div onClick={(e) => e.stopPropagation()} style={{background:'#fff',borderRadius:14,padding:24,maxWidth:560,width:'100%',maxHeight:'90vh',overflow:'auto',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+        <div onClick={(e) => e.stopPropagation()} style={{background:'#fff',borderRadius:14,padding:24,maxWidth:600,width:'100%',maxHeight:'90vh',overflow:'auto',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18,paddingBottom:14,borderBottom:`1px solid ${C.border}`}}>
             <div>
               <h3 style={{fontSize:17,fontWeight:800,color:C.navy,margin:0}}>📜 Histórico de Saldos</h3>
@@ -6015,36 +7557,357 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             <button onClick={onClose} style={{background:'transparent',border:'none',fontSize:24,cursor:'pointer',color:C.muted,padding:0,lineHeight:1}}>×</button>
           </div>
 
+          {/* Selector de fecha libre — para ir a cualquier fecha (incluso sin captura) */}
+          <div style={{background:'#E3F2FD',border:'1px solid #BBDEFB',borderRadius:10,padding:'12px 14px',marginBottom:14}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#0D47A1',marginBottom:8,letterSpacing:0.3,textTransform:'uppercase'}}>🔍 Ir a fecha específica</div>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <input type="date" value={fechaLibre} onChange={(e) => setFechaLibre(e.target.value)} max={hoy}
+                style={{flex:1,padding:'7px 10px',border:`1px solid ${C.border}`,borderRadius:7,fontSize:13,fontFamily:'inherit',outline:'none'}}/>
+              <button onClick={irAFechaLibre} disabled={!fechaLibre}
+                style={{background:fechaLibre ? '#1976D2' : '#B0BEC5',color:'#fff',border:'none',padding:'7px 18px',borderRadius:7,fontSize:12,fontWeight:700,cursor:fechaLibre?'pointer':'not-allowed',fontFamily:'inherit',whiteSpace:'nowrap'}}>
+                Ir →
+              </button>
+            </div>
+            <div style={{fontSize:10,color:'#1565C0',marginTop:6,fontStyle:'italic'}}>
+              💡 Útil para capturar saldos de días que no tienen registro previo (ej: 30/04, 02/05, etc.)
+            </div>
+          </div>
+
           <div style={{display:'flex',gap:6,marginBottom:14,alignItems:'center'}}>
-            <span style={{fontSize:12,color:C.muted}}>Periodo:</span>
+            <span style={{fontSize:12,color:C.muted}}>O elige de los días ya capturados:</span>
             {[7, 30, 90].map(p => (
               <button key={p} onClick={() => setPeriodo(p)} style={{background:periodo===p?C.navy:'#fff',color:periodo===p?'#fff':C.text,border:`1px solid ${periodo===p?C.navy:C.border}`,padding:'4px 10px',borderRadius:6,fontSize:11,cursor:'pointer',fontWeight:600,fontFamily:'inherit'}}>{p} días</button>
             ))}
           </div>
 
-          {loading ? <div style={{textAlign:'center',padding:30,color:C.muted}}>Cargando...</div> : fechas.length === 0 ? (
+          {loading ? <div style={{textAlign:'center',padding:30,color:C.muted}}>Cargando...</div> : fechasAgrupadas.length === 0 ? (
             <div style={{textAlign:'center',padding:30,color:C.muted,fontSize:13}}>No hay registros en este periodo.</div>
           ) : (
-            <div style={{maxHeight:400,overflow:'auto'}}>
-              {fechas.map(f => {
-                const esCierre = f.momento === 'cierre';
-                const colorMomento = esCierre ? '#1B5E20' : C.navy;
-                const fondoMomento = esCierre ? '#E8F5E9' : '#E8EAF6';
+            <div style={{maxHeight:380,overflow:'auto'}}>
+              {fechasAgrupadas.map(g => {
+                const ambosCapturados = g.tieneInicio && g.tieneCierre;
+                const colorTitulo = ambosCapturados ? '#1B5E20' : C.navy;
                 return (
-                  <button key={`${f.fecha}__${f.momento}`} onClick={() => onSelectFecha(f.fecha, f.momento)} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 12px',marginBottom:6,background:f.fecha===hoy?'#FAFAFA':'#FAFAFA',border:`1px solid ${C.border}`,borderRadius:8,cursor:'pointer',textAlign:'left',fontFamily:'inherit'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:10}}>
-                      <span style={{background:fondoMomento,color:colorMomento,padding:'4px 10px',borderRadius:6,fontSize:10,fontWeight:800,whiteSpace:'nowrap'}}>{esCierre ? '🌙 CIERRE' : '🌅 INICIO'}</span>
-                      <div>
-                        <div style={{fontSize:13,fontWeight:700,color:colorMomento,textTransform:'capitalize'}}>{fmtFecha(f.fecha)}{f.fecha === hoy && <span style={{marginLeft:8,background:colorMomento,color:'#fff',padding:'2px 6px',borderRadius:4,fontSize:9,fontWeight:700}}>HOY</span>}</div>
-                        <div style={{fontSize:10,color:C.muted,marginTop:2}}>Capturó: {f.updatedBy || '—'}</div>
+                  <button key={g.fecha} onClick={() => onSelectFecha(g.fecha, null)}
+                    style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 12px',marginBottom:6,background:g.fecha===hoy?'#FAFAFA':'#FAFAFA',border:`1px solid ${C.border}`,borderRadius:8,cursor:'pointer',textAlign:'left',fontFamily:'inherit'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10,flex:1}}>
+                      {/* Chips de momentos capturados */}
+                      <div style={{display:'flex',gap:4,flexShrink:0}}>
+                        {g.tieneInicio && (
+                          <span style={{background:'#E8EAF6',color:C.navy,padding:'4px 8px',borderRadius:6,fontSize:9,fontWeight:800,whiteSpace:'nowrap'}}>🌅 INI</span>
+                        )}
+                        {g.tieneCierre && (
+                          <span style={{background:'#E8F5E9',color:'#1B5E20',padding:'4px 8px',borderRadius:6,fontSize:9,fontWeight:800,whiteSpace:'nowrap'}}>🌙 CIE</span>
+                        )}
+                      </div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:700,color:colorTitulo,textTransform:'capitalize'}}>
+                          {fmtFecha(g.fecha)}
+                          {g.fecha === hoy && <span style={{marginLeft:8,background:colorTitulo,color:'#fff',padding:'2px 6px',borderRadius:4,fontSize:9,fontWeight:700}}>HOY</span>}
+                        </div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:2}}>
+                          {g.tieneInicio && g.tieneCierre
+                            ? `Inicio: ${g.byInicio || '—'} · Cierre: ${g.byCierre || '—'}`
+                            : g.tieneInicio
+                              ? `Inicio: ${g.byInicio || '—'} · Cierre: pendiente`
+                              : `Inicio: pendiente · Cierre: ${g.byCierre || '—'}`}
+                        </div>
                       </div>
                     </div>
-                    <div style={{fontSize:14,color:colorMomento}}>👁</div>
+                    <div style={{fontSize:14,color:colorTitulo}}>👁</div>
                   </button>
                 );
               })}
             </div>
           )}
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════════
+  // MODAL: Nuevo / Editar movimiento de préstamo (o crear préstamo)
+  // ═══════════════════════════════════════════════════════════════════
+  const PrestamoMovModal = ({ isCrearPrestamo, isEditarMov, movDefault, prestamo, prestamoCalc, empresaId, empresa, usuario, onClose, onSaved }) => {
+    // Si crear préstamo: campos del préstamo
+    const [banco, setBanco] = useState('BANAMEX');
+    const [numeroCuenta, setNumeroCuenta] = useState('');
+    const [montoAutorizado, setMontoAutorizado] = useState('');
+    const [fechaRecepcion, setFechaRecepcion] = useState(today());
+    // Si movimiento: campos del movimiento
+    const [tipoMov, setTipoMov] = useState(movDefault.tipo || 'disposicion');
+    const [fechaMov, setFechaMov] = useState(movDefault.fecha || today());
+    const [montoMov, setMontoMov] = useState(movDefault.monto !== '' && movDefault.monto != null ? String(movDefault.monto) : '');
+    const [conceptoMov, setConceptoMov] = useState(movDefault.concepto || '');
+    const [guardando, setGuardando] = useState(false);
+
+    const parseMonto = (v) => parseFloat(String(v).replace(/[^\d.]/g, '')) || 0;
+
+    // Preview del efecto del movimiento (solo cuando no es crear-prestamo)
+    const previewEfecto = useMemo(() => {
+      if (isCrearPrestamo || !prestamoCalc) return null;
+      const monto = parseMonto(montoMov);
+      let utilizadoNuevo = prestamoCalc.utilizado;
+      if (isEditarMov) {
+        // Si editamos, primero revertir el efecto del movimiento original
+        if (movDefault.tipo === 'disposicion') utilizadoNuevo -= +movDefault.monto || 0;
+        else if (movDefault.tipo === 'pago')   utilizadoNuevo += +movDefault.monto || 0;
+      }
+      if (tipoMov === 'disposicion') utilizadoNuevo += monto;
+      else if (tipoMov === 'pago')   utilizadoNuevo -= monto;
+      utilizadoNuevo = Math.max(0, utilizadoNuevo);
+      const bloqueadoNuevo = Math.max(0, prestamoCalc.autorizado - utilizadoNuevo);
+      return {
+        utilizadoAntes: prestamoCalc.utilizado,
+        utilizadoDespues: utilizadoNuevo,
+        bloqueadoAntes: prestamoCalc.bloqueado,
+        bloqueadoDespues: bloqueadoNuevo,
+      };
+    }, [montoMov, tipoMov, isCrearPrestamo, isEditarMov, prestamoCalc, movDefault]);
+
+    const puedeGuardar = isCrearPrestamo
+      ? (banco.trim() && parseMonto(montoAutorizado) > 0)
+      : (parseMonto(montoMov) > 0);
+
+    const handleGuardar = async () => {
+      if (!puedeGuardar || guardando) return;
+      setGuardando(true);
+      try {
+        if (isCrearPrestamo) {
+          // Crear préstamo nuevo + movimiento "inicial" informativo
+          const monto = parseMonto(montoAutorizado);
+          const nuevoId = await upsertPrestamo({
+            empresaId,
+            banco: banco.trim(),
+            numeroCuenta: numeroCuenta.trim() || null,
+            montoAutorizado: monto,
+            moneda: 'MXN',
+            fechaRecepcion: fechaRecepcion || null,
+            concepto: `Préstamo recibido de ${banco.trim()}`,
+            activo: true,
+          }, usuario?.nombre);
+          if (nuevoId) {
+            await upsertPrestamoMovimiento({
+              prestamoId: nuevoId,
+              empresaId,
+              fecha: fechaRecepcion || today(),
+              tipo: 'inicial',
+              monto: monto,
+              concepto: `Recepción de préstamo ${banco.trim()}`,
+            }, usuario?.nombre);
+          }
+        } else {
+          // Crear o editar movimiento
+          await upsertPrestamoMovimiento({
+            id: isEditarMov ? movDefault.id : undefined,
+            prestamoId: prestamo.id,
+            empresaId,
+            fecha: fechaMov,
+            tipo: tipoMov,
+            monto: parseMonto(montoMov),
+            concepto: conceptoMov.trim() || null,
+          }, usuario?.nombre);
+        }
+        await onSaved();
+      } catch (err) {
+        console.error('guardar préstamo:', err);
+        alert('No se pudo guardar. Revisa la consola.');
+      } finally {
+        setGuardando(false);
+      }
+    };
+
+    return (
+      <div onClick={onClose} style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(31,41,55,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:20,fontFamily:'"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',WebkitFontSmoothing:'antialiased',MozOsxFontSmoothing:'grayscale',textRendering:'optimizeLegibility'}}>
+        <div onClick={(e) => e.stopPropagation()} style={{background:'#fff',borderRadius:14,padding:24,maxWidth:460,width:'100%',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16,paddingBottom:12,borderBottom:`1px solid ${C.border}`}}>
+            <div>
+              <h3 style={{fontSize:16,fontWeight:800,color:C.navy,margin:0}}>
+                {isCrearPrestamo ? '💰 Registrar préstamo' : (isEditarMov ? '✎ Editar movimiento' : '+ Nuevo movimiento')}
+              </h3>
+              <p style={{fontSize:11,color:C.muted,margin:'4px 0 0'}}>
+                {isCrearPrestamo ? `Empresa: ${empresa?.nombre || ''}` : `${prestamo?.banco || ''}${prestamo?.numeroCuenta ? ' · Cta. ' + prestamo.numeroCuenta : ''}`}
+              </p>
+            </div>
+            <button onClick={onClose} style={{background:'transparent',border:'none',fontSize:22,cursor:'pointer',color:C.muted,padding:0,lineHeight:1}}>×</button>
+          </div>
+
+          {isCrearPrestamo ? (
+            <>
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:11,color:C.muted,display:'block',marginBottom:4,fontWeight:600}}>Banco</label>
+                <input value={banco} onChange={(e) => setBanco(e.target.value)} style={{width:'100%',border:`1px solid ${C.border}`,padding:'8px 10px',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:11,color:C.muted,display:'block',marginBottom:4,fontWeight:600}}>Número de cuenta (opcional)</label>
+                <input value={numeroCuenta} onChange={(e) => setNumeroCuenta(e.target.value)} placeholder="Ej: 1032831260" style={{width:'100%',border:`1px solid ${C.border}`,padding:'8px 10px',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:11,color:C.muted,display:'block',marginBottom:4,fontWeight:600}}>Monto autorizado</label>
+                <input value={montoAutorizado} onChange={(e) => setMontoAutorizado(e.target.value.replace(/[^\d.]/g, ''))} placeholder="2900000" style={{width:'100%',border:`1px solid ${C.border}`,padding:'8px 10px',borderRadius:6,fontSize:14,fontFamily:'monospace',fontVariantNumeric:'tabular-nums'}}/>
+                {parseMonto(montoAutorizado) > 0 && (
+                  <div style={{fontSize:11,color:C.muted,marginTop:4}}>${fmt(parseMonto(montoAutorizado))} MXN</div>
+                )}
+              </div>
+              <div style={{marginBottom:16}}>
+                <label style={{fontSize:11,color:C.muted,display:'block',marginBottom:4,fontWeight:600}}>Fecha de recepción</label>
+                <input type="date" value={fechaRecepcion} onChange={(e) => setFechaRecepcion(e.target.value)} style={{width:'100%',border:`1px solid ${C.border}`,padding:'8px 10px',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Tabs Disposición / Pago */}
+              <div style={{display:'flex',gap:6,padding:4,background:'#F3F4F6',borderRadius:8,marginBottom:14}}>
+                <button onClick={() => setTipoMov('disposicion')} style={{flex:1,padding:'8px',background:tipoMov==='disposicion'?'#fff':'transparent',border:tipoMov==='disposicion'?`1px solid ${C.border}`:'1px solid transparent',borderRadius:6,fontSize:12,fontWeight:tipoMov==='disposicion'?700:500,color:tipoMov==='disposicion'?C.navy:C.muted,cursor:'pointer',fontFamily:'inherit'}}>↓ Disposición</button>
+                <button onClick={() => setTipoMov('pago')} style={{flex:1,padding:'8px',background:tipoMov==='pago'?'#fff':'transparent',border:tipoMov==='pago'?`1px solid ${C.border}`:'1px solid transparent',borderRadius:6,fontSize:12,fontWeight:tipoMov==='pago'?700:500,color:tipoMov==='pago'?'#92400E':C.muted,cursor:'pointer',fontFamily:'inherit'}}>↑ Pago</button>
+              </div>
+
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:11,color:C.muted,display:'block',marginBottom:4,fontWeight:600}}>Fecha</label>
+                <input type="date" value={fechaMov} onChange={(e) => setFechaMov(e.target.value)} style={{width:'100%',border:`1px solid ${C.border}`,padding:'8px 10px',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:11,color:C.muted,display:'block',marginBottom:4,fontWeight:600}}>Monto</label>
+                <input value={montoMov} onChange={(e) => setMontoMov(e.target.value.replace(/[^\d.]/g, ''))} placeholder="500000" style={{width:'100%',border:`1px solid ${C.border}`,padding:'8px 10px',borderRadius:6,fontSize:14,fontFamily:'monospace',fontVariantNumeric:'tabular-nums'}}/>
+                {parseMonto(montoMov) > 0 && (
+                  <div style={{fontSize:11,color:C.muted,marginTop:4}}>${fmt(parseMonto(montoMov))} MXN</div>
+                )}
+              </div>
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:11,color:C.muted,display:'block',marginBottom:4,fontWeight:600}}>Concepto</label>
+                <input value={conceptoMov} onChange={(e) => setConceptoMov(e.target.value)} placeholder="Ej: Pago nómina quincena 1" style={{width:'100%',border:`1px solid ${C.border}`,padding:'8px 10px',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              </div>
+
+              {/* Preview del efecto */}
+              {previewEfecto && parseMonto(montoMov) > 0 && (
+                <div style={{background:'#F9FAFB',border:`1px solid ${C.border}`,borderRadius:8,padding:'10px 12px',marginBottom:16}}>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:6,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Después de este movimiento:</div>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3,fontVariantNumeric:'tabular-nums'}}>
+                    <span style={{color:C.muted}}>Bloqueado</span>
+                    <span>${fmt(previewEfecto.bloqueadoAntes)} → <span style={{color:tipoMov==='disposicion'?'#1E40AF':'#92400E',fontWeight:700}}>${fmt(previewEfecto.bloqueadoDespues)}</span></span>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12,fontVariantNumeric:'tabular-nums'}}>
+                    <span style={{color:C.muted}}>Utilizado</span>
+                    <span>${fmt(previewEfecto.utilizadoAntes)} → <span style={{color:tipoMov==='disposicion'?'#1E40AF':'#92400E',fontWeight:700}}>${fmt(previewEfecto.utilizadoDespues)}</span></span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={onClose} disabled={guardando} style={{flex:1,background:'#fff',border:`1px solid ${C.border}`,color:C.text,padding:'9px',borderRadius:7,fontSize:13,fontWeight:600,cursor:guardando?'not-allowed':'pointer',fontFamily:'inherit'}}>Cancelar</button>
+            <button onClick={handleGuardar} disabled={!puedeGuardar || guardando} style={{flex:1,background:puedeGuardar?C.navy:'#9CA3AF',color:'#fff',border:'none',padding:'9px',borderRadius:7,fontSize:13,fontWeight:700,cursor:(!puedeGuardar||guardando)?'not-allowed':'pointer',fontFamily:'inherit'}}>
+              {guardando ? 'Guardando...' : (isCrearPrestamo ? 'Crear préstamo' : 'Guardar')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════════
+  // MODAL: Histórico de movimientos del préstamo
+  // ═══════════════════════════════════════════════════════════════════
+  const PrestamoHistoricoModal = ({ prestamo, movimientos, prestamoCalc, esConsulta, onClose, onEditar, onBorrar, onNuevo }) => {
+    // Calcular saldo bloqueado después de cada movimiento (recorrido cronológico)
+    const movsConSaldo = useMemo(() => {
+      let utilAcum = 0;
+      return (movimientos || []).map(m => {
+        if (m.tipo === 'disposicion') utilAcum += +m.monto || 0;
+        else if (m.tipo === 'pago')   utilAcum -= +m.monto || 0;
+        utilAcum = Math.max(0, utilAcum);
+        return { ...m, bloqueadoDespues: Math.max(0, (+prestamo.montoAutorizado || 0) - utilAcum) };
+      });
+    }, [movimientos, prestamo]);
+
+    const tipoBadge = (tipo) => {
+      if (tipo === 'inicial')     return { bg:'#D1FAE5', color:'#065F46', text:'Inicial', sign:'+' };
+      if (tipo === 'disposicion') return { bg:'#DBEAFE', color:'#1E40AF', text:'Disposición', sign:'−' };
+      if (tipo === 'pago')        return { bg:'#FEF3C7', color:'#92400E', text:'Pago', sign:'+' };
+      return { bg:'#F3F4F6', color:'#374151', text:tipo, sign:'' };
+    };
+
+    return (
+      <div onClick={onClose} style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(31,41,55,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:20,fontFamily:'"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',WebkitFontSmoothing:'antialiased',MozOsxFontSmoothing:'grayscale',textRendering:'optimizeLegibility'}}>
+        <div onClick={(e) => e.stopPropagation()} style={{background:'#fff',borderRadius:14,padding:24,maxWidth:760,width:'100%',maxHeight:'85vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:14,paddingBottom:12,borderBottom:`1px solid ${C.border}`}}>
+            <div>
+              <h3 style={{fontSize:16,fontWeight:800,color:C.navy,margin:0}}>📜 Histórico del préstamo</h3>
+              <p style={{fontSize:11,color:C.muted,margin:'4px 0 0'}}>{prestamo.banco}{prestamo.numeroCuenta ? ` · Cta. ${prestamo.numeroCuenta}` : ''}</p>
+            </div>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              {!esConsulta && (
+                <button onClick={onNuevo} style={{background:C.navy,color:'#fff',border:'none',padding:'7px 14px',borderRadius:7,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>+ Nuevo movimiento</button>
+              )}
+              <button onClick={onClose} style={{background:'transparent',border:'none',fontSize:22,cursor:'pointer',color:C.muted,padding:0,lineHeight:1}}>×</button>
+            </div>
+          </div>
+
+          {/* KPIs */}
+          {prestamoCalc && (
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3, 1fr)',gap:10,marginBottom:14}}>
+              <div style={{background:'#F9FAFB',borderRadius:8,padding:'10px 12px'}}>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Autorizado</div>
+                <div style={{fontSize:16,fontWeight:800,marginTop:2,fontFamily:'monospace',fontVariantNumeric:'tabular-nums',color:'#1F2937'}}>${fmt(prestamoCalc.autorizado)}</div>
+              </div>
+              <div style={{background:'#EFF6FF',borderRadius:8,padding:'10px 12px'}}>
+                <div style={{fontSize:10,color:'#1E40AF',fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Utilizado</div>
+                <div style={{fontSize:16,fontWeight:800,marginTop:2,fontFamily:'monospace',fontVariantNumeric:'tabular-nums',color:'#1E40AF'}}>${fmt(prestamoCalc.utilizado)}</div>
+              </div>
+              <div style={{background:'#FEF3C7',borderRadius:8,padding:'10px 12px'}}>
+                <div style={{fontSize:10,color:'#92400E',fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Bloqueado</div>
+                <div style={{fontSize:16,fontWeight:800,marginTop:2,fontFamily:'monospace',fontVariantNumeric:'tabular-nums',color:'#92400E'}}>${fmt(prestamoCalc.bloqueado)}</div>
+              </div>
+            </div>
+          )}
+
+          {/* Tabla */}
+          <div style={{flex:1,overflowY:'auto',border:`1px solid ${C.border}`,borderRadius:8}}>
+            {movsConSaldo.length === 0 ? (
+              <div style={{padding:40,textAlign:'center',color:C.muted}}>
+                <div style={{fontSize:36,marginBottom:8}}>📋</div>
+                <div style={{fontSize:13}}>Sin movimientos registrados todavía.</div>
+              </div>
+            ) : (
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead style={{background:'#F9FAFB',position:'sticky',top:0}}>
+                  <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                    <th style={{textAlign:'left',padding:'9px 10px',fontWeight:700,color:C.muted,fontSize:10,letterSpacing:0.5,textTransform:'uppercase'}}>Fecha</th>
+                    <th style={{textAlign:'left',padding:'9px 10px',fontWeight:700,color:C.muted,fontSize:10,letterSpacing:0.5,textTransform:'uppercase'}}>Tipo</th>
+                    <th style={{textAlign:'left',padding:'9px 10px',fontWeight:700,color:C.muted,fontSize:10,letterSpacing:0.5,textTransform:'uppercase'}}>Concepto</th>
+                    <th style={{textAlign:'right',padding:'9px 10px',fontWeight:700,color:C.muted,fontSize:10,letterSpacing:0.5,textTransform:'uppercase'}}>Monto</th>
+                    <th style={{textAlign:'right',padding:'9px 10px',fontWeight:700,color:C.muted,fontSize:10,letterSpacing:0.5,textTransform:'uppercase'}}>Bloqueado</th>
+                    <th style={{width:80}}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {movsConSaldo.map((m, idx) => {
+                    const b = tipoBadge(m.tipo);
+                    return (
+                      <tr key={m.id || idx} style={{borderBottom:idx<movsConSaldo.length-1?`1px solid ${C.border}`:'none'}}>
+                        <td style={{padding:'9px 10px',fontFamily:'monospace',fontSize:11,color:'#1F2937'}}>{m.fecha}</td>
+                        <td style={{padding:'9px 10px'}}>
+                          <span style={{padding:'2px 9px',background:b.bg,color:b.color,borderRadius:999,fontSize:10,fontWeight:700,letterSpacing:0.3}}>{b.text}</span>
+                        </td>
+                        <td style={{padding:'9px 10px',color:'#1F2937'}}>{m.concepto || '—'}</td>
+                        <td style={{padding:'9px 10px',textAlign:'right',fontFamily:'monospace',fontVariantNumeric:'tabular-nums',fontWeight:700,color:b.color}}>{b.sign}${fmt(m.monto)}</td>
+                        <td style={{padding:'9px 10px',textAlign:'right',fontFamily:'monospace',fontVariantNumeric:'tabular-nums',color:C.muted}}>${fmt(m.bloqueadoDespues)}</td>
+                        <td style={{textAlign:'center',padding:'4px 6px'}}>
+                          {!esConsulta && m.tipo !== 'inicial' && (
+                            <div style={{display:'flex',gap:4,justifyContent:'center'}}>
+                              <button onClick={() => onEditar(m)} title="Editar" style={{background:'transparent',border:`1px solid ${C.border}`,padding:'3px 6px',borderRadius:4,fontSize:10,cursor:'pointer',color:C.muted,fontFamily:'inherit'}}>✎</button>
+                              <button onClick={() => onBorrar(m.id)} title="Borrar" style={{background:'transparent',border:`1px solid #FCA5A5`,padding:'3px 6px',borderRadius:4,fontSize:10,cursor:'pointer',color:'#DC2626',fontFamily:'inherit'}}>🗑</button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -6253,6 +8116,9 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             <button onClick={()=>addClase(ncInput)} style={btnStyle}>Agregar</button>
           </div>
         </div>
+        {esSuperadmin && (
+          <HistorialActividad C={C} btnStyle={btnStyle} inputStyle={inputStyle} />
+        )}
       </div>
     );
   };
@@ -6311,6 +8177,935 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
           <button onClick={()=>setModalInv(null)} style={{...btnStyle,background:"#F1F5F9",color:C.text}}>Cancelar</button>
           <button onClick={()=>saveInvoice(form)} style={btnStyle}>Guardar</button>
         </div>
+      </ModalShell>
+    );
+  };
+
+  /* ── Egreso No Facturado Modal ──────────────────────────────────── */
+  const EgresoModal = () => {
+    const [form, setForm] = useState({
+      ...modalEgreso,
+      // Si la categoría inicial no existe en clases (caso default 'Nómina'), usar la primera disponible
+      categoriaEgreso: (modalEgreso.categoriaEgreso && clases.includes(modalEgreso.categoriaEgreso))
+        ? modalEgreso.categoriaEgreso
+        : (clases[0] || ''),
+    });
+    const set = (k, v) => setForm(f => ({...f, [k]: v}));
+    const editando = !form._esNuevo;
+    return (
+      <ModalShell title={editando ? "Editar Otro Pago" : "💵 Nuevo Otro Pago"} onClose={() => setModalEgreso(null)}>
+        <div style={{background:'#FFEBEE',border:'1px solid #FFCDD2',borderRadius:8,padding:'10px 14px',marginBottom:18,fontSize:12,color:'#B71C1C',display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:18}}>💵</span>
+          <div>
+            <b>Egreso sin factura</b> — pagos como nómina, comisiones, impuestos, etc. que no tienen factura formal pero salen del banco.
+            <div style={{fontSize:11,marginTop:2,opacity:0.85}}>Aparecerán en el Reporte Diario junto a los pagos de facturas, pero NO en el Dashboard ni gráficas.</div>
+          </div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <Field label="Concepto *">
+            <input value={form.concepto} onChange={e => set('concepto', e.target.value)}
+              placeholder="Ej: Sueldos y salarios Operadores" style={inputStyle} autoFocus/>
+          </Field>
+          <Field label="Clasificación">
+            <select value={form.categoriaEgreso} onChange={e => set('categoriaEgreso', e.target.value)} style={inputStyle}>
+              {clases.length === 0 && <option value="">— Sin clasificaciones configuradas —</option>}
+              {clases.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Segmento / Rubro">
+            <input value={form.segmentoEgreso} onChange={e => set('segmentoEgreso', e.target.value)}
+              placeholder="Ej: Transporte, TAS, AFE…" style={inputStyle}/>
+          </Field>
+          <Field label="Moneda">
+            <select value={form.moneda} onChange={e => set('moneda', e.target.value)} style={inputStyle}>
+              <option value="MXN">MXN</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+            </select>
+          </Field>
+          <Field label="Monto *">
+            <input type="number" step="0.01" value={form.total} onChange={e => set('total', e.target.value)}
+              placeholder="0.00" style={inputStyle}/>
+          </Field>
+          <Field label="Fecha de pago">
+            <input type="date" value={form.fechaProgramacion} onChange={e => set('fechaProgramacion', e.target.value)} style={inputStyle}/>
+          </Field>
+          <Field label="Estado del pago">
+            <select value={form._yaPagado ? 'pagado' : 'programado'}
+              onChange={e => set('_yaPagado', e.target.value === 'pagado')} style={inputStyle}>
+              <option value="pagado">✅ Ya pagado</option>
+              <option value="programado">📅 Programado</option>
+            </select>
+          </Field>
+          <Field label="Método de pago">
+            <select value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)} style={inputStyle}>
+              <option value="banco">🏦 Banco (sale del saldo)</option>
+              <option value="tdc">💳 Tarjeta de Crédito (no sale del saldo)</option>
+              <option value="otro">➕ Otro</option>
+            </select>
+          </Field>
+          <div style={{gridColumn:'span 2'}}>
+            <Field label="Notas">
+              <input value={form.notas} onChange={e => set('notas', e.target.value)}
+                placeholder="Ej: NOM 2DA QNA ABR" style={inputStyle}/>
+            </Field>
+          </div>
+        </div>
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,marginTop:24,alignItems:'center'}}>
+          {!editando ? (
+            <button onClick={() => { setModalEgreso(null); setModalImportarEgresos({ rows: [], categoriaEgreso: '', metodoPago: 'banco', fechaPago: today(), moneda: currency, _yaPagado: true }); }}
+              style={{...btnStyle, background:'#1976D2', padding:'9px 16px', fontSize:13}}>
+              📥 Importar varios desde Excel
+            </button>
+          ) : <div/>}
+          <div style={{display:'flex',gap:10}}>
+            <button onClick={() => setModalEgreso(null)} style={{...btnStyle, background:'#F1F5F9', color:C.text}}>Cancelar</button>
+            <button onClick={() => saveEgreso(form)} style={{...btnStyle, background:'#C62828'}}>Guardar Egreso</button>
+          </div>
+        </div>
+      </ModalShell>
+    );
+  };
+
+  /* ── Importar Egresos desde Excel Modal ────────────────────────── */
+  const ImportarEgresosModal = () => {
+    const [form, setForm] = useState({...modalImportarEgresos});
+    const [textoPegado, setTextoPegado] = useState('');
+    // Estados nuevos para edición individual y masiva
+    const [selectedRows, setSelectedRows] = useState(new Set()); // Set de índices seleccionados
+    const [editingCell, setEditingCell] = useState(null);        // { rowIdx, col }
+    const [editingValue, setEditingValue] = useState('');
+    const [bulkClasifNF, setBulkClasifNF] = useState('');
+    const [bulkFecha, setBulkFecha] = useState('');
+    const [bulkEstado, setBulkEstado] = useState('');             // 'pagado' | 'programado' | ''
+    const [bulkMetodo, setBulkMetodo] = useState('');             // 'banco' | 'tdc' | 'otro' | ''
+    const set = (k, v) => setForm(f => ({...f, [k]: v}));
+
+    // Helpers para selección
+    const toggleSelectRow = (idx) => {
+      setSelectedRows(prev => {
+        const next = new Set(prev);
+        if (next.has(idx)) next.delete(idx); else next.add(idx);
+        return next;
+      });
+    };
+    const toggleSelectAll = () => {
+      setSelectedRows(prev => {
+        if (prev.size === form.rows.length) return new Set();
+        return new Set(form.rows.map((_, i) => i));
+      });
+    };
+    const clearSelection = () => setSelectedRows(new Set());
+
+    // Iniciar edición de celda
+    const startEdit = (rowIdx, col) => {
+      const r = form.rows[rowIdx];
+      let valorInicial = '';
+      if (col === 'clasificacion') valorInicial = r.clasificacion || '';
+      else if (col === 'concepto') valorInicial = r.concepto || '';
+      else if (col === 'monto') valorInicial = String(r.monto || '');
+      else if (col === 'notas') valorInicial = r.notas || '';
+      setEditingCell({ rowIdx, col });
+      setEditingValue(valorInicial);
+    };
+    // Guardar edición
+    const saveEdit = () => {
+      if (!editingCell) return;
+      const { rowIdx, col } = editingCell;
+      const nuevo = [...form.rows];
+      const r = { ...nuevo[rowIdx] };
+      if (col === 'monto') {
+        const n = parseFloat(String(editingValue).replace(/[\$,\s]/g, '')) || 0;
+        r.monto = n;
+      } else {
+        r[col] = editingValue;
+      }
+      nuevo[rowIdx] = r;
+      set('rows', nuevo);
+      setEditingCell(null);
+      setEditingValue('');
+    };
+    const cancelEdit = () => {
+      setEditingCell(null);
+      setEditingValue('');
+    };
+
+    // Acciones masivas
+    const aplicarMasivo = (campo, valor) => {
+      if (selectedRows.size === 0) return;
+      const nuevo = form.rows.map((r, i) => {
+        if (!selectedRows.has(i)) return r;
+        const updated = { ...r };
+        if (campo === 'fecha') { updated.fecha = valor || null; updated.fechaRaw = valor || ''; }
+        else if (campo === 'clasificacion') { updated.clasificacion = valor; updated.clasifRaw = valor; }
+        else updated[campo] = valor;
+        return updated;
+      });
+      set('rows', nuevo);
+    };
+    const eliminarSeleccionadas = () => {
+      if (selectedRows.size === 0) return;
+      if (!window.confirm(`¿Eliminar ${selectedRows.size} ${selectedRows.size === 1 ? 'fila' : 'filas'} seleccionada${selectedRows.size === 1 ? '' : 's'}?`)) return;
+      const nuevo = form.rows.filter((_, i) => !selectedRows.has(i));
+      set('rows', nuevo);
+      clearSelection();
+    };
+
+    // Parser flexible de fechas: soporta múltiples formatos
+    // Devuelve string YYYY-MM-DD o null si no se puede parsear
+    // En MX se usa DD/MM/YYYY → preferimos esa interpretación cuando sea ambigua
+    const parsearFecha = (raw) => {
+      if (!raw && raw !== 0) return null;
+      // Caso 1: ya es un objeto Date (xlsx con cellDates:true)
+      if (raw instanceof Date) {
+        if (isNaN(raw.getTime())) return null;
+        const yyyy = raw.getFullYear();
+        const mm = String(raw.getMonth() + 1).padStart(2, '0');
+        const dd = String(raw.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      }
+      const s = String(raw).trim();
+      if (!s) return null;
+      // Caso 2: número serial Excel (días desde 1900-01-01)
+      if (/^\d+(\.\d+)?$/.test(s) && +s > 25569 && +s < 60000) {
+        const dias = Math.floor(+s);
+        const ms = (dias - 25569) * 86400 * 1000; // 25569 = 1970-01-01 desde Excel epoch
+        const d = new Date(ms);
+        if (!isNaN(d.getTime())) {
+          const yyyy = d.getUTCFullYear();
+          const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+          const dd = String(d.getUTCDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        }
+      }
+      // Caso 3: ISO YYYY-MM-DD (4 dígitos primero)
+      const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+      if (iso) {
+        const yyyy = iso[1];
+        const mm = String(+iso[2]).padStart(2, '0');
+        const dd = String(+iso[3]).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      }
+      // Caso 4: DD/MM/YYYY o MM/DD/YYYY (ambiguos)
+      // En MX se usa DD/MM/YYYY → preferimos DD/MM cuando ambiguo.
+      // Pero si el primer número > 12 → SEGURO es DD/MM
+      // Si el segundo número > 12 → SEGURO es MM/DD (caso raro, archivos en inglés)
+      const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+      if (dmy) {
+        const a = +dmy[1];
+        const b = +dmy[2];
+        let yyyy = dmy[3];
+        if (yyyy.length === 2) yyyy = (+yyyy > 50 ? '19' : '20') + yyyy;
+        let dd, mm;
+        if (a > 12 && b <= 12)       { dd = a; mm = b; }       // claramente DD/MM
+        else if (b > 12 && a <= 12)  { dd = b; mm = a; }       // claramente MM/DD (gringo)
+        else                          { dd = a; mm = b; }       // ambiguo → DD/MM (formato MX)
+        if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+        return `${yyyy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+      }
+      // Caso 5: con nombre de mes en español: "30 abril 2026", "30/Abr/2026", "30 abr 26"
+      const mesesEs = { ene: '01', feb: '02', mar: '03', abr: '04', may: '05', jun: '06', jul: '07', ago: '08', sep: '09', oct: '10', nov: '11', dic: '12' };
+      const conMes = s.toLowerCase().match(/(\d{1,2})\s*[\/\-\s]\s*([a-záéíóú]+)\s*[\/\-\s]\s*(\d{2,4})/i);
+      if (conMes) {
+        const dd = String(+conMes[1]).padStart(2, '0');
+        const mesKey = conMes[2].slice(0, 3).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const mm = mesesEs[mesKey];
+        let yyyy = conMes[3];
+        if (yyyy.length === 2) yyyy = (+yyyy > 50 ? '19' : '20') + yyyy;
+        if (mm) return `${yyyy}-${mm}-${dd}`;
+      }
+      // Último recurso: Date.parse (fechas en inglés tipo "Apr 30 2026")
+      const t = Date.parse(s);
+      if (!isNaN(t)) {
+        const d = new Date(t);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      }
+      return null;
+    };
+
+    // Detecta columnas a partir de un array de cells de la primera fila
+    // Devuelve { idxSegmento, idxEgreso, idxMonto, idxConcepto, idxFecha, idxMoneda, hayHeader }
+    const detectarColumnas = (firstRow) => {
+      const norm = (s) => String(s || '').toUpperCase().trim();
+      let idxSegmento = -1, idxEgreso = -1, idxMonto = -1, idxConcepto = -1, idxFecha = -1, idxMoneda = -1;
+      firstRow.forEach((cel, i) => {
+        const c = norm(cel);
+        if (c === 'SEGMENTO' || c === 'RUBRO') idxSegmento = i;
+        else if (c === 'EGRESOS' || c === 'EGRESO' || c === 'BENEFICIARIO' || c === 'PROVEEDOR') idxEgreso = i;
+        else if (c === 'MONTO' || c === 'IMPORTE' || c === 'CANTIDAD') idxMonto = i;
+        else if (c === 'CONCEPTO' || c === 'NOTAS' || c === 'DESCRIPCION' || c === 'DESCRIPCIÓN') idxConcepto = i;
+        else if (c === 'FECHA' || c === 'DATE' || c === 'FECHA_PAGO' || c === 'FECHA PAGO' || c === 'DIA' || c === 'DÍA') idxFecha = i;
+        else if (c === 'MONEDA' || c === 'MONEDAS' || c === 'CURRENCY' || c === 'DIVISA' || c === 'DIVISAS') idxMoneda = i;
+      });
+      const hayHeader = (idxSegmento !== -1 || idxEgreso !== -1 || idxMonto !== -1 || idxConcepto !== -1 || idxFecha !== -1 || idxMoneda !== -1);
+      // Si no detectamos headers, asumir orden por defecto: 0=SEGMENTO, 1=EGRESO, 2=MONTO, 3=MONEDA, 4=CONCEPTO, 5=FECHA (opcionales: MONEDA y FECHA)
+      if (!hayHeader) { idxSegmento = 0; idxEgreso = 1; idxMonto = 2; idxMoneda = 3; idxConcepto = 4; idxFecha = 5; }
+      return { idxSegmento, idxEgreso, idxMonto, idxConcepto, idxFecha, idxMoneda, hayHeader };
+    };
+
+    // Parsear filas en formato array-of-arrays.
+    // Mapeo: SEGMENTO→segmento, EGRESOS→concepto (principal), MONTO→monto, CONCEPTO→notas, FECHA→fecha
+    // Helper: convierte el texto de la columna MONEDA a un código válido (MXN/USD/EUR)
+    // Acepta: "MXN", "USD", "EUR", "$", "USD$", "Dolar", "Dolares", "Peso", "Pesos", "Euro", "Euros", etc.
+    // Devuelve el código oficial o null si no se reconoce.
+    const matchMoneda = (rawText) => {
+      if (!rawText && rawText !== 0) return null;
+      const norm = (s) => String(s).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const t = norm(rawText);
+      if (!t) return null;
+      // USD: dolar/dollar/usd/us/$/usd$
+      if (/^(usd|us|dolar|dolares|dollar|dollars|us\$|usd\$|u\.s\.d\.?)$/.test(t)) return 'USD';
+      // EUR: euro/euros/eur/€
+      if (/^(eur|euro|euros|€)$/.test(t)) return 'EUR';
+      // MXN: peso/pesos/mxn/mn/mexicano/$ (default cuando hay $ ambiguo)
+      if (/^(mxn|mn|peso|pesos|mexicano|mexicanos|pesos? mexicanos?)$/.test(t)) return 'MXN';
+      // Solo "$" sin más contexto → asumimos MXN (es lo más común para usuarios mexicanos)
+      if (t === '$') return 'MXN';
+      return null;
+    };
+
+    // Helper: encuentra la clasificación oficial que mejor matchea el texto raw
+    // Ignora mayúsculas, acentos y espacios extras. Devuelve la clasificación oficial o null.
+    const matchClasificacion = (rawText) => {
+      if (!rawText) return null;
+      const norm = (s) => String(s).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const target = norm(rawText);
+      if (!target) return null;
+      // Match exacto primero
+      for (const c of clases) {
+        if (norm(c) === target) return c;
+      }
+      // Match por inclusión (ej: "Honorarios médicos" contra "Honorarios")
+      for (const c of clases) {
+        const nc = norm(c);
+        if (target.includes(nc) || nc.includes(target)) return c;
+      }
+      return null;
+    };
+
+    const parsearFilas = (filas) => {
+      if (!filas || filas.length === 0) return [];
+      const cols = detectarColumnas(filas[0]);
+      const datos = cols.hayHeader ? filas.slice(1) : filas;
+      const rows = [];
+      // Helper para convertir cualquier celda a string razonable (excepto fechas que se manejan aparte)
+      const cellToStr = (v) => {
+        if (v === null || v === undefined) return '';
+        if (v instanceof Date) {
+          // Fechas en columnas de texto: convertir a YYYY-MM-DD
+          if (isNaN(v.getTime())) return '';
+          return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`;
+        }
+        return String(v).trim();
+      };
+      datos.forEach(fila => {
+        if (!fila || fila.length === 0) return;
+        const clasifRaw = cellToStr(fila[cols.idxSegmento]);                // SEGMENTO del Excel = Clasificación
+        const concepto  = cellToStr(fila[cols.idxEgreso]);                  // EGRESOS → concepto principal
+        const montoRaw  = cellToStr(fila[cols.idxMonto]);
+        const notas     = cellToStr(fila[cols.idxConcepto]);                // CONCEPTO → notas
+        // Moneda (opcional): si no viene → fallback global. Si viene texto irreconocible → fallback global + advertencia
+        const monedaRaw = cols.idxMoneda >= 0 ? cellToStr(fila[cols.idxMoneda]) : '';
+        const monedaParsed = monedaRaw ? matchMoneda(monedaRaw) : null;
+        // La fecha puede venir como Date (xlsx con cellDates), número (serial), o string (texto pegado)
+        const fechaCelda = cols.idxFecha >= 0 ? fila[cols.idxFecha] : null;
+        let fechaParsed = null;
+        let fechaRaw = '';
+        if (fechaCelda instanceof Date) {
+          fechaParsed = parsearFecha(fechaCelda);
+          fechaRaw = fechaParsed || '';
+        } else if (fechaCelda !== null && fechaCelda !== undefined && String(fechaCelda).trim()) {
+          fechaRaw = String(fechaCelda).trim();
+          fechaParsed = parsearFecha(fechaRaw);
+        }
+        const montoNum = parseFloat(montoRaw.replace(/[\$,\s]/g, '')) || 0;
+        if (montoNum <= 0 || !concepto) return;
+        // Intentar matchear con clasificación oficial (tolerante)
+        const clasifValida = matchClasificacion(clasifRaw);
+        rows.push({
+          clasificacion: clasifValida || '',  // string vacío si no matcheó
+          clasifRaw,                          // texto original del Excel (para mostrar la advertencia)
+          concepto,
+          monto: montoNum,
+          notas,
+          fecha: fechaParsed,                 // null si no había o no se pudo parsear
+          fechaRaw,                           // para mostrar advertencia si no se pudo parsear
+          moneda: monedaParsed,               // null si no había o no se pudo parsear → usa global
+          monedaRaw,                          // texto original (para advertencia)
+        });
+      });
+      return rows;
+    };
+
+    // Parsear texto pegado (TAB-separado, fallback a punto y coma)
+    const parsearTexto = (txt) => {
+      const lineas = txt.split('\n').map(l => l).filter(l => l.trim());
+      const filas = lineas.map(l => l.split(/\t|;/).map(p => p.trim()));
+      return parsearFilas(filas);
+    };
+
+    const handleParsear = () => {
+      const rows = parsearTexto(textoPegado);
+      if (rows.length === 0) {
+        alert('No se detectaron filas válidas.\n\nFormato esperado (4 columnas TAB-separadas):\nSEGMENTO    EGRESOS    MONTO    CONCEPTO\n\nEjemplo:\nTraslados    Konfio Banco    742130    EDO CTA 14 MZO AL 14 ABR');
+        return;
+      }
+      set('rows', rows);
+    };
+
+    // Importar archivo .xlsx
+    const handleArchivo = (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const data = new Uint8Array(ev.target.result);
+          const wb = XLSX.read(data, { type: 'array', cellDates: true });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          // raw:true → fechas vienen como objetos Date (gracias a cellDates),
+          // números como números. Texto sin tocar. Sin reformateo regional.
+          const filas = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+          // Filtrar filas completamente vacías
+          const filasNoVacias = filas.filter(f => f.some(c => {
+            if (c instanceof Date) return true;
+            return String(c || '').trim();
+          }));
+          const rows = parsearFilas(filasNoVacias);
+          if (rows.length === 0) {
+            alert('No se detectaron filas válidas en el archivo.');
+            return;
+          }
+          set('rows', rows);
+        } catch (err) {
+          console.error(err);
+          alert('Error al leer el archivo: ' + err.message);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+      e.target.value = ''; // reset para poder subir el mismo archivo otra vez
+    };
+
+    // Descargar plantilla .xlsx con headers y 1 fila de ejemplo
+    const descargarPlantilla = () => {
+      const data = [
+        ['SEGMENTO', 'EGRESOS', 'MONTO', 'MONEDA', 'CONCEPTO', 'FECHA'],
+        ['Traslados', 'Konfio Banco', 742130, 'MXN', 'EDO CTA 14 MZO AL 14 ABR', '30/04/2026'],
+        ['Reprotección', 'Seguros Ve por Más', 53811.03, 'MXN', 'POLIZA DE SEGURO GMM DIRECCIÓN', '28/04/2026'],
+        ['Servicios', 'Hotel Marriott NYC', 1500, 'USD', 'Reserva grupo abril', '25/04/2026'],
+        ['', '', '', '', '', ''],
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      // Anchos de columna
+      ws['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 14 }, { wch: 10 }, { wch: 36 }, { wch: 14 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Otros Pagos');
+      XLSX.writeFile(wb, 'Plantilla_Otros_Pagos.xlsx');
+    };
+
+    const handleGuardarTodos = async () => {
+      if (form.rows.length === 0) { alert('No hay filas para importar'); return; }
+      // Validar: cada fila debe tener una clasificación válida
+      const filasInvalidas = form.rows.filter(r => !r.clasificacion);
+      if (filasInvalidas.length > 0) {
+        alert(`Hay ${filasInvalidas.length} fila${filasInvalidas.length === 1 ? '' : 's'} sin clasificación válida.\n\nClic en la columna "Clasificación" de cada fila para asignar una válida (las que están en rojo).`);
+        return;
+      }
+      const ya = !!form._yaPagado;
+      // Generar todos los egresos uno por uno
+      let folioBase = (() => {
+        const todos = ['MXN','USD','EUR'].flatMap(c => invoices[c] || [])
+          .filter(i => i.tipo === 'EgresoNF' && i.empresaId === empresaId);
+        const numeros = todos.map(i => {
+          const m = (i.folio || '').match(/^NF-(\d+)$/);
+          return m ? parseInt(m[1], 10) : 0;
+        });
+        return numeros.length > 0 ? Math.max(...numeros) : 0;
+      })();
+      const nuevosArr = [];
+      for (let idx = 0; idx < form.rows.length; idx++) {
+        const r = form.rows[idx];
+        folioBase++;
+        const folio = `NF-${String(folioBase).padStart(3, '0')}`;
+        // Fecha por fila: usa la fecha individual si existe, sino la global
+        const fechaFinal = r.fecha || form.fechaPago || today();
+        const invObj = {
+          id: uid(), tipo: 'EgresoNF',
+          fecha: fechaFinal, serie: 'NF', folio, uuid: '',
+          proveedor: r.concepto, clasificacion: r.clasificacion,
+          subtotal: r.monto, iva: 0, retIsr: 0, retIva: 0, total: r.monto,
+          montoPagado: ya ? r.monto : 0,
+          concepto: r.concepto,
+          diasCredito: 0,
+          vencimiento: fechaFinal,
+          estatus: ya ? 'Pagado' : 'Pendiente',
+          fechaProgramacion: fechaFinal,
+          diasFicticios: 0, referencia: '', notas: r.notas || '',
+          moneda: r.moneda || form.moneda || 'MXN',
+          voBo: true, autorizadoDireccion: true, empresaId,
+          categoriaEgreso: r.clasificacion,
+          segmentoEgreso: '',
+        };
+        const saved = await upsertInvoice(invObj);
+        nuevosArr.push(saved);
+        await addPayment(saved.id, r.monto, fechaFinal,
+                         r.notas || r.clasificacion, ya ? 'realizado' : 'programado',
+                         form.metodoPago || 'banco');
+      }
+      // Actualizar estado: agrupar por moneda
+      setInvoices(prev => {
+        const result = { ...prev };
+        nuevosArr.forEach(saved => {
+          const c = saved.moneda || 'MXN';
+          result[c] = [...(result[c]||[]), saved];
+        });
+        return result;
+      });
+      alert(`✅ Se importaron ${nuevosArr.length} egresos correctamente.`);
+      setModalImportarEgresos(null);
+    };
+
+    return (
+      <ModalShell title="📥 Importar Otros Pagos" wide={form.rows.length === 0} extraWide={form.rows.length > 0} onClose={() => setModalImportarEgresos(null)}>
+        {form.rows.length === 0 ? (
+          <>
+            {/* SECCIÓN 1: Estructura del Excel */}
+            <div style={{background:'#FAFBFC',border:`1px solid ${C.border}`,borderRadius:10,padding:'14px 16px',marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:800,color:C.navy,marginBottom:10,letterSpacing:0.3}}>
+                📋 ESTRUCTURA DEL EXCEL
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'auto 1fr',rowGap:8,columnGap:12,fontSize:12}}>
+                <div style={{fontWeight:700,color:'#1976D2',whiteSpace:'nowrap'}}>① SEGMENTO</div>
+                <div style={{color:'#374151'}}>
+                  <b style={{color:'#1B5E20'}}>= Clasificación</b> · debe coincidir con una clasificación configurada — ej: <i style={{color:C.muted}}>Traslados, Reprotección, Servicios, Honorarios</i>
+                </div>
+
+                <div style={{fontWeight:700,color:'#1976D2',whiteSpace:'nowrap'}}>② EGRESOS</div>
+                <div style={{color:'#374151'}}>Beneficiario o concepto corto — ej: <i style={{color:C.muted}}>Konfio Banco</i></div>
+
+                <div style={{fontWeight:700,color:'#1976D2',whiteSpace:'nowrap'}}>③ MONTO</div>
+                <div style={{color:'#374151'}}>Cantidad numérica (sin <code>$</code>) — ej: <i style={{color:C.muted}}>742130</i> o <i style={{color:C.muted}}>742,130.00</i></div>
+
+                <div style={{fontWeight:700,color:'#9E9E9E',whiteSpace:'nowrap'}}>④ MONEDA <span style={{fontSize:10,fontWeight:600}}>(opcional)</span></div>
+                <div style={{color:'#374151'}}>Código de moneda — ej: <i style={{color:C.muted}}>MXN, USD, EUR</i> · acepta también: <i style={{color:C.muted}}>Dólar, Pesos, €</i> · si falta, usa la moneda global</div>
+
+                <div style={{fontWeight:700,color:'#1976D2',whiteSpace:'nowrap'}}>⑤ CONCEPTO</div>
+                <div style={{color:'#374151'}}>Descripción detallada (notas) — ej: <i style={{color:C.muted}}>EDO CTA 14 MZO AL 14 ABR</i></div>
+
+                <div style={{fontWeight:700,color:'#9E9E9E',whiteSpace:'nowrap'}}>⑥ FECHA <span style={{fontSize:10,fontWeight:600}}>(opcional)</span></div>
+                <div style={{color:'#374151'}}>Fecha de pago — ej: <i style={{color:C.muted}}>30/04/2026</i> · si falta, usa la fecha global</div>
+              </div>
+            </div>
+
+            {/* SECCIÓN 2: Ejemplo visual como tabla */}
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.muted,marginBottom:6,letterSpacing:0.3}}>
+                💡 EJEMPLO DE FILAS VÁLIDAS
+              </div>
+              <div style={{border:`1px solid ${C.border}`,borderRadius:8,overflow:'hidden'}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                  <thead>
+                    <tr style={{background:'#E3F2FD'}}>
+                      <th style={{padding:'7px 10px',textAlign:'left',fontWeight:700,color:'#0D47A1',fontSize:10,textTransform:'uppercase'}}>Segmento</th>
+                      <th style={{padding:'7px 10px',textAlign:'left',fontWeight:700,color:'#0D47A1',fontSize:10,textTransform:'uppercase'}}>Egresos</th>
+                      <th style={{padding:'7px 10px',textAlign:'right',fontWeight:700,color:'#0D47A1',fontSize:10,textTransform:'uppercase'}}>Monto</th>
+                      <th style={{padding:'7px 10px',textAlign:'center',fontWeight:700,color:'#0D47A1',fontSize:10,textTransform:'uppercase'}}>Moneda</th>
+                      <th style={{padding:'7px 10px',textAlign:'left',fontWeight:700,color:'#0D47A1',fontSize:10,textTransform:'uppercase'}}>Concepto</th>
+                      <th style={{padding:'7px 10px',textAlign:'center',fontWeight:700,color:'#0D47A1',fontSize:10,textTransform:'uppercase'}}>Fecha</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr style={{borderBottom:`1px solid ${C.border}`,background:'#fff'}}>
+                      <td style={{padding:'7px 10px',fontWeight:600,color:'#1B5E20'}}>Traslados</td>
+                      <td style={{padding:'7px 10px',fontWeight:600}}>Konfio Banco</td>
+                      <td style={{padding:'7px 10px',textAlign:'right',fontFamily:'monospace'}}>742,130.00</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontFamily:'monospace',fontWeight:700}}>MXN</td>
+                      <td style={{padding:'7px 10px',color:C.muted}}>EDO CTA 14 MZO AL 14 ABR</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontFamily:'monospace'}}>30/04/2026</td>
+                    </tr>
+                    <tr style={{borderBottom:`1px solid ${C.border}`,background:'#FAFBFC'}}>
+                      <td style={{padding:'7px 10px',fontWeight:600,color:'#1B5E20'}}>Reprotección</td>
+                      <td style={{padding:'7px 10px',fontWeight:600}}>Seguros Ve por Más</td>
+                      <td style={{padding:'7px 10px',textAlign:'right',fontFamily:'monospace'}}>53,811.03</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontFamily:'monospace',fontWeight:700}}>MXN</td>
+                      <td style={{padding:'7px 10px',color:C.muted}}>POLIZA DE SEGURO GMM DIRECCIÓN</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontFamily:'monospace'}}>28/04/2026</td>
+                    </tr>
+                    <tr style={{background:'#fff'}}>
+                      <td style={{padding:'7px 10px',fontWeight:600,color:'#1B5E20'}}>Servicios</td>
+                      <td style={{padding:'7px 10px',fontWeight:600}}>Hotel Marriott NYC</td>
+                      <td style={{padding:'7px 10px',textAlign:'right',fontFamily:'monospace'}}>1,500.00</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontFamily:'monospace',fontWeight:700,color:'#2E7D32'}}>USD</td>
+                      <td style={{padding:'7px 10px',color:C.muted}}>Reserva grupo abril</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontFamily:'monospace'}}>25/04/2026</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div style={{fontSize:11,color:C.muted,marginTop:6}}>
+                Formatos de fecha aceptados: <code>30/04/2026</code> · <code>2026-04-30</code> · <code>30-Abr-2026</code> · Monedas: <code>MXN, USD, EUR</code> (también acepta <i>Dólar, Pesos, €</i>)
+              </div>
+            </div>
+
+            {/* Botón descargar plantilla */}
+            <div style={{marginBottom:14,textAlign:'right'}}>
+              <button onClick={descargarPlantilla}
+                style={{background:'transparent',color:'#1976D2',border:`1px solid #1976D2`,padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                ⬇ Descargar plantilla .xlsx
+              </button>
+            </div>
+
+            {/* SECCIÓN 3: Métodos de importación lado a lado */}
+            <div style={{fontSize:12,fontWeight:800,color:C.navy,marginBottom:10,letterSpacing:0.3,paddingTop:8,borderTop:`1px solid ${C.border}`}}>
+              ELEGIR MÉTODO DE IMPORTACIÓN
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}}>
+              {/* Método 1: subir archivo */}
+              <div style={{background:'#E0F2F1',border:'1px solid #80CBC4',borderRadius:10,padding:14,display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{fontSize:13,fontWeight:800,color:'#00695C'}}>📁 Subir archivo</div>
+                <div style={{fontSize:11,color:'#00695C',opacity:0.85,minHeight:30}}>
+                  Sube tu archivo <code>.xlsx</code> o <code>.xls</code> directamente.
+                </div>
+                <label style={{background:'#00897B',color:'#fff',border:'none',padding:'9px 14px',borderRadius:8,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit',textAlign:'center'}}>
+                  Seleccionar archivo
+                  <input type="file" accept=".xlsx,.xls" onChange={handleArchivo} style={{display:'none'}}/>
+                </label>
+              </div>
+              {/* Método 2: pegar texto */}
+              <div style={{background:'#E3F2FD',border:'1px solid #90CAF9',borderRadius:10,padding:14,display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{fontSize:13,fontWeight:800,color:'#0D47A1'}}>✏️ Pegar datos</div>
+                <div style={{fontSize:11,color:'#0D47A1',opacity:0.85,minHeight:30}}>
+                  Copia las celdas desde Excel y pégalas aquí (separadas por TAB).
+                </div>
+                <textarea value={textoPegado} onChange={e => setTextoPegado(e.target.value)}
+                  placeholder={`SEGMENTO\tEGRESOS\tMONTO\tMONEDA\tCONCEPTO\tFECHA\nTraslados\tKonfio Banco\t742130\tMXN\tEDO CTA 14 MZO AL 14 ABR\t30/04/2026\nServicios\tHotel Marriott NYC\t1500\tUSD\tReserva grupo abril\t25/04/2026`}
+                  style={{...inputStyle, minHeight: 90, fontFamily: 'monospace', fontSize: 11, whiteSpace: 'pre', background:'#fff'}}/>
+                <button onClick={handleParsear}
+                  style={{background:'#1976D2',color:'#fff',border:'none',padding:'9px 14px',borderRadius:8,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}
+                  disabled={!textoPegado.trim()}>
+                  Procesar datos →
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:14,marginBottom:14}}>
+              <Field label="Fecha global (fallback)">
+                <input type="date" value={form.fechaPago} onChange={e => set('fechaPago', e.target.value)} style={inputStyle}
+                  title="Esta fecha se usa para las filas que NO tengan fecha individual en el Excel"/>
+              </Field>
+              <Field label="Moneda global (fallback)">
+                <select value={form.moneda} onChange={e => set('moneda', e.target.value)} style={inputStyle}
+                  title="Esta moneda se usa para las filas que NO tengan moneda individual en el Excel">
+                  <option value="MXN">MXN</option><option value="USD">USD</option><option value="EUR">EUR</option>
+                </select>
+              </Field>
+              <Field label="Estado del pago">
+                <select value={form._yaPagado ? 'pagado' : 'programado'}
+                  onChange={e => set('_yaPagado', e.target.value === 'pagado')} style={inputStyle}>
+                  <option value="pagado">✅ Ya pagado</option>
+                  <option value="programado">📅 Programado</option>
+                </select>
+              </Field>
+              <Field label="Método de pago">
+                <select value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)} style={inputStyle}>
+                  <option value="banco">🏦 Banco</option>
+                  <option value="tdc">💳 TDC</option>
+                  <option value="otro">➕ Otro</option>
+                </select>
+              </Field>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.navy}}>
+                Vista previa · {form.rows.length} {form.rows.length===1?'fila':'filas'}
+              </div>
+              {(() => {
+                const conFecha = form.rows.filter(r => r.fecha).length;
+                const sinFecha = form.rows.length - conFecha;
+                const conClasif = form.rows.filter(r => r.clasificacion).length;
+                const sinClasif = form.rows.length - conClasif;
+                const conMoneda = form.rows.filter(r => r.moneda).length;
+                const sinMoneda = form.rows.length - conMoneda;
+                const monedasInvalidas = form.rows.filter(r => r.monedaRaw && !r.moneda).length;
+                if (form.rows.length === 0) return null;
+                return (
+                  <div style={{fontSize:11,color:C.muted,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+                    {sinClasif > 0 && (
+                      <span style={{color:'#C62828',fontWeight:700,background:'#FFEBEE',padding:'2px 8px',borderRadius:6}}>
+                        ⚠️ {sinClasif} sin clasificación válida
+                      </span>
+                    )}
+                    {conClasif === form.rows.length && form.rows.length > 0 && (
+                      <span style={{color:'#1B5E20',fontWeight:700,background:'#E8F5E9',padding:'2px 8px',borderRadius:6}}>
+                        ✅ Todas con clasificación
+                      </span>
+                    )}
+                    <span>·</span>
+                    {conFecha > 0 && <span style={{color:'#1B5E20',fontWeight:600}}>📅 {conFecha} con fecha</span>}
+                    {conFecha > 0 && sinFecha > 0 && <span>·</span>}
+                    {sinFecha > 0 && <span style={{color:'#E65100',fontWeight:600}}>{sinFecha} usarán fecha global</span>}
+                    <span>·</span>
+                    {conMoneda > 0 && <span style={{color:'#1B5E20',fontWeight:600}}>💱 {conMoneda} con moneda</span>}
+                    {(conMoneda > 0 && sinMoneda > 0) && <span>·</span>}
+                    {sinMoneda > 0 && <span style={{color:'#E65100',fontWeight:600}}>{sinMoneda} usarán moneda global</span>}
+                    {monedasInvalidas > 0 && (
+                      <>
+                        <span>·</span>
+                        <span style={{color:'#C62828',fontWeight:700,background:'#FFEBEE',padding:'2px 6px',borderRadius:4}}>⚠ {monedasInvalidas} moneda no reconocida</span>
+                      </>
+                    )}
+                    <span style={{color:C.muted,fontStyle:'italic'}}>· clic en una celda para editar</span>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Toolbar de edición masiva (aparece cuando hay filas seleccionadas) */}
+            {selectedRows.size > 0 && (
+              <div style={{background:'#FFF8E1',border:'1px solid #FFE082',borderRadius:8,padding:'10px 12px',marginBottom:8,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+                <div style={{fontSize:12,fontWeight:800,color:'#E65100',whiteSpace:'nowrap'}}>
+                  ☑️ {selectedRows.size} seleccionada{selectedRows.size === 1 ? '' : 's'} · Aplicar a todas:
+                </div>
+                <select value={bulkClasifNF} onChange={e => { const v = e.target.value; setBulkClasifNF(''); if (v) aplicarMasivo('clasificacion', v); }}
+                  style={{...inputStyle, width:'auto', minWidth:160, fontSize:11, padding:'5px 8px'}}>
+                  <option value="">Clasificación…</option>
+                  {clases.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <input type="date" value={bulkFecha} onChange={e => { const v = e.target.value; setBulkFecha(''); if (v) aplicarMasivo('fecha', v); }}
+                  style={{...inputStyle, width:150, fontSize:11, padding:'5px 8px'}}
+                  title="Aplicar esta fecha a las filas seleccionadas"/>
+                <span style={{fontSize:10,color:'#9E9E9E',marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+                  <button onClick={clearSelection} style={{background:'transparent',border:'none',color:'#1976D2',cursor:'pointer',fontSize:11,fontWeight:600,fontFamily:'inherit'}}>
+                    Limpiar selección
+                  </button>
+                  <button onClick={eliminarSeleccionadas} style={{background:'#C62828',color:'#fff',border:'none',padding:'5px 10px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                    🗑️ Eliminar {selectedRows.size}
+                  </button>
+                </span>
+              </div>
+            )}
+
+            <div style={{maxHeight:380,overflow:'auto',border:`1px solid ${C.border}`,borderRadius:8}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead>
+                  <tr style={{background:'#F8FAFC',position:'sticky',top:0,zIndex:1}}>
+                    <th style={{padding:'8px',textAlign:'center',borderBottom:`1px solid ${C.border}`,width:36}}>
+                      <input
+                        type="checkbox"
+                        checked={selectedRows.size === form.rows.length && form.rows.length > 0}
+                        ref={el => { if (el) el.indeterminate = selectedRows.size > 0 && selectedRows.size < form.rows.length; }}
+                        onChange={toggleSelectAll}
+                        style={{cursor:'pointer'}}
+                        title={selectedRows.size === form.rows.length ? 'Deseleccionar todos' : 'Seleccionar todos'}
+                      />
+                    </th>
+                    <th style={{padding:'8px',textAlign:'left',borderBottom:`1px solid ${C.border}`,width:170}}>Clasificación</th>
+                    <th style={{padding:'8px',textAlign:'left',borderBottom:`1px solid ${C.border}`}}>Concepto</th>
+                    <th style={{padding:'8px',textAlign:'right',borderBottom:`1px solid ${C.border}`,width:120}}>Monto</th>
+                    <th style={{padding:'8px',textAlign:'center',borderBottom:`1px solid ${C.border}`,width:90}}>Moneda</th>
+                    <th style={{padding:'8px',textAlign:'left',borderBottom:`1px solid ${C.border}`}}>Notas</th>
+                    <th style={{padding:'8px',textAlign:'center',borderBottom:`1px solid ${C.border}`,width:150}}>Fecha</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {form.rows.map((r, i) => {
+                    const fechaUsada = r.fecha || form.fechaPago || today();
+                    const usaFechaIndividual = !!r.fecha;
+                    const errorParseo = r.fechaRaw && !r.fecha;
+                    const isSelected = selectedRows.has(i);
+                    const isEditing = (col) => editingCell && editingCell.rowIdx === i && editingCell.col === col;
+                    const cellStyle = (extra={}) => ({
+                      padding:'7px 8px',
+                      cursor:'pointer',
+                      borderRight:'1px solid transparent',
+                      ...extra,
+                    });
+                    const editInputStyle = {
+                      width:'100%',
+                      padding:'5px 6px',
+                      border:'1px solid #1976D2',
+                      borderRadius:4,
+                      fontSize:12,
+                      fontFamily:'inherit',
+                      outline:'none',
+                      background:'#fff',
+                      boxSizing:'border-box',
+                    };
+                    const handleKey = (e) => {
+                      if (e.key === 'Enter') saveEdit();
+                      if (e.key === 'Escape') cancelEdit();
+                    };
+                    return (
+                      <tr key={i} style={{
+                        borderBottom:`1px solid ${C.border}`,
+                        background: isSelected ? '#FFF8E1' : (i % 2 === 0 ? '#fff' : '#FAFBFC'),
+                      }}>
+                        <td style={{padding:'7px',textAlign:'center'}}>
+                          <input type="checkbox" checked={isSelected} onChange={() => toggleSelectRow(i)} style={{cursor:'pointer'}}/>
+                        </td>
+                        {/* Clasificación (con dropdown nativo, badge en rojo si inválida) */}
+                        <td style={{padding:'5px 6px'}}>
+                          {(() => {
+                            const esValida = !!r.clasificacion;
+                            return (
+                              <select
+                                value={r.clasificacion || ''}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  set('rows', form.rows.map((rr, j) => j === i ? { ...rr, clasificacion: v, clasifRaw: v } : rr));
+                                }}
+                                title={esValida ? `Clasificación: ${r.clasificacion}` : `"${r.clasifRaw || '(vacío)'}" no es una clasificación válida. Clic para elegir una.`}
+                                style={{
+                                  width:'100%',
+                                  fontSize:11,
+                                  padding:'5px 6px',
+                                  border:`1px solid ${esValida ? '#A5D6A7' : '#C62828'}`,
+                                  borderRadius:5,
+                                  background: esValida ? '#E8F5E9' : '#FFEBEE',
+                                  color: esValida ? '#1B5E20' : '#C62828',
+                                  fontFamily:'inherit',
+                                  outline:'none',
+                                  fontWeight: esValida ? 700 : 600,
+                                  boxSizing:'border-box',
+                                  cursor:'pointer',
+                                }}
+                              >
+                                <option value="">— Seleccionar —</option>
+                                {clases.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            );
+                          })()}
+                          {!r.clasificacion && r.clasifRaw && (
+                            <div title={`Texto original: ${r.clasifRaw}`} style={{fontSize:9,color:'#C62828',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                              ⚠ "{r.clasifRaw}"
+                            </div>
+                          )}
+                        </td>
+                        {/* Concepto */}
+                        <td style={cellStyle({fontWeight:600})} onClick={() => !isEditing('concepto') && startEdit(i, 'concepto')}>
+                          {isEditing('concepto') ? (
+                            <input autoFocus value={editingValue} onChange={e => setEditingValue(e.target.value)}
+                              onBlur={saveEdit} onKeyDown={handleKey} style={editInputStyle}/>
+                          ) : (
+                            <span>{r.concepto || <span style={{color:'#D1D5DB',fontWeight:400}}>clic para editar…</span>}</span>
+                          )}
+                        </td>
+                        {/* Monto */}
+                        <td style={cellStyle({textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#C62828'})}
+                          onClick={() => !isEditing('monto') && startEdit(i, 'monto')}>
+                          {isEditing('monto') ? (
+                            <input autoFocus type="number" step="0.01" min="0" value={editingValue}
+                              onChange={e => setEditingValue(e.target.value)}
+                              onBlur={saveEdit} onKeyDown={handleKey}
+                              style={{...editInputStyle, textAlign:'right', fontFamily:'monospace'}}/>
+                          ) : (
+                            <span>${fmt(r.monto)}</span>
+                          )}
+                        </td>
+                        {/* Moneda — siempre editable como dropdown */}
+                        <td style={{padding:'4px 6px',textAlign:'center'}}>
+                          {(() => {
+                            const monedaUsada = r.moneda || form.moneda || 'MXN';
+                            const usaMonedaIndividual = !!r.moneda;
+                            const errorParseo = r.monedaRaw && !r.moneda;
+                            return (
+                              <>
+                                <select
+                                  value={monedaUsada}
+                                  onChange={(e) => {
+                                    const nueva = e.target.value;
+                                    set('rows', form.rows.map((rr, j) => j === i ? { ...rr, moneda: nueva, monedaRaw: nueva } : rr));
+                                  }}
+                                  title={errorParseo ? `No se reconoció "${r.monedaRaw}". Edita aquí.` : (usaMonedaIndividual ? 'Moneda del Excel' : 'Moneda global (no había en Excel)')}
+                                  style={{
+                                    fontSize:11,
+                                    padding:'4px 6px',
+                                    border:`1px solid ${errorParseo ? '#C62828' : (usaMonedaIndividual ? '#1B5E20' : '#E5E7EB')}`,
+                                    borderRadius:5,
+                                    background: errorParseo ? '#FFEBEE' : (usaMonedaIndividual ? '#E8F5E9' : '#F8FAFC'),
+                                    fontFamily:'inherit',
+                                    outline:'none',
+                                    width:'100%',
+                                    boxSizing:'border-box',
+                                    fontWeight: usaMonedaIndividual ? 700 : 400,
+                                    cursor:'pointer',
+                                  }}
+                                >
+                                  <option value="MXN">MXN</option>
+                                  <option value="USD">USD</option>
+                                  <option value="EUR">EUR</option>
+                                </select>
+                                {errorParseo && (
+                                  <div title={`Texto original: ${r.monedaRaw}`} style={{fontSize:9,color:'#C62828',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>⚠ "{r.monedaRaw}"</div>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </td>
+                        {/* Notas */}
+                        <td style={cellStyle({color:C.muted})} onClick={() => !isEditing('notas') && startEdit(i, 'notas')}>
+                          {isEditing('notas') ? (
+                            <input autoFocus value={editingValue} onChange={e => setEditingValue(e.target.value)}
+                              onBlur={saveEdit} onKeyDown={handleKey} style={editInputStyle}/>
+                          ) : (
+                            <span style={{color: r.notas ? C.muted : '#D1D5DB'}}>{r.notas || 'clic para editar…'}</span>
+                          )}
+                        </td>
+                        {/* Fecha (sigue siendo date picker directo) */}
+                        <td style={{padding:'4px 6px',textAlign:'center'}}>
+                          <input
+                            type="date"
+                            value={fechaUsada}
+                            onChange={(e) => {
+                              const nueva = e.target.value;
+                              set('rows', form.rows.map((rr, j) => j === i ? { ...rr, fecha: nueva || null, fechaRaw: nueva || '' } : rr));
+                            }}
+                            title={errorParseo ? `No se pudo interpretar "${r.fechaRaw}". Edita aquí.` : (usaFechaIndividual ? 'Fecha del Excel' : 'Fecha global (no había en Excel)')}
+                            style={{
+                              fontSize:11,
+                              padding:'4px 6px',
+                              border:`1px solid ${errorParseo ? '#C62828' : (usaFechaIndividual ? '#1B5E20' : '#E5E7EB')}`,
+                              borderRadius:5,
+                              background: errorParseo ? '#FFEBEE' : (usaFechaIndividual ? '#E8F5E9' : '#F8FAFC'),
+                              fontFamily:'inherit',
+                              outline:'none',
+                              width:'100%',
+                              boxSizing:'border-box',
+                              fontWeight: usaFechaIndividual ? 700 : 400,
+                            }}
+                          />
+                          {errorParseo && (
+                            <div title={`Texto original: ${r.fechaRaw}`} style={{fontSize:9,color:'#C62828',marginTop:2}}>⚠ "{r.fechaRaw}"</div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{background:'#FFEBEE',borderTop:`2px solid #C62828`}}>
+                    <td/>
+                    <td colSpan={2} style={{padding:'10px',fontWeight:700,color:'#C62828'}}>TOTAL</td>
+                    <td style={{padding:'10px',textAlign:'right',fontFamily:'monospace',fontWeight:800,color:'#C62828'}}>
+                      ${fmt(form.rows.reduce((s, r) => s + r.monto, 0))}
+                    </td>
+                    <td colSpan={3}/>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',gap:10,marginTop:18}}>
+              <button onClick={() => set('rows', [])} style={{...btnStyle, background:'#F1F5F9', color:C.text}}>← Volver a editar</button>
+              <button onClick={handleGuardarTodos} style={{...btnStyle, background:'#C62828', padding:'9px 24px'}}>
+                💾 Guardar {form.rows.length} egresos
+              </button>
+            </div>
+          </>
+        )}
       </ModalShell>
     );
   };
@@ -6395,6 +9190,10 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         <NavItem id="importar" icon="📥" label="Importar"/>
         <NavItem id="proveedores" icon="🏢" label="Proveedores"/>
         <NavItem id="saldos" icon="🏦" label="Saldos Bancarios"/>
+        {empresaId === "empresa_2" && (
+          <NavItem id="flujo_efectivo" icon="💧" label="Flujo de Efectivo"/>
+        )}
+        <NavItem id="reportes" icon="📊" label="Reportes"/>
         <NavItem id="cxc" icon="💵" label="CxC — Ingresos"/>
         <NavItem id="clientes" icon="👥" label="Clientes CxC"/>
         <NavItem id="config" icon="⚙️" label="Configuración"/>
@@ -6443,6 +9242,20 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
         {view==="importar" && renderImportar()}
         {view==="config" && renderConfig()}
         {view==="saldos" && <SaldosBancarios />}
+        {view==="flujo_efectivo" && empresaId === "empresa_2" && (
+          <FlujoIngresos
+            empresaId={empresaId}
+            invoices={invoices}
+            payments={payments}
+          />
+        )}
+        {view==="reportes" && (
+          <ReportesView
+            empresaId={empresaId}
+            user={user}
+            esConsulta={esConsulta}
+          />
+        )}
         {view==="cxc" && (
           <CxcView
             invoices={invoices}
@@ -6464,6 +9277,7 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
             updatePorFacturar={updatePorFacturar}
             deletePorFacturar={deletePorFacturar}
             bulkInsertPorFacturar={bulkInsertPorFacturar}
+            bulkInsertPorFacturarPlain={bulkInsertPorFacturarPlain}
           />
         )}
 
@@ -6479,6 +9293,59 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
 
       {/* Modals */}
       {modalInv && <InvoiceModal/>}
+      {modalEgreso && <EgresoModal/>}
+      {modalImportarEgresos && <ImportarEgresosModal/>}
+      {modalListaNF && (
+        <EgresosNFModal
+          egresos={['MXN','USD','EUR'].flatMap(c => (invoices[c]||[]).map(i => ({...i, moneda:c}))).filter(i => i.tipo === 'EgresoNF' && i.empresaId === empresaId)}
+          payments={payments}
+          currency={currency}
+          onClose={() => setModalListaNF(false)}
+          onNuevo={() => {
+            setModalListaNF(false);
+            setModalEgreso({
+              _esNuevo: true, _yaPagado: true,
+              fecha: today(), categoriaEgreso: '', segmentoEgreso: '',
+              concepto: '', total: '', moneda: currency,
+              fechaProgramacion: today(), metodoPago: 'banco', notas: '',
+            });
+          }}
+          onImportar={() => {
+            setModalListaNF(false);
+            setModalImportarEgresos({ rows: [], categoriaEgreso: '', metodoPago: 'banco', fechaPago: today(), moneda: currency, _yaPagado: true });
+          }}
+          onEditar={(eg) => {
+            setModalListaNF(false);
+            setModalEgreso({
+              ...eg,
+              _esNuevo: false,
+              _yaPagado: eg.estatus === 'Pagado' || (+eg.montoPagado > 0),
+              fechaProgramacion: eg.fechaProgramacion || eg.fecha,
+              metodoPago: 'banco',
+            });
+          }}
+          onPagos={(eg) => {
+            setModalListaNF(false);
+            setPayModal({ invoiceId: eg.id, proveedor: eg.proveedor, folio: eg.folio, total: eg.total, moneda: eg.moneda || currency });
+          }}
+          onEliminar={(eg) => {
+            if (!confirm(`¿Eliminar el egreso ${eg.folio} (${eg.concepto || eg.proveedor})?\n\nEsta acción no se puede deshacer.`)) return;
+            setInvoices(prev => ({ ...prev, [eg.moneda || currency]: (prev[eg.moneda || currency] || []).filter(i => i.id !== eg.id) }));
+            deleteInvoiceDB(eg.id);
+          }}
+          onAplicarPagosMasivos={async (egresosArr, fecha, metodo, notas) => {
+            // Aplica un pago realizado a cada egreso por su saldo pendiente individual
+            let aplicados = 0;
+            for (const eg of egresosArr) {
+              const saldoPend = Math.max(0, (+eg.total || 0) - (+eg.montoPagado || 0));
+              if (saldoPend <= 0) continue;
+              await addPayment(eg.id, saldoPend, fecha, notas || 'Pago masivo', 'realizado', metodo);
+              aplicados++;
+            }
+            alert(`✅ Se aplicaron ${aplicados} pago${aplicados === 1 ? '' : 's'} correctamente.`);
+          }}
+        />
+      )}
       {modalSup && <SupplierModal/>}
 
       {/* Delete confirmation modal */}
@@ -6545,22 +9412,30 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
           <div style={{overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead><tr style={{background:"#F8FAFC"}}>
-              {["Folio","Concepto","Clasificación","Fecha","Total","Pagado","Saldo Total","Vencimiento","Moneda"].map(h=><th key={h} style={{padding:"10px 12px",textAlign:"left",color:C.muted,fontWeight:600,fontSize:11,textTransform:"uppercase"}}>{h}</th>)}
+              {["Folio","Concepto","Clasificación","Fecha","Total","Pagado","Pago Programado","Importe Pendiente","Vencimiento","Moneda"].map(h=><th key={h} style={{padding:"10px 12px",textAlign:"left",color:C.muted,fontWeight:600,fontSize:11,textTransform:"uppercase"}}>{h}</th>)}
             </tr></thead>
             <tbody>
-              {projDetail.invoices.map(inv=>(
-                <tr key={inv.id} style={{borderTop:`1px solid ${C.border}`}}>
-                  <td style={{padding:"10px 12px",fontWeight:600,whiteSpace:"nowrap"}}>{inv.serie}{inv.folio}</td>
-                  <td style={{padding:"10px 12px",color:inv.concepto?C.text:C.muted,fontStyle:inv.concepto?"normal":"italic"}}>{inv.concepto||"—"}</td>
-                  <td style={{padding:"10px 12px"}}><span style={{background:"#EEF2FF",color:C.blue,padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:600}}>{inv.clasificacion}</span></td>
-                  <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>{inv.fecha}</td>
-                  <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>${fmt(inv.total)}</td>
-                  <td style={{padding:"10px 12px",color:C.ok,whiteSpace:"nowrap"}}>${fmt(inv.montoPagado)}</td>
-                  <td style={{padding:"10px 12px",fontWeight:700,color:C.warn,whiteSpace:"nowrap"}}>${fmt(inv.saldo)}</td>
-                  <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>{inv.vencimiento}</td>
-                  <td style={{padding:"10px 12px"}}><span style={{background:{MXN:"#E3F2FD",USD:"#E8F5E9",EUR:"#F3E5F5"}[inv.moneda],color:{MXN:C.mxn,USD:C.usd,EUR:C.eur}[inv.moneda],padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:700}}>{inv.moneda}</span></td>
-                </tr>
-              ))}
+              {projDetail.invoices.map(inv=>{
+                // inv.saldo = monto programado a pagar en esta fecha
+                // Importe pendiente DESPUÉS de aplicar este pago = Total - Pagado previo - Pago programado
+                const pendienteDespues = Math.max(0, (+inv.total||0) - (+inv.montoPagado||0) - (+inv.saldo||0));
+                return (
+                  <tr key={inv.id} style={{borderTop:`1px solid ${C.border}`}}>
+                    <td style={{padding:"10px 12px",fontWeight:600,whiteSpace:"nowrap"}}>{inv.serie}{inv.folio}</td>
+                    <td style={{padding:"10px 12px",color:inv.concepto?C.text:C.muted,fontStyle:inv.concepto?"normal":"italic"}}>{inv.concepto||"—"}</td>
+                    <td style={{padding:"10px 12px"}}><span style={{background:"#EEF2FF",color:C.blue,padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:600}}>{inv.clasificacion}</span></td>
+                    <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>{inv.fecha}</td>
+                    <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>${fmt(inv.total)}</td>
+                    <td style={{padding:"10px 12px",color:C.ok,whiteSpace:"nowrap"}}>${fmt(inv.montoPagado)}</td>
+                    <td style={{padding:"10px 12px",fontWeight:700,color:C.warn,whiteSpace:"nowrap"}}>${fmt(inv.saldo)}</td>
+                    <td style={{padding:"10px 12px",fontWeight:700,whiteSpace:"nowrap",color: pendienteDespues > 0 ? '#E65100' : C.muted}}>
+                      {pendienteDespues > 0 ? `$${fmt(pendienteDespues)}` : '—'}
+                    </td>
+                    <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>{inv.vencimiento}</td>
+                    <td style={{padding:"10px 12px"}}><span style={{background:{MXN:"#E3F2FD",USD:"#E8F5E9",EUR:"#F3E5F5"}[inv.moneda],color:{MXN:C.mxn,USD:C.usd,EUR:C.eur}[inv.moneda],padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:700}}>{inv.moneda}</span></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           </div>
@@ -6743,16 +9618,38 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
                 <label style={{fontSize:11,fontWeight:600,color:C.muted,display:"block",marginBottom:4}}>Notas</label>
                 <input id={`pay-${tipo}-notas`} type="text" placeholder={tipo==='programado'?"Pago parcial, 50%…":"Transferencia, cheque…"} style={{...inputStyle,width:"100%"}}/>
               </div>
-              <button onClick={()=>{
+              <button onClick={async ()=>{
                 const m = +document.getElementById(`pay-${tipo}-monto`).value;
                 const f = document.getElementById(`pay-${tipo}-fecha`).value;
                 const n = document.getElementById(`pay-${tipo}-notas`).value;
                 const metodoEl = document.getElementById(`pay-${tipo}-metodo`);
                 const metodo = metodoEl ? metodoEl.value : 'banco';
                 if(!m||m<=0||!f) return;
-                addPayment(payModal.invoiceId, m, f, n, tipo, metodo);
+                // Guardar el pago primero
+                await addPayment(payModal.invoiceId, m, f, n, tipo, metodo);
                 document.getElementById(`pay-${tipo}-monto`).value="";
                 document.getElementById(`pay-${tipo}-notas`).value="";
+                // Solo para pagos REALIZADOS verificar si la factura está en algún plan activo
+                if (tipo === 'realizado') {
+                  try {
+                    const planesActivos = await buscarPlanesActivosDeFactura(payModal.invoiceId, empresaId);
+                    if (planesActivos && planesActivos.length > 0) {
+                      // Hay match potencial: abrir modal preguntando si aplicar al plan
+                      setPlanMatchQueue([]); // limpiar cola (es flujo individual)
+                      setPlanMatchModal({
+                        planes: planesActivos,
+                        montoPago: m,
+                        fechaPago: f,
+                        invoiceId: payModal.invoiceId,
+                        proveedor: payModal.proveedor,
+                        folio: payModal.folio,
+                        moneda: payModal.moneda,
+                      });
+                    }
+                  } catch (err) {
+                    console.error('Verificando planes activos:', err);
+                  }
+                }
               }} disabled={esConsulta} style={{...btnStyle,padding:"8px 20px",fontSize:13,background:tipo==='programado'?"#F57F17":C.blue,color:"#fff",opacity:esConsulta?0.4:1}}>+ Agregar</button>
             </div>
           </div>
@@ -6791,6 +9688,120 @@ ${pagosProgramadosHoy.map(p => `• ${p.proveedor}: Adeuda $${fmt(p.importeAdeud
               {realized.length > 0 && <PayTable items={realized} color={C.ok}/>}
               {saldoRest > 0 && <AddForm tipo="realizado" label="Registrar pago realizado:" defaultMonto={saldoRest} color={C.blue}/>}
               {saldoRest <= 0 && realized.length > 0 && <div style={{textAlign:"center",padding:12,background:"#E8F5E9",borderRadius:10,color:C.ok,fontWeight:700,fontSize:13}}>✅ Factura completamente pagada</div>}
+            </div>
+          </div>
+        </ModalShell>
+        );
+      })()}
+
+      {/* PlanMatchModal — pregunta si aplicar el pago a un abono del plan */}
+      {planMatchModal && (() => {
+        // Helper para avanzar a siguiente match si hay cola pendiente
+        const avanzarColaMatch = () => {
+          if (planMatchQueue.length > 0) {
+            const [siguiente, ...resto] = planMatchQueue;
+            setPlanMatchModal(siguiente);
+            setPlanMatchQueue(resto);
+          } else {
+            setPlanMatchModal(null);
+          }
+        };
+        const restantes = planMatchQueue.length;
+        return (
+        <ModalShell title={restantes > 0 ? `Plan de pago activo (${restantes + 1} factura${restantes > 0 ? 's' : ''} en plan)` : "Plan de pago activo"} onClose={() => { setPlanMatchModal(null); setPlanMatchQueue([]); }} wide>
+          <div style={{padding: '4px 0 12px'}}>
+            <div style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              background: '#DBEAFE', border: `1px solid #1565C0`, borderRadius: 8,
+              padding: '12px 14px', marginBottom: 14,
+            }}>
+              <div style={{fontSize: 22, lineHeight: 1}}>💡</div>
+              <div style={{flex: 1}}>
+                <div style={{fontSize: 13, fontWeight: 700, color: '#1E40AF', marginBottom: 4}}>
+                  Esta factura está en un plan de pago activo
+                </div>
+                <div style={{fontSize: 12, color: '#1E40AF', opacity: 0.9}}>
+                  Acabas de registrar un pago de <strong>${fmt(planMatchModal.montoPago)} {planMatchModal.moneda}</strong> a la factura <strong>{planMatchModal.folio}</strong>.
+                  ¿Quieres marcar también el abono del plan?
+                </div>
+              </div>
+            </div>
+
+            {planMatchModal.planes.map((item, idx) => {
+              const { plan, proximoAbono } = item;
+              const hayAbono = !!proximoAbono;
+              const monto = planMatchModal.montoPago;
+              const montoProgramado = hayAbono ? proximoAbono.montoProgramado : 0;
+              const diferencia = monto - montoProgramado;
+              const hayDif = Math.abs(diferencia) > 0.01;
+              const esMenor = diferencia < -0.01;
+
+              return (
+                <div key={idx} style={{
+                  border: `1px solid ${C.border}`, borderRadius: 8, padding: 14, marginBottom: 10,
+                }}>
+                  <div style={{fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 8}}>
+                    📋 {plan.proveedor}
+                  </div>
+                  {!hayAbono ? (
+                    <div style={{fontSize: 12, color: C.muted, padding: 8, background: '#F8FAFC', borderRadius: 6}}>
+                      Este plan no tiene abonos pendientes (puede estar al día). Acción no disponible.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.6}}>
+                        Próximo abono: <strong style={{color: C.text}}>#{proximoAbono.numero} · {proximoAbono.fechaProgramada} · ${fmt(montoProgramado)} {plan.moneda}</strong>
+                      </div>
+                      {hayDif && (
+                        <div style={{
+                          background: esMenor ? '#FEF3C7' : '#DBEAFE',
+                          border: `1px solid ${esMenor ? '#D97706' : '#1565C0'}`,
+                          borderRadius: 6, padding: '8px 10px', marginBottom: 10,
+                          fontSize: 11, color: esMenor ? '#92400E' : '#1E40AF',
+                        }}>
+                          {esMenor
+                            ? `⚠ Pagaste $${fmt(monto)}, ${fmt(Math.abs(diferencia))} menos que el abono ($${fmt(montoProgramado)}). El abono se marcará como PARCIAL.`
+                            : `↑ Pagaste $${fmt(monto)}, ${fmt(diferencia)} más que el abono. El abono se marcará como pagado completo y el excedente se considera adelanto.`}
+                        </div>
+                      )}
+                      <div style={{display: 'flex', justifyContent: 'flex-end', gap: 6}}>
+                        <button
+                          onClick={async () => {
+                            // No marcar — avanzar a siguiente match si hay cola
+                            avanzarColaMatch();
+                          }}
+                          style={{...btnStyle, padding: '7px 14px', fontSize: 12, background: '#F1F5F9', color: C.text}}>
+                          No, pago independiente
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const estado = monto >= montoProgramado - 0.01 ? 'pagado' : 'parcial';
+                              await marcarAbonoPagado(proximoAbono.id, {
+                                fechaPagado: planMatchModal.fechaPago,
+                                montoPagado: monto,
+                                facturaIdAplicada: String(planMatchModal.invoiceId),
+                                notas: `Match automático desde CxP (factura ${planMatchModal.folio})`,
+                                estado,
+                              }, user?.nombre);
+                              avanzarColaMatch();
+                            } catch (err) {
+                              console.error('Marcar abono desde CxP:', err);
+                              alert('Error al marcar el abono. Revisa la consola.');
+                            }
+                          }}
+                          style={{...btnStyle, padding: '7px 14px', fontSize: 12, background: C.ok, color: '#fff', border: 'none', fontWeight: 700}}>
+                          ✓ Sí, marcar abono
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+
+            <div style={{fontSize: 11, color: C.muted, paddingTop: 10, borderTop: `1px solid ${C.border}`, lineHeight: 1.5}}>
+              💡 El pago ya fue registrado en CxP. Esta acción solo enlaza también el abono del plan.
             </div>
           </div>
         </ModalShell>
@@ -8193,5 +11204,208 @@ function ProveedorPicker({ curInvoices, filtroProveedores, setFiltroProveedores,
         </div>
       )}
     </>
+  );
+}
+
+/* ── HistorialActividad ───────────────────────────────────────────────
+   Vista de auditoría (light): muestra la tabla audit_log con filtros.
+   Solo accesible para rol superadmin (gated en renderConfig).
+*/
+function HistorialActividad({ C, btnStyle, inputStyle }) {
+  const [logs, setLogs] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [filtros, setFiltros] = React.useState({
+    username: "",
+    entidad: "",
+    accion: "",
+    desde: "",
+    hasta: "",
+    limit: 200,
+  });
+
+  const cargar = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const opts = {
+        limit: filtros.limit,
+        username: filtros.username || undefined,
+        entidad: filtros.entidad || undefined,
+        accion: filtros.accion || undefined,
+        desde: filtros.desde || undefined,
+        hasta: filtros.hasta ? filtros.hasta + "T23:59:59" : undefined,
+      };
+      const data = await fetchAuditLog(opts);
+      setLogs(data);
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+    setLoading(false);
+  }, [filtros]);
+
+  React.useEffect(() => { cargar(); }, [cargar]);
+
+  const usernamesUnicos = React.useMemo(() => {
+    const s = new Set(logs.map(l => l.username).filter(Boolean));
+    return [...s].sort();
+  }, [logs]);
+
+  const entidadesUnicas = React.useMemo(() => {
+    const s = new Set(logs.map(l => l.entidad).filter(Boolean));
+    return [...s].sort();
+  }, [logs]);
+
+  const accionLabel = (a) => {
+    const m = {
+      crear: { l: "Crear", color: "#2E7D32", bg: "#E8F5E9" },
+      editar: { l: "Editar", color: "#1565C0", bg: "#E3F2FD" },
+      eliminar: { l: "Eliminar", color: "#C62828", bg: "#FFEBEE" },
+      importar: { l: "Importar", color: "#6A1B9A", bg: "#F3E5F5" },
+      conciliar_insert: { l: "Conciliar", color: "#6A1B9A", bg: "#F3E5F5" },
+    };
+    return m[a] || { l: a, color: "#616161", bg: "#F5F5F5" };
+  };
+
+  const entidadLabel = (e) => {
+    const m = {
+      ingreso: "💰 Ingreso CxC",
+      cobro: "💵 Cobro",
+      por_facturar: "📋 Por Facturar",
+      financiamiento: "🏦 Financiamiento",
+      pago_cxp: "💸 Pago CxP",
+      factura_cxp: "🧾 Factura CxP",
+    };
+    return m[e] || e;
+  };
+
+  const fmtFecha = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const dd = String(d.getDate()).padStart(2,"0");
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const yyyy = d.getFullYear();
+    const hh = String(d.getHours()).padStart(2,"0");
+    const min = String(d.getMinutes()).padStart(2,"0");
+    return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+  };
+
+  return (
+    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:16,padding:24,marginTop:24}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
+        <h3 style={{fontWeight:700,color:C.navy,margin:0}}>📋 Historial de actividad</h3>
+        <span style={{fontSize:12,color:C.muted}}>
+          Solo visible para superadmin · {logs.length} registros mostrados
+        </span>
+      </div>
+
+      {/* Filtros */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:16,padding:12,background:"#FAFAFA",borderRadius:10,border:`1px solid ${C.border}`}}>
+        <div>
+          <label style={{display:"block",fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>Usuario</label>
+          <select value={filtros.username} onChange={e=>setFiltros(f=>({...f,username:e.target.value}))} style={{...inputStyle,fontSize:12,padding:"6px 8px",width:"100%"}}>
+            <option value="">Todos</option>
+            {usernamesUnicos.map(u=><option key={u} value={u}>{u}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{display:"block",fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>Entidad</label>
+          <select value={filtros.entidad} onChange={e=>setFiltros(f=>({...f,entidad:e.target.value}))} style={{...inputStyle,fontSize:12,padding:"6px 8px",width:"100%"}}>
+            <option value="">Todas</option>
+            {entidadesUnicas.map(e=><option key={e} value={e}>{entidadLabel(e)}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{display:"block",fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>Acción</label>
+          <select value={filtros.accion} onChange={e=>setFiltros(f=>({...f,accion:e.target.value}))} style={{...inputStyle,fontSize:12,padding:"6px 8px",width:"100%"}}>
+            <option value="">Todas</option>
+            <option value="crear">Crear</option>
+            <option value="editar">Editar</option>
+            <option value="eliminar">Eliminar</option>
+            <option value="importar">Importar</option>
+            <option value="conciliar_insert">Conciliar</option>
+          </select>
+        </div>
+        <div>
+          <label style={{display:"block",fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>Desde</label>
+          <input type="date" value={filtros.desde} onChange={e=>setFiltros(f=>({...f,desde:e.target.value}))} style={{...inputStyle,fontSize:12,padding:"6px 8px",width:"100%"}}/>
+        </div>
+        <div>
+          <label style={{display:"block",fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>Hasta</label>
+          <input type="date" value={filtros.hasta} onChange={e=>setFiltros(f=>({...f,hasta:e.target.value}))} style={{...inputStyle,fontSize:12,padding:"6px 8px",width:"100%"}}/>
+        </div>
+        <div>
+          <label style={{display:"block",fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>Máximo</label>
+          <select value={filtros.limit} onChange={e=>setFiltros(f=>({...f,limit:+e.target.value}))} style={{...inputStyle,fontSize:12,padding:"6px 8px",width:"100%"}}>
+            <option value={100}>100</option>
+            <option value={200}>200</option>
+            <option value={500}>500</option>
+            <option value={1000}>1000</option>
+          </select>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+        <button onClick={cargar} disabled={loading} style={{...btnStyle,padding:"6px 14px",fontSize:12,opacity:loading?0.5:1}}>
+          {loading?"Cargando…":"🔄 Refrescar"}
+        </button>
+        <button
+          onClick={()=>setFiltros({username:"",entidad:"",accion:"",desde:"",hasta:"",limit:200})}
+          style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"6px 14px",fontSize:12}}>
+          Limpiar filtros
+        </button>
+      </div>
+
+      {error && (
+        <div style={{padding:10,background:"#FFEBEE",color:C.danger,borderRadius:8,fontSize:12,marginBottom:12}}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {logs.length === 0 && !loading ? (
+        <div style={{textAlign:"center",padding:40,color:C.muted,fontSize:13}}>
+          <div style={{fontSize:36,marginBottom:8}}>📭</div>
+          Sin actividad registrada con esos filtros
+        </div>
+      ) : (
+        <div style={{overflowX:"auto",border:`1px solid ${C.border}`,borderRadius:10}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead>
+              <tr style={{background:C.navy,color:"#fff"}}>
+                <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,textTransform:"uppercase",whiteSpace:"nowrap"}}>Fecha y hora</th>
+                <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,textTransform:"uppercase"}}>Usuario</th>
+                <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,textTransform:"uppercase"}}>Acción</th>
+                <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,textTransform:"uppercase"}}>Entidad</th>
+                <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,textTransform:"uppercase"}}>ID afectado</th>
+                <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,textTransform:"uppercase"}}>Contexto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((l,i) => {
+                const ac = accionLabel(l.accion);
+                return (
+                  <tr key={l.id} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFF"}}>
+                    <td style={{padding:"8px 12px",color:C.muted,whiteSpace:"nowrap"}}>{fmtFecha(l.createdAt)}</td>
+                    <td style={{padding:"8px 12px",fontWeight:700,color:C.navy}}>{l.username || "—"}</td>
+                    <td style={{padding:"8px 12px"}}>
+                      <span style={{background:ac.bg,color:ac.color,padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:700}}>{ac.l}</span>
+                    </td>
+                    <td style={{padding:"8px 12px",color:C.text}}>{entidadLabel(l.entidad)}</td>
+                    <td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:11,color:C.muted}}>{l.entidadId || "—"}</td>
+                    <td style={{padding:"8px 12px",fontSize:11,color:C.muted,maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                      title={l.contexto ? JSON.stringify(l.contexto) : ""}>
+                      {l.contexto ? (
+                        l.contexto.campos ? `Campos: ${l.contexto.campos.join(", ")}` :
+                        l.contexto.count != null ? `${l.contexto.count} registros` :
+                        JSON.stringify(l.contexto).slice(0,80)
+                      ) : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
