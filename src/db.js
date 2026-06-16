@@ -3,7 +3,7 @@ import { supabase } from './supabase.js';
 /* ── Helpers: convert between DB snake_case and App camelCase ─── */
 const toApp = (row) => ({
   id: row.id,
-  tipo: row.tipo || 'Factura',  // 'Factura' | 'EgresoNF'
+  tipo: row.tipo || 'Factura',
   fecha: row.fecha || '',
   serie: row.serie || '',
   folio: row.folio || '',
@@ -28,9 +28,6 @@ const toApp = (row) => ({
   voBo: row.vo_bo || false,
   autorizadoDireccion: row.autorizado_direccion || false,
   empresaId: row.empresa_id || null,
-  // Campos específicos de Egresos No Facturados
-  categoriaEgreso: row.categoria_egreso || '',
-  segmentoEgreso: row.segmento_egreso || '',
 });
 
 const toDB = (inv) => ({
@@ -60,8 +57,6 @@ const toDB = (inv) => ({
   vo_bo: inv.voBo || false,
   autorizado_direccion: inv.autorizadoDireccion || false,
   empresa_id: inv.empresaId || null,
-  categoria_egreso: inv.categoriaEgreso || null,
-  segmento_egreso: inv.segmentoEgreso || null,
 });
 
 const supToApp = (row) => ({
@@ -100,14 +95,12 @@ const supToDB = (sup) => ({
 
 /* ── Invoices ────────────────────────────────────────────────── */
 export async function fetchInvoices(empresaId) {
-  const res = await fetchAllPaginated(() => {
-    let q = supabase.from('invoices').select('*').order('fecha', { ascending: false });
-    if (empresaId) q = q.eq('empresa_id', empresaId);
-    return q;
-  });
-  if (res.error) { console.error('fetchInvoices:', res.error); return { MXN: [], USD: [], EUR: [] }; }
+  let q = supabase.from('invoices').select('*').order('fecha', { ascending: false });
+  if (empresaId) q = q.eq('empresa_id', empresaId);
+  const { data, error } = await q;
+  if (error) { console.error('fetchInvoices:', error); return { MXN: [], USD: [], EUR: [] }; }
   const grouped = { MXN: [], USD: [], EUR: [] };
-  (res.data || []).forEach(row => {
+  (data || []).forEach(row => {
     const inv = toApp(row);
     if (grouped[inv.moneda]) grouped[inv.moneda].push(inv);
     else grouped.MXN.push(inv);
@@ -143,15 +136,11 @@ export async function upsertManyInvoices(invArr) {
 }
 
 export async function deleteInvoiceDB(id) {
-  await logAudit({ accion:'eliminar', entidad:'factura_cxp', entidadId:id });
-
   const { error } = await supabase.from('invoices').delete().eq('id', id);
   if (error) console.error('deleteInvoice:', error);
 }
 
 export async function updateInvoiceField(id, fields) {
-  await logAudit({ accion:'editar', entidad:'factura_cxp', entidadId:id, contexto:{ campos: Object.keys(fields||{}) } });
-
   // fields: { clasificacion: 'x' } or { fecha_programacion: 'y' } etc
   const dbFields = {};
   if ('clasificacion' in fields) dbFields.clasificacion = fields.clasificacion;
@@ -235,59 +224,23 @@ export async function saveClasificaciones(list, empresaId) {
 }
 
 /* ── Payments (pagos programados y realizados) ───────────────── */
-// Helper: pagina resultados de Supabase en chunks de 1000 para evitar el
-// límite por defecto. Devuelve TODOS los registros que coincidan, no solo
-// los primeros 1000.
-async function fetchAllPaginated(builderFactory) {
-  const PAGE = 1000;
-  let allRows = [];
-  let from = 0;
-  for (;;) {
-    const { data, error } = await builderFactory().range(from, from + PAGE - 1);
-    if (error) return { data: null, error };
-    if (!data || data.length === 0) break;
-    allRows = allRows.concat(data);
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  return { data: allRows, error: null };
-}
-
 export async function fetchPayments(empresaId) {
   // Payments linked to invoices of this empresa
   if (empresaId) {
-    // 1. Traer IDs de invoices con paginación (en VL pueden ser 645+)
-    const invRes = await fetchAllPaginated(() =>
-      supabase.from('invoices').select('id').eq('empresa_id', empresaId)
-    );
-    if (invRes.error) { console.error('fetchPayments(invoices):', invRes.error); return []; }
-    const ids = (invRes.data || []).map(r => r.id);
+    const { data: invData } = await supabase.from('invoices').select('id').eq('empresa_id', empresaId);
+    const ids = (invData || []).map(r => r.id);
     if (ids.length === 0) return [];
-
-    // 2. Traer payments en CHUNKS de IDs para no exceder límite de URL.
-    //    Supabase rechaza URLs > ~16KB; 200 UUIDs ≈ 8KB (seguro con margen).
-    const CHUNK = 200;
-    let allPayments = [];
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const slice = ids.slice(i, i + CHUNK);
-      const res = await fetchAllPaginated(() =>
-        supabase.from('payments').select('*').in('invoice_id', slice).order('fecha_pago', { ascending: false })
-      );
-      if (res.error) { console.error('fetchPayments(chunk):', res.error); continue; }
-      allPayments = allPayments.concat(res.data || []);
-    }
-    return allPayments.map(r => ({
+    const { data, error } = await supabase.from('payments').select('*').in('invoice_id', ids).order('fecha_pago', { ascending: false });
+    if (error) { console.error('fetchPayments:', error); return []; }
+    return (data || []).map(r => ({
       id: r.id, invoiceId: r.invoice_id, monto: +r.monto || 0,
       fechaPago: r.fecha_pago || '', notas: r.notas || '', tipo: r.tipo || 'realizado',
-      metodoPago: r.metodo_pago || 'banco',
+      metodoPago: r.metodo_pago || 'banco',  // 'banco' | 'tdc' | 'otro'
     }));
   }
-  // Sin filtro de empresa: paginado simple
-  const res = await fetchAllPaginated(() =>
-    supabase.from('payments').select('*').order('fecha_pago', { ascending: false })
-  );
-  if (res.error) { console.error('fetchPayments:', res.error); return []; }
-  return (res.data || []).map(r => ({
+  const { data, error } = await supabase.from('payments').select('*').order('fecha_pago', { ascending: false });
+  if (error) { console.error('fetchPayments:', error); return []; }
+  return (data || []).map(r => ({
     id: r.id, invoiceId: r.invoice_id, monto: +r.monto || 0,
     fechaPago: r.fecha_pago || '', notas: r.notas || '', tipo: r.tipo || 'realizado',
     metodoPago: r.metodo_pago || 'banco',
@@ -295,8 +248,6 @@ export async function fetchPayments(empresaId) {
 }
 
 export async function insertPayment(p) {
-  const _auditFolio = p?.invoiceId;
-
   const row = {
     invoice_id: p.invoiceId, monto: p.monto, fecha_pago: p.fechaPago,
     notas: p.notas || '', tipo: p.tipo || 'realizado',
@@ -304,7 +255,6 @@ export async function insertPayment(p) {
   };
   const { data, error } = await supabase.from('payments').insert(row).select().single();
   if (error) { console.error('insertPayment:', error); return p; }
-  await logAudit({ accion:'crear', entidad:'pago_cxp', entidadId:data.id, contexto:{ invoiceId:_auditFolio } });
   return {
     id: data.id, invoiceId: data.invoice_id, monto: +data.monto,
     fechaPago: data.fecha_pago, notas: data.notas || '', tipo: data.tipo || 'realizado',
@@ -313,15 +263,11 @@ export async function insertPayment(p) {
 }
 
 export async function deletePayment(id) {
-  await logAudit({ accion:'eliminar', entidad:'pago_cxp', entidadId:id });
-
   const { error } = await supabase.from('payments').delete().eq('id', id);
   if (error) console.error('deletePayment:', error);
 }
 
 export async function updatePayment(id, fields) {
-  await logAudit({ accion:'editar', entidad:'pago_cxp', entidadId:id, contexto:{ campos: Object.keys(fields||{}) } });
-
   const dbFields = {};
   if ('monto' in fields) dbFields.monto = fields.monto;
   if ('fechaPago' in fields) dbFields.fecha_pago = fields.fechaPago;
@@ -392,20 +338,17 @@ export async function upsertIngreso(ing) {
     delete row.id;
     const { data, error } = await supabase.from('ingresos').insert(row).select().single();
     if (error) { console.error('insertIngreso:', error); return ing; }
-    await logAudit({ accion:'crear', entidad:'ingreso', entidadId:data.id, empresaId:data.empresa_id });
     return ingresoToApp(data);
   } else {
     const { data, error } = await supabase.from('ingresos').update(row).eq('id', row.id).select().single();
     if (error) { console.error('updateIngreso:', error); return ing; }
-    await logAudit({ accion:'editar', entidad:'ingreso', entidadId:data.id, empresaId:data.empresa_id });
     return ingresoToApp(data);
   }
 }
 
 export async function deleteIngreso(id) {
   const { error } = await supabase.from('ingresos').delete().eq('id', id);
-  if (error) { console.error('deleteIngreso:', error); return; }
-  await logAudit({ accion:'eliminar', entidad:'ingreso', entidadId:id });
+  if (error) console.error('deleteIngreso:', error);
 }
 
 /* ── Bulk delete ingresos TAS ─────────────────────────────── */
@@ -443,9 +386,6 @@ export async function deleteTASTodo(empresaId) {
 }
 
 export async function updateIngresoField(id, fields) {
-  // Audit wrap (light): registra edición a nivel campo
-  await logAudit({ accion:'editar', entidad:'ingreso', entidadId:id, contexto:{ campos: Object.keys(fields||{}) } });
-
   const dbFields = {};
   if ('fechaFicticia' in fields) dbFields.fecha_ficticia = fields.fechaFicticia || null;
   if ('diasCredito' in fields) dbFields.dias_credito = fields.diasCredito;
@@ -463,38 +403,19 @@ export async function updateIngresoField(id, fields) {
 /* ── Cobros ──────────────────────────────────────────────────── */
 export async function fetchCobros(empresaId) {
   if (empresaId) {
-    // Traer IDs de ingresos paginados (puede haber >1000)
-    const ingRes = await fetchAllPaginated(() =>
-      supabase.from('ingresos').select('id').eq('empresa_id', empresaId)
-    );
-    if (ingRes.error) { console.error('fetchCobros(ingresos):', ingRes.error); return []; }
-    const ids = (ingRes.data || []).map(r => r.id);
+    const { data: ingData } = await supabase.from('ingresos').select('id').eq('empresa_id', empresaId);
+    const ids = (ingData || []).map(r => r.id);
     if (ids.length === 0) return [];
-
-    // Traer cobros en chunks de 200 IDs para no exceder límite de URL
-    const CHUNK = 200;
-    let allCobros = [];
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const slice = ids.slice(i, i + CHUNK);
-      const res = await fetchAllPaginated(() =>
-        supabase.from('cobros').select('*').in('ingreso_id', slice).order('fecha_cobro', { ascending: false })
-      );
-      if (res.error) { console.error('fetchCobros(chunk):', res.error); continue; }
-      allCobros = allCobros.concat(res.data || []);
-    }
-    return allCobros.map(r => ({ id: r.id, ingresoId: r.ingreso_id, monto: +r.monto || 0, fechaCobro: r.fecha_cobro || '', notas: r.notas || '', tipo: r.tipo || 'realizado', banco: r.banco || '' }));
+    const { data, error } = await supabase.from('cobros').select('*').in('ingreso_id', ids).order('fecha_cobro', { ascending: false });
+    if (error) { console.error('fetchCobros:', error); return []; }
+    return (data || []).map(r => ({ id: r.id, ingresoId: r.ingreso_id, monto: +r.monto || 0, fechaCobro: r.fecha_cobro || '', notas: r.notas || '', tipo: r.tipo || 'realizado', banco: r.banco || '' }));
   }
-  // Sin filtro de empresa: paginado simple
-  const res = await fetchAllPaginated(() =>
-    supabase.from('cobros').select('*').order('fecha_cobro', { ascending: false })
-  );
-  if (res.error) { console.error('fetchCobros:', res.error); return []; }
-  return (res.data || []).map(r => ({ id: r.id, ingresoId: r.ingreso_id, monto: +r.monto || 0, fechaCobro: r.fecha_cobro || '', notas: r.notas || '', tipo: r.tipo || 'realizado', banco: r.banco || '' }));
+  const { data, error } = await supabase.from('cobros').select('*').order('fecha_cobro', { ascending: false });
+  if (error) { console.error('fetchCobros:', error); return []; }
+  return (data || []).map(r => ({ id: r.id, ingresoId: r.ingreso_id, monto: +r.monto || 0, fechaCobro: r.fecha_cobro || '', notas: r.notas || '', tipo: r.tipo || 'realizado', banco: r.banco || '' }));
 }
 
 export async function insertCobro(c) {
-  const _auditEmp = c?.empresaId;
-
   const row = {
     ingreso_id: c.ingresoId,
     monto: c.monto,
@@ -518,13 +439,10 @@ export async function insertCobro(c) {
 
 export async function deleteCobro(id) {
   const { error } = await supabase.from('cobros').delete().eq('id', id);
-  if (error) { console.error('deleteCobro:', error); return; }
-  await logAudit({ accion:'eliminar', entidad:'cobro', entidadId:id });
+  if (error) console.error('deleteCobro:', error);
 }
 
 export async function updateCobro(id, fields) {
-  await logAudit({ accion:'editar', entidad:'cobro', entidadId:id, contexto:{ campos: Object.keys(fields||{}) } });
-
   const row = {};
   if ('monto'      in fields) row.monto       = +fields.monto;
   if ('fechaCobro' in fields) row.fecha_cobro  = fields.fechaCobro;
@@ -537,33 +455,16 @@ export async function updateCobro(id, fields) {
 /* ── Invoice-Ingresos ────────────────────────────────────────── */
 export async function fetchInvoiceIngresos(empresaId) {
   if (empresaId) {
-    // Traer IDs de invoices paginados
-    const invRes = await fetchAllPaginated(() =>
-      supabase.from('invoices').select('id').eq('empresa_id', empresaId)
-    );
-    if (invRes.error) { console.error('fetchInvoiceIngresos(invoices):', invRes.error); return []; }
-    const ids = (invRes.data || []).map(r => r.id);
+    const { data: invData } = await supabase.from('invoices').select('id').eq('empresa_id', empresaId);
+    const ids = (invData || []).map(r => r.id);
     if (ids.length === 0) return [];
-
-    // Traer invoice_ingresos en chunks de 200 IDs
-    const CHUNK = 200;
-    let all = [];
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const slice = ids.slice(i, i + CHUNK);
-      const res = await fetchAllPaginated(() =>
-        supabase.from('invoice_ingresos').select('*').in('invoice_id', slice)
-      );
-      if (res.error) { console.error('fetchInvoiceIngresos(chunk):', res.error); continue; }
-      all = all.concat(res.data || []);
-    }
-    return all.map(r => ({ id: r.id, invoiceId: r.invoice_id, ingresoId: r.ingreso_id, montoAsignado: +r.monto_asignado || 0 }));
+    const { data, error } = await supabase.from('invoice_ingresos').select('*').in('invoice_id', ids);
+    if (error) { console.error('fetchInvoiceIngresos:', error); return []; }
+    return (data || []).map(r => ({ id: r.id, invoiceId: r.invoice_id, ingresoId: r.ingreso_id, montoAsignado: +r.monto_asignado || 0 }));
   }
-  // Sin filtro: paginado simple
-  const res = await fetchAllPaginated(() =>
-    supabase.from('invoice_ingresos').select('*')
-  );
-  if (res.error) { console.error('fetchInvoiceIngresos:', res.error); return []; }
-  return (res.data || []).map(r => ({
+  const { data, error } = await supabase.from('invoice_ingresos').select('*');
+  if (error) { console.error('fetchInvoiceIngresos:', error); return []; }
+  return (data || []).map(r => ({
     id: r.id,
     invoiceId: r.invoice_id,
     ingresoId: r.ingreso_id,
@@ -700,13 +601,10 @@ export async function insertPorFacturar(r) {
   };
   const { data, error } = await supabase.from('por_facturar').insert(row).select().single();
   if (error) { console.error('insertPorFacturar:', error); return null; }
-  await logAudit({ accion:'crear', entidad:'por_facturar', entidadId:data.id, empresaId:r?.empresaId });
   return { id: data.id, ...r };
 }
 
 export async function updatePorFacturar(id, fields) {
-  await logAudit({ accion:'editar', entidad:'por_facturar', entidadId:id, contexto:{ campos: Object.keys(fields||{}) } });
-
   const row = {};
   if ('cliente'    in fields) row.cliente     = fields.cliente;
   if ('concepto'   in fields) row.concepto    = fields.concepto;
@@ -722,8 +620,7 @@ export async function updatePorFacturar(id, fields) {
 
 export async function deletePorFacturar(id) {
   const { error } = await supabase.from('por_facturar').delete().eq('id', id);
-  if (error) { console.error('deletePorFacturar:', error); return; }
-  await logAudit({ accion:'eliminar', entidad:'por_facturar', entidadId:id });
+  if (error) console.error('deletePorFacturar:', error);
 }
 
 export async function bulkInsertPorFacturar(rows) {
@@ -743,29 +640,7 @@ export async function bulkInsertPorFacturar(rows) {
     .upsert(dbRows, { onConflict: 'empresa_id,num_os,cliente,fecha_venta', ignoreDuplicates: false })
     .select();
   if (error) { console.error('bulkInsertPorFacturar:', error); return { inserted: 0, error }; }
-  await logAudit({ accion:'importar', entidad:'por_facturar', entidadId:null, contexto:{ count: (data||[]).length, modo:'upsert' } });
   return { inserted: (data || []).length };
-}
-
-// Insert plano (sin upsert) — usado por el flujo de Conciliación donde el matching
-// ya se hace en el cliente con llave (num_os, cliente) y NO queremos que el onConflict
-// del upsert (que incluye fecha_venta) decida por nosotros.
-export async function bulkInsertPorFacturarPlain(rows) {
-  const dbRows = rows.map(r => ({
-    empresa_id: r.empresaId,
-    cliente: r.cliente,
-    concepto: r.concepto || '',
-    importe: +r.importe || 0,
-    moneda: r.moneda || 'MXN',
-    notas: r.notas || '',
-    num_os: r.numOs || null,
-    fecha_venta: r.fechaVenta || null,
-    destino: r.destino || null,
-  }));
-  const { data, error } = await supabase.from('por_facturar').insert(dbRows).select();
-  if (error) { console.error('bulkInsertPorFacturarPlain:', error); return { inserted: 0, data: [], error }; }
-  await logAudit({ accion:'conciliar_insert', entidad:'por_facturar', entidadId:null, contexto:{ count: (data||[]).length } });
-  return { inserted: (data || []).length, data: data || [] };
 }
 
 /* ── Financiamientos ─────────────────────────────────────────────── */
@@ -790,8 +665,6 @@ export async function fetchFinanciamientos(empresaId) {
 }
 
 export async function insertFinanciamiento(f) {
-  const _auditEmp = f?.empresaId;
-
   const row = {
     empresa_id: f.empresaId,
     nombre: f.nombre || '',
@@ -806,13 +679,10 @@ export async function insertFinanciamiento(f) {
   };
   const { data, error } = await supabase.from('financiamientos').insert(row).select().single();
   if (error) { console.error('insertFinanciamiento:', error); return null; }
-  await logAudit({ accion:'crear', entidad:'financiamiento', entidadId:data.id, empresaId:_auditEmp });
   return { id: data.id, ...f };
 }
 
 export async function updateFinanciamiento(id, fields) {
-  await logAudit({ accion:'editar', entidad:'financiamiento', entidadId:id, contexto:{ campos: Object.keys(fields||{}) } });
-
   const map = { nombre:'nombre', concepto:'concepto', moneda:'moneda', montoMensual:'monto_mensual',
     fechaInicio:'fecha_inicio', fechaFin:'fecha_fin', diaPago:'dia_pago', activo:'activo', notas:'notas' };
   const row = {};
@@ -822,8 +692,6 @@ export async function updateFinanciamiento(id, fields) {
 }
 
 export async function deleteFinanciamiento(id) {
-  await logAudit({ accion:'eliminar', entidad:'financiamiento', entidadId:id });
-
   const { error } = await supabase.from('financiamientos').delete().eq('id', id);
   if (error) console.error('deleteFinanciamiento:', error);
 }
@@ -833,18 +701,10 @@ export async function fetchFinanciamientoPagos(empresaId) {
   const fins = await fetchFinanciamientos(empresaId);
   if (!fins.length) return [];
   const ids = fins.map(f => f.id);
-  // Paginar en chunks por si llegan a ser muchos
-  const CHUNK = 200;
-  let all = [];
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const slice = ids.slice(i, i + CHUNK);
-    const res = await fetchAllPaginated(() =>
-      supabase.from('financiamiento_pagos').select('*').in('financiamiento_id', slice).order('fecha_pago')
-    );
-    if (res.error) { console.error('fetchFinanciamientoPagos(chunk):', res.error); continue; }
-    all = all.concat(res.data || []);
-  }
-  return all.map(r => ({
+  const { data, error } = await supabase.from('financiamiento_pagos')
+    .select('*').in('financiamiento_id', ids).order('fecha_pago');
+  if (error) { console.error('fetchFinanciamientoPagos:', error); return []; }
+  return (data||[]).map(r => ({
     id: r.id,
     financiamientoId: r.financiamiento_id,
     fechaPago: r.fecha_pago || '',
@@ -1335,631 +1195,4 @@ export async function fetchSugerenciasIngresos(empresaId) {
     clientes: [...clientes].sort((a, b) => a.localeCompare(b, 'es')),
     conceptos: [...conceptos].sort((a, b) => a.localeCompare(b, 'es')),
   };
-}
-
-/* ── Audit log (light) ──────────────────────────────────────────────
-   Registra acciones del usuario contra entidades de dinero. Versión
-   light: quién, cuándo, qué tipo de acción, sobre qué entidad/id. NO
-   guarda diff antes/después (eso es la versión completa, postergada).
-
-   Uso: await logAudit({ user, accion: 'crear'|'editar'|'eliminar',
-                         entidad: 'ingreso'|'cobro'|..., entidadId, contexto? })
-
-   Fail-silent: si el insert al log falla, NO interrumpe la operación
-   principal. Mejor perder un log que romper una transacción de negocio. */
-let _auditUser = null;
-export function setAuditUser(user) { _auditUser = user || null; }
-
-export async function logAudit({ user, accion, entidad, entidadId, empresaId, contexto }) {
-  try {
-    const u = user || _auditUser;
-    if (!u) return;
-    const row = {
-      user_id:    u.id || null,
-      username:   u.username || null,
-      empresa_id: empresaId || null,
-      accion:     String(accion || ''),
-      entidad:    String(entidad || ''),
-      entidad_id: entidadId != null ? String(entidadId) : null,
-      contexto:   contexto || null,
-    };
-    const { error } = await supabase.from('audit_log').insert(row);
-    if (error) console.warn('logAudit:', error.message || error);
-  } catch (e) {
-    console.warn('logAudit exception:', e);
-  }
-}
-
-export async function fetchAuditLog({ limit = 200, username, entidad, accion, desde, hasta } = {}) {
-  let q = supabase.from('audit_log').select('*').order('created_at', { ascending: false }).limit(limit);
-  if (username) q = q.eq('username', username);
-  if (entidad)  q = q.eq('entidad', entidad);
-  if (accion)   q = q.eq('accion', accion);
-  if (desde)    q = q.gte('created_at', desde);
-  if (hasta)    q = q.lte('created_at', hasta);
-  const { data, error } = await q;
-  if (error) { console.error('fetchAuditLog:', error); return []; }
-  return (data || []).map(r => ({
-    id: r.id,
-    createdAt: r.created_at,
-    userId: r.user_id,
-    username: r.username,
-    empresaId: r.empresa_id,
-    accion: r.accion,
-    entidad: r.entidad,
-    entidadId: r.entidad_id,
-    contexto: r.contexto,
-  }));
-}
-
-
-// ═══════════════════════════════════════════════════════════════════
-// PRÉSTAMOS BANCARIOS
-// Un préstamo por empresa (por ahora). Movimientos registran
-// disposiciones (uso del dinero) y pagos (devolución).
-// ═══════════════════════════════════════════════════════════════════
-
-export async function fetchPrestamos(empresaId) {
-  const { data, error } = await supabase
-    .from('prestamos')
-    .select('*')
-    .eq('empresa_id', empresaId)
-    .eq('activo', true)
-    .order('created_at', { ascending: true });
-  if (error) { console.error('fetchPrestamos:', error); return []; }
-  return (data || []).map(r => ({
-    id: r.id,
-    empresaId: r.empresa_id,
-    banco: r.banco || '',
-    cuentaId: r.cuenta_id || null,
-    numeroCuenta: r.numero_cuenta || '',
-    montoAutorizado: +r.monto_autorizado || 0,
-    moneda: r.moneda || 'MXN',
-    fechaRecepcion: r.fecha_recepcion,
-    concepto: r.concepto || '',
-    activo: r.activo !== false,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  }));
-}
-
-export async function upsertPrestamo(p, usuario) {
-  const row = {
-    empresa_id: p.empresaId,
-    banco: p.banco,
-    cuenta_id: p.cuentaId || null,
-    numero_cuenta: p.numeroCuenta || null,
-    monto_autorizado: +p.montoAutorizado || 0,
-    moneda: p.moneda || 'MXN',
-    fecha_recepcion: p.fechaRecepcion || null,
-    concepto: p.concepto || null,
-    activo: p.activo !== false,
-    updated_by: usuario || 'desconocido',
-  };
-  const isUUID = p.id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(p.id);
-  if (isUUID) {
-    const { data, error } = await supabase.from('prestamos').update(row).eq('id', p.id).select().single();
-    if (error) { console.error('upsertPrestamo update:', error); return null; }
-    return data?.id;
-  } else {
-    row.created_by = usuario || 'desconocido';
-    const { data, error } = await supabase.from('prestamos').insert(row).select().single();
-    if (error) { console.error('upsertPrestamo insert:', error); return null; }
-    return data?.id;
-  }
-}
-
-export async function deletePrestamo(id) {
-  // Soft delete
-  const { error } = await supabase.from('prestamos').update({ activo: false }).eq('id', id);
-  if (error) console.error('deletePrestamo:', error);
-}
-
-// MOVIMIENTOS DEL PRÉSTAMO
-export async function fetchPrestamoMovimientos(prestamoId) {
-  const { data, error } = await supabase
-    .from('prestamo_movimientos')
-    .select('*')
-    .eq('prestamo_id', prestamoId)
-    .order('fecha', { ascending: true })
-    .order('created_at', { ascending: true });
-  if (error) { console.error('fetchPrestamoMovimientos:', error); return []; }
-  return (data || []).map(r => ({
-    id: r.id,
-    prestamoId: r.prestamo_id,
-    empresaId: r.empresa_id,
-    fecha: r.fecha,
-    tipo: r.tipo,            // 'disposicion' | 'pago' | 'inicial'
-    monto: +r.monto || 0,    // siempre positivo
-    concepto: r.concepto || '',
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  }));
-}
-
-export async function upsertPrestamoMovimiento(m, usuario) {
-  const row = {
-    prestamo_id: m.prestamoId,
-    empresa_id: m.empresaId,
-    fecha: m.fecha,
-    tipo: m.tipo,
-    monto: +m.monto || 0,
-    concepto: m.concepto || null,
-    updated_by: usuario || 'desconocido',
-  };
-  const isUUID = m.id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(m.id);
-  if (isUUID) {
-    const { data, error } = await supabase.from('prestamo_movimientos').update(row).eq('id', m.id).select().single();
-    if (error) { console.error('upsertPrestamoMovimiento update:', error); return null; }
-    return data?.id;
-  } else {
-    row.created_by = usuario || 'desconocido';
-    const { data, error } = await supabase.from('prestamo_movimientos').insert(row).select().single();
-    if (error) { console.error('upsertPrestamoMovimiento insert:', error); return null; }
-    return data?.id;
-  }
-}
-
-export async function deletePrestamoMovimiento(id) {
-  const { error } = await supabase.from('prestamo_movimientos').delete().eq('id', id);
-  if (error) console.error('deletePrestamoMovimiento:', error);
-}
-
-// Cálculo: monto utilizado = sum(disposiciones) - sum(pagos)
-// 'inicial' no afecta porque representa la recepción y el dinero
-// está físicamente en la cuenta bancaria.
-export function calcularUtilizadoPrestamo(movimientos) {
-  let utilizado = 0;
-  (movimientos || []).forEach(m => {
-    if (m.tipo === 'disposicion') utilizado += +m.monto || 0;
-    else if (m.tipo === 'pago')   utilizado -= +m.monto || 0;
-  });
-  return Math.max(0, utilizado); // no permitir negativos
-}
-
-
-// ═══════════════════════════════════════════════════════════════════
-// PLANES DE PAGO A PROVEEDORES
-// 3 tablas: planes_pago (cabecera) + plan_facturas (qué cubre) +
-//           plan_abonos (cada cuota).
-// Todas filtradas por empresa_id (separación TAS / Viajes Libero).
-// ═══════════════════════════════════════════════════════════════════
-
-// ─── PLANES (cabecera) ─────────────────────────────────────────────
-export async function fetchPlanesPago(empresaId, opciones = {}) {
-  const { estado } = opciones;
-  let q = supabase.from('planes_pago').select('*').eq('empresa_id', empresaId);
-  if (estado) q = q.eq('estado', estado);
-  q = q.order('created_at', { ascending: false });
-  const { data, error } = await q;
-  if (error) { console.error('fetchPlanesPago:', error); return []; }
-  return (data || []).map(rowToPlan);
-}
-
-export async function fetchPlanPagoById(planId) {
-  const { data, error } = await supabase
-    .from('planes_pago').select('*').eq('id', planId).single();
-  if (error) { console.error('fetchPlanPagoById:', error); return null; }
-  return data ? rowToPlan(data) : null;
-}
-
-export async function upsertPlanPago(plan, usuario) {
-  const row = {
-    empresa_id: plan.empresaId,
-    proveedor: plan.proveedor,
-    moneda: plan.moneda || 'MXN',
-    monto_total: +plan.montoTotal || 0,
-    frecuencia: plan.frecuencia,
-    dia_semana: plan.diaSemana ?? null,
-    dia_mes: plan.diaMes ?? null,
-    monto_abono: +plan.montoAbono || 0,
-    num_abonos: +plan.numAbonos || 0,
-    fecha_inicio: plan.fechaInicio,
-    fecha_liquidacion_estimada: plan.fechaLiquidacionEstimada || null,
-    estado: plan.estado || 'activo',
-    notas: plan.notas || null,
-    updated_by: usuario || 'desconocido',
-  };
-  const isUUID = plan.id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(plan.id);
-  if (isUUID) {
-    const { data, error } = await supabase.from('planes_pago').update(row).eq('id', plan.id).select().single();
-    if (error) { console.error('upsertPlanPago update:', error); return null; }
-    return data?.id;
-  } else {
-    row.created_by = usuario || 'desconocido';
-    const { data, error } = await supabase.from('planes_pago').insert(row).select().single();
-    if (error) { console.error('upsertPlanPago insert:', error); return null; }
-    return data?.id;
-  }
-}
-
-export async function deletePlanPago(id) {
-  // Cascada: borra facturas y abonos por FK ON DELETE CASCADE
-  const { error } = await supabase.from('planes_pago').delete().eq('id', id);
-  if (error) console.error('deletePlanPago:', error);
-}
-
-export async function cancelarPlanPago(id, usuario) {
-  // Soft cancel: marca como 'cancelado' pero conserva los datos
-  const { error } = await supabase.from('planes_pago')
-    .update({ estado: 'cancelado', updated_by: usuario || 'desconocido' })
-    .eq('id', id);
-  if (error) console.error('cancelarPlanPago:', error);
-}
-
-// ─── FACTURAS del plan ─────────────────────────────────────────────
-export async function fetchFacturasDePlan(planId) {
-  const { data, error } = await supabase
-    .from('plan_facturas').select('*').eq('plan_id', planId)
-    .order('created_at', { ascending: true });
-  if (error) { console.error('fetchFacturasDePlan:', error); return []; }
-  return (data || []).map(r => ({
-    id: r.id,
-    planId: r.plan_id,
-    empresaId: r.empresa_id,
-    invoiceId: r.invoice_id,
-    montoInicial: +r.monto_inicial || 0,
-    montoAplicado: +r.monto_aplicado || 0,
-  }));
-}
-
-export async function insertPlanFactura(pf, usuario) {
-  const row = {
-    plan_id: pf.planId,
-    empresa_id: pf.empresaId,
-    invoice_id: pf.invoiceId,
-    monto_inicial: +pf.montoInicial || 0,
-    monto_aplicado: +pf.montoAplicado || 0,
-    created_by: usuario || 'desconocido',
-    updated_by: usuario || 'desconocido',
-  };
-  const { data, error } = await supabase.from('plan_facturas').insert(row).select().single();
-  if (error) { console.error('insertPlanFactura:', error); return null; }
-  return data?.id;
-}
-
-export async function deletePlanFactura(id) {
-  const { error } = await supabase.from('plan_facturas').delete().eq('id', id);
-  if (error) console.error('deletePlanFactura:', error);
-}
-
-// ─── ABONOS (cuotas) ───────────────────────────────────────────────
-export async function fetchAbonosPorPlan(planId) {
-  const { data, error } = await supabase
-    .from('plan_abonos').select('*').eq('plan_id', planId)
-    .order('numero', { ascending: true });
-  if (error) { console.error('fetchAbonosPorPlan:', error); return []; }
-  return (data || []).map(rowToAbono);
-}
-
-export async function fetchAbonosPorEmpresa(empresaId, opciones = {}) {
-  // Para KPIs/popups: trae todos los abonos de planes activos de una empresa
-  const { desde, hasta, estados } = opciones;
-  let q = supabase.from('plan_abonos').select('*').eq('empresa_id', empresaId);
-  if (desde) q = q.gte('fecha_programada', desde);
-  if (hasta) q = q.lte('fecha_programada', hasta);
-  if (estados && estados.length) q = q.in('estado', estados);
-  q = q.order('fecha_programada', { ascending: true });
-  const { data, error } = await q;
-  if (error) { console.error('fetchAbonosPorEmpresa:', error); return []; }
-  return (data || []).map(rowToAbono);
-}
-
-export async function upsertAbono(abono, usuario) {
-  const row = {
-    plan_id: abono.planId,
-    empresa_id: abono.empresaId,
-    numero: abono.numero,
-    fecha_programada: abono.fechaProgramada,
-    monto_programado: +abono.montoProgramado || 0,
-    estado: abono.estado || 'pendiente',
-    pago_id: abono.pagoId || null,
-    factura_id_aplicada: abono.facturaIdAplicada || null,
-    fecha_pagado: abono.fechaPagado || null,
-    monto_pagado: abono.montoPagado != null ? +abono.montoPagado : null,
-    notas: abono.notas || null,
-    updated_by: usuario || 'desconocido',
-  };
-  const isUUID = abono.id && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(abono.id);
-  if (isUUID) {
-    const { data, error } = await supabase.from('plan_abonos').update(row).eq('id', abono.id).select().single();
-    if (error) { console.error('upsertAbono update:', error); return null; }
-    return data?.id;
-  } else {
-    row.created_by = usuario || 'desconocido';
-    const { data, error } = await supabase.from('plan_abonos').insert(row).select().single();
-    if (error) { console.error('upsertAbono insert:', error); return null; }
-    return data?.id;
-  }
-}
-
-export async function deleteAbono(id) {
-  const { error } = await supabase.from('plan_abonos').delete().eq('id', id);
-  if (error) console.error('deleteAbono:', error);
-}
-
-export async function bulkInsertAbonos(abonos, usuario) {
-  // Insert masivo cuando se crea el plan (14 abonos de golpe)
-  const rows = abonos.map(a => ({
-    plan_id: a.planId,
-    empresa_id: a.empresaId,
-    numero: a.numero,
-    fecha_programada: a.fechaProgramada,
-    monto_programado: +a.montoProgramado || 0,
-    estado: a.estado || 'pendiente',
-    notas: a.notas || null,
-    created_by: usuario || 'desconocido',
-    updated_by: usuario || 'desconocido',
-  }));
-  const { error } = await supabase.from('plan_abonos').insert(rows);
-  if (error) { console.error('bulkInsertAbonos:', error); return false; }
-  return true;
-}
-
-// ─── Helpers de mapeo ──────────────────────────────────────────────
-function rowToPlan(r) {
-  return {
-    id: r.id,
-    empresaId: r.empresa_id,
-    proveedor: r.proveedor || '',
-    moneda: r.moneda || 'MXN',
-    montoTotal: +r.monto_total || 0,
-    frecuencia: r.frecuencia,
-    diaSemana: r.dia_semana,
-    diaMes: r.dia_mes,
-    montoAbono: +r.monto_abono || 0,
-    numAbonos: +r.num_abonos || 0,
-    fechaInicio: r.fecha_inicio,
-    fechaLiquidacionEstimada: r.fecha_liquidacion_estimada,
-    estado: r.estado || 'activo',
-    notas: r.notas || '',
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  };
-}
-
-function rowToAbono(r) {
-  return {
-    id: r.id,
-    planId: r.plan_id,
-    empresaId: r.empresa_id,
-    numero: r.numero,
-    fechaProgramada: r.fecha_programada,
-    montoProgramado: +r.monto_programado || 0,
-    estado: r.estado,
-    pagoId: r.pago_id,
-    facturaIdAplicada: r.factura_id_aplicada,
-    fechaPagado: r.fecha_pagado,
-    montoPagado: r.monto_pagado != null ? +r.monto_pagado : null,
-    notas: r.notas || '',
-  };
-}
-
-// ─── Cálculo: ritmo semanal normalizado por moneda ─────────────────
-// Convierte la frecuencia a aporte semanal estándar:
-//   semanal    → monto_abono
-//   quincenal  → monto_abono / 2
-//   mensual    → monto_abono / 4.33
-//   personal.  → monto_total restante / semanas hasta liquidación
-// Devuelve un objeto {USD: total, MXN: total, EUR: total, detalle: [...]}
-export function calcularRitmoSemanal(planesActivos) {
-  const SEMANAS_POR_MES = 4.33;
-  const totales = { USD: 0, MXN: 0, EUR: 0 };
-  const detalle = [];
-
-  (planesActivos || []).forEach(plan => {
-    if (plan.estado !== 'activo') return;
-    let aporteSemanal = 0;
-    if (plan.frecuencia === 'semanal')         aporteSemanal = +plan.montoAbono || 0;
-    else if (plan.frecuencia === 'quincenal')  aporteSemanal = (+plan.montoAbono || 0) / 2;
-    else if (plan.frecuencia === 'mensual')    aporteSemanal = (+plan.montoAbono || 0) / SEMANAS_POR_MES;
-    else if (plan.frecuencia === 'personalizado') {
-      // Aproximación: monto restante dividido entre semanas hasta liquidación
-      if (plan.fechaLiquidacionEstimada) {
-        const hoy = new Date();
-        const liq = new Date(plan.fechaLiquidacionEstimada);
-        const dias = Math.max(7, Math.round((liq - hoy) / (1000 * 60 * 60 * 24)));
-        const semanas = Math.max(1, Math.round(dias / 7));
-        aporteSemanal = (+plan.montoTotal || 0) / semanas;
-      }
-    }
-    const moneda = plan.moneda || 'MXN';
-    if (totales[moneda] != null) totales[moneda] += aporteSemanal;
-    detalle.push({
-      planId: plan.id,
-      proveedor: plan.proveedor,
-      frecuencia: plan.frecuencia,
-      montoAbono: +plan.montoAbono || 0,
-      moneda,
-      aporteSemanal,
-    });
-  });
-
-  return { totales, detalle };
-}
-
-
-// ─── Marcar abono como pagado (con ajuste de factura aplicada) ──────
-// datosPago: { fechaPagado, montoPagado, facturaIdAplicada, notas, estado }
-// estado puede ser 'pagado' (monto completo) o 'parcial' (monto menor)
-// La factura aplicada del plan se suma el monto pagado a su monto_aplicado
-export async function marcarAbonoPagado(abonoId, datosPago, usuario) {
-  // 1. Obtener el abono actual para conocer su plan_id y empresa_id
-  const { data: abonoActual, error: errFetch } = await supabase
-    .from('plan_abonos').select('*').eq('id', abonoId).single();
-  if (errFetch || !abonoActual) {
-    console.error('marcarAbonoPagado: no se encontró el abono', errFetch);
-    return false;
-  }
-
-  // 2. Actualizar el abono
-  const updates = {
-    estado: datosPago.estado || 'pagado',
-    fecha_pagado: datosPago.fechaPagado || new Date().toISOString().split('T')[0],
-    monto_pagado: +datosPago.montoPagado || 0,
-    factura_id_aplicada: datosPago.facturaIdAplicada || null,
-    notas: datosPago.notas || abonoActual.notas || null,
-    updated_by: usuario || 'desconocido',
-  };
-  const { error: errUpd } = await supabase
-    .from('plan_abonos').update(updates).eq('id', abonoId);
-  if (errUpd) {
-    console.error('marcarAbonoPagado: error actualizando abono', errUpd);
-    return false;
-  }
-
-  // 3. Si hay factura aplicada, sumar el monto al monto_aplicado de plan_facturas
-  if (datosPago.facturaIdAplicada) {
-    const { data: pf, error: errPf } = await supabase
-      .from('plan_facturas')
-      .select('*')
-      .eq('plan_id', abonoActual.plan_id)
-      .eq('invoice_id', datosPago.facturaIdAplicada)
-      .single();
-    if (pf && !errPf) {
-      const nuevoAplicado = (+pf.monto_aplicado || 0) + (+datosPago.montoPagado || 0);
-      await supabase.from('plan_facturas')
-        .update({ monto_aplicado: nuevoAplicado, updated_by: usuario || 'desconocido' })
-        .eq('id', pf.id);
-    }
-  }
-
-  // 4. Si TODOS los abonos del plan ya están pagados, marcar el plan como liquidado
-  const { data: todosAbonos } = await supabase
-    .from('plan_abonos').select('estado').eq('plan_id', abonoActual.plan_id);
-  if (todosAbonos && todosAbonos.length > 0) {
-    const pendientes = todosAbonos.filter(a => a.estado !== 'pagado' && a.estado !== 'parcial').length;
-    if (pendientes === 0) {
-      await supabase.from('planes_pago')
-        .update({ estado: 'liquidado', updated_by: usuario || 'desconocido' })
-        .eq('id', abonoActual.plan_id);
-    }
-  }
-
-  return true;
-}
-
-// ─── Desmarcar pago (revertir abono a pendiente) ────────────────────
-export async function desmarcarAbonoPagado(abonoId, usuario) {
-  // 1. Obtener el abono actual para saber cuánto descontar de la factura
-  const { data: abonoActual, error: errFetch } = await supabase
-    .from('plan_abonos').select('*').eq('id', abonoId).single();
-  if (errFetch || !abonoActual) {
-    console.error('desmarcarAbonoPagado: no se encontró el abono', errFetch);
-    return false;
-  }
-
-  // 2. Si había factura aplicada, restar el monto del monto_aplicado
-  if (abonoActual.factura_id_aplicada && abonoActual.monto_pagado) {
-    const { data: pf } = await supabase
-      .from('plan_facturas')
-      .select('*')
-      .eq('plan_id', abonoActual.plan_id)
-      .eq('invoice_id', abonoActual.factura_id_aplicada)
-      .single();
-    if (pf) {
-      const nuevoAplicado = Math.max(0, (+pf.monto_aplicado || 0) - (+abonoActual.monto_pagado || 0));
-      await supabase.from('plan_facturas')
-        .update({ monto_aplicado: nuevoAplicado, updated_by: usuario || 'desconocido' })
-        .eq('id', pf.id);
-    }
-  }
-
-  // 3. Resetear el abono a pendiente
-  const updates = {
-    estado: 'pendiente',
-    fecha_pagado: null,
-    monto_pagado: null,
-    factura_id_aplicada: null,
-    pago_id: null,
-    updated_by: usuario || 'desconocido',
-  };
-  const { error } = await supabase.from('plan_abonos').update(updates).eq('id', abonoId);
-  if (error) {
-    console.error('desmarcarAbonoPagado: error', error);
-    return false;
-  }
-
-  // 4. Si el plan estaba liquidado, volverlo a activo
-  await supabase.from('planes_pago')
-    .update({ estado: 'activo', updated_by: usuario || 'desconocido' })
-    .eq('id', abonoActual.plan_id)
-    .eq('estado', 'liquidado');
-
-  return true;
-}
-
-// ─── Reagendar abonos siguientes (cuando editas fecha de uno) ───────
-// abonosOrdenados: array de abonos del plan (debe estar ordenado por numero asc)
-// idDesde: id del abono que cambió - se mueven todos los SIGUIENTES
-// deltaDias: cuántos días mover (positivo = adelante, negativo = atrás)
-export async function reagendarAbonosSiguientes(abonosOrdenados, idDesde, deltaDias, usuario) {
-  const idx = abonosOrdenados.findIndex(a => a.id === idDesde);
-  if (idx < 0) return false;
-  const siguientes = abonosOrdenados.slice(idx + 1).filter(a => a.estado === 'pendiente' || a.estado === 'atrasado');
-  for (const a of siguientes) {
-    const d = new Date(a.fechaProgramada + 'T12:00:00');
-    d.setDate(d.getDate() + deltaDias);
-    const nueva = d.toISOString().split('T')[0];
-    await supabase.from('plan_abonos')
-      .update({ fecha_programada: nueva, updated_by: usuario || 'desconocido' })
-      .eq('id', a.id);
-  }
-  return true;
-}
-
-
-// ─── Buscar planes activos que contengan una factura específica ─────
-// Devuelve array de { plan, planFactura, proximoAbono } con todos los planes
-// activos que tengan la factura. Normalmente debe ser 0 o 1, pero
-// si por alguna razón hay varios planes activos con la misma factura, los devuelve todos.
-export async function buscarPlanesActivosDeFactura(invoiceId, empresaId) {
-  // 1. Encontrar plan_facturas que tengan este invoice_id
-  const { data: pfs, error: errPf } = await supabase
-    .from('plan_facturas').select('*')
-    .eq('invoice_id', String(invoiceId))
-    .eq('empresa_id', empresaId);
-  if (errPf || !pfs || pfs.length === 0) return [];
-
-  // 2. Filtrar por planes activos
-  const planIds = [...new Set(pfs.map(pf => pf.plan_id))];
-  const { data: planes, error: errPl } = await supabase
-    .from('planes_pago').select('*').in('id', planIds).eq('estado', 'activo');
-  if (errPl || !planes || planes.length === 0) return [];
-
-  // 3. Para cada plan, traer su próximo abono pendiente
-  const resultado = [];
-  for (const planRow of planes) {
-    const plan = {
-      id: planRow.id,
-      empresaId: planRow.empresa_id,
-      proveedor: planRow.proveedor,
-      moneda: planRow.moneda,
-      montoTotal: +planRow.monto_total,
-      frecuencia: planRow.frecuencia,
-      diaSemana: planRow.dia_semana,
-      diaMes: planRow.dia_mes,
-      montoAbono: +planRow.monto_abono,
-      numAbonos: planRow.num_abonos,
-      fechaInicio: planRow.fecha_inicio,
-      fechaLiquidacionEstimada: planRow.fecha_liquidacion_estimada,
-      estado: planRow.estado,
-    };
-    const { data: abonos } = await supabase
-      .from('plan_abonos').select('*')
-      .eq('plan_id', planRow.id)
-      .in('estado', ['pendiente', 'atrasado'])
-      .order('numero', { ascending: true });
-    const proximoAbono = (abonos && abonos.length > 0) ? {
-      id: abonos[0].id,
-      planId: abonos[0].plan_id,
-      numero: abonos[0].numero,
-      fechaProgramada: abonos[0].fecha_programada,
-      montoProgramado: +abonos[0].monto_programado,
-      estado: abonos[0].estado,
-    } : null;
-    const pfDeEstePlan = pfs.find(p => p.plan_id === planRow.id);
-    resultado.push({ plan, planFactura: pfDeEstePlan, proximoAbono });
-  }
-  return resultado;
 }

@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import ExportarReporteCxC from "./ExportarReporteCxC";
-import { exportarPendientesFacturar } from "./ExportPorFacturar";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -93,7 +92,7 @@ export default function CxcView({
   clientes = [],
   esConsulta = false,
   porFacturar = [], setPorFacturar,
-  insertPorFacturar, updatePorFacturar, deletePorFacturar, bulkInsertPorFacturar, bulkInsertPorFacturarPlain,
+  insertPorFacturar, updatePorFacturar, deletePorFacturar, bulkInsertPorFacturar,
 }) {
   /* ── Filters ───────────────────────────────────────────────── */
   const [filtroCliente, setFiltroCliente] = useState("");
@@ -152,8 +151,6 @@ export default function CxcView({
   const [reporteDims, setReporteDims] = useState(["mesVenta","destino","segmento"]);
   const [porFacturarModal, setPorFacturarModal] = useState(false);
   const porFacturarRef = useRef();
-  // Conciliación: { excelRows: [...], fileName: 'x.xlsx' } o null cuando está cerrado
-  const [conciliacionData, setConciliacionData] = useState(null);
 
   /* ── Derived data ──────────────────────────────────────────── */
   const allInvoices = useMemo(() => [
@@ -3640,7 +3637,6 @@ export default function CxcView({
           porFacturar={porFacturar}
           setPorFacturar={setPorFacturar}
           ingresos={ingresos}
-          clientes={clientes}
           insertPorFacturar={insertPorFacturar}
           updatePorFacturar={updatePorFacturar}
           deletePorFacturar={deletePorFacturar}
@@ -3653,26 +3649,6 @@ export default function CxcView({
           inputStyle={inputStyle}
           XLSX={XLSX}
           porFacturarRef={porFacturarRef}
-        />
-      )}
-      {/* Conciliacion Modal (preview Excel + 4 buckets) */}
-      {conciliacionData && (
-        <ConciliacionModal
-          excelRows={conciliacionData.excelRows}
-          fileName={conciliacionData.fileName}
-          porFacturar={porFacturar}
-          empresaId={empresaId}
-          esConsulta={esConsulta}
-          insertPorFacturar={insertPorFacturar}
-          updatePorFacturar={updatePorFacturar}
-          deletePorFacturar={deletePorFacturar}
-          bulkInsertPorFacturarPlain={bulkInsertPorFacturarPlain}
-          setPorFacturar={setPorFacturar}
-          fmt={fmt}
-          C={C}
-          btnStyle={btnStyle}
-          inputStyle={inputStyle}
-          onClose={()=>setConciliacionData(null)}
         />
       )}
       <input ref={porFacturarRef} type="file" accept=".xlsx,.xls" style={{display:"none"}}
@@ -3736,9 +3712,17 @@ export default function CxcView({
               });
             }
             if(!sinFolio.length){ alert("No se encontraron registros sin folio en el archivo."); return; }
-            // En lugar del window.confirm, abrimos el modal de Conciliación que compara
-            // el Excel contra lo que ya hay en sistema y deja al usuario decidir qué aplicar.
-            setConciliacionData({ excelRows: sinFolio, fileName: file.name });
+            // Show preview via window confirm
+            const preview=sinFolio.slice(0,5).map(r=>`${r.cliente} OS:${r.numOs} $${r.importe.toLocaleString()}`).join("\n");
+            if(!window.confirm(`Se encontraron ${sinFolio.length} registros sin folio:\n\n${preview}\n${sinFolio.length>5?"...y más":""}.\n\n¿Importar?`)) return;
+            const result=await bulkInsertPorFacturar(sinFolio);
+            // Reload
+            const fresh=await (async()=>{
+              const {data}=await import("./supabase.js").then(m=>m.supabase.from("por_facturar").select("*").eq("empresa_id",empresaId).order("created_at",{ascending:false}));
+              return (data||[]).map(r=>({id:r.id,empresaId:r.empresa_id,cliente:r.cliente||"",concepto:r.concepto||"",importe:+r.importe||0,moneda:r.moneda||"MXN",notas:r.notas||"",numOs:r.num_os||"",fechaVenta:r.fecha_venta||"",destino:r.destino||"",createdAt:r.created_at||""}));
+            })();
+            setPorFacturar(fresh);
+            alert(`✅ ${result.inserted} registros nuevos importados. ${sinFolio.length-result.inserted} ya existían.`);
             e.target.value="";
           };
           reader.readAsArrayBuffer(file);
@@ -4931,114 +4915,22 @@ function CobrosCxC({ cobros, ingresos, fmt, C, monedaSym, MESES_NOMBRES, onIngre
 }
 
 /* ── PorFacturarModal ────────────────────────────────────────────────── */
-function PorFacturarModal({ empresaId, porFacturar, setPorFacturar, ingresos, clientes=[], insertPorFacturar, updatePorFacturar, deletePorFacturar, bulkInsertPorFacturar, onClose, esConsulta, fmt, C, btnStyle, inputStyle, XLSX, porFacturarRef }) {
+function PorFacturarModal({ empresaId, porFacturar, setPorFacturar, ingresos, insertPorFacturar, updatePorFacturar, deletePorFacturar, bulkInsertPorFacturar, onClose, esConsulta, fmt, C, btnStyle, inputStyle, XLSX, porFacturarRef }) {
   const [form, setForm] = React.useState(null);
   const [editId, setEditId] = React.useState(null);
   const [deleteId, setDeleteId] = React.useState(null);
   const [guardando, setGuardando] = React.useState(false);
   const [vistaPF, setVistaPF] = React.useState("cliente"); // "cliente" | "destino" | "lista"
   const [filtroDestinoPF, setFiltroDestinoPF] = React.useState("");
-  const [busquedaPF, setBusquedaPF] = React.useState("");
-  const [gruposColapsados, setGruposColapsados] = React.useState(()=>new Set());
-  // Selección masiva: Set de ids para borrado en lote
-  const [seleccionados, setSeleccionados] = React.useState(()=>new Set());
-  const [confirmMasivo, setConfirmMasivo] = React.useState(false);
-  const [borrandoMasivo, setBorrandoMasivo] = React.useState(false);
-  // Sub-modal de exportación para clientes
-  const [exportModal, setExportModal] = React.useState(false);
-
-  const toggleId = (id) => setSeleccionados(prev=>{
-    const n=new Set(prev); if(n.has(id))n.delete(id); else n.add(id); return n;
-  });
-  const toggleIdsGrupo = (ids, todos) => setSeleccionados(prev=>{
-    const n=new Set(prev);
-    if (todos) ids.forEach(id=>n.delete(id));
-    else ids.forEach(id=>n.add(id));
-    return n;
-  });
-  const limpiarSeleccion = () => setSeleccionados(new Set());
-
-  // Master checkbox controlado para mostrar estado indeterminate
-  const MasterCheckbox = React.useMemo(()=>(
-    ({checked, indeterminate, onChange, title}) => {
-      const ref = React.useRef();
-      React.useEffect(()=>{ if(ref.current) ref.current.indeterminate = !!indeterminate; }, [indeterminate]);
-      return <input ref={ref} type="checkbox" checked={!!checked} onChange={onChange} title={title} style={{cursor:"pointer"}}/>;
-    }
-  ),[]);
-
-  // Limpiar selección al cambiar vista, búsqueda o filtro: evita que queden
-  // IDs seleccionados que ya no son visibles y que un masivo borre algo no esperado.
-  React.useEffect(()=>{ setSeleccionados(new Set()); }, [vistaPF, busquedaPF, filtroDestinoPF]);
-
-  const borrarMasivo = async () => {
-    if (esConsulta) return;
-    setBorrandoMasivo(true);
-    const ids = Array.from(seleccionados);
-    const errores = [];
-    for (const id of ids) {
-      try { await deletePorFacturar(id); }
-      catch (e) { errores.push(id); }
-    }
-    setPorFacturar(prev => prev.filter(r => !seleccionados.has(r.id) || errores.includes(r.id)));
-    setSeleccionados(new Set());
-    setConfirmMasivo(false);
-    setBorrandoMasivo(false);
-    if (errores.length) alert(`Se eliminaron ${ids.length-errores.length} de ${ids.length}. ${errores.length} fallaron.`);
-  };
 
   const DESTINOS = ["Cancún","Tulum","Los Cabos","Cozumel","Mérida","Huatulco","Puerto Vallarta","Mazatlán"];
 
   const clientesExistentes = React.useMemo(()=>[...new Set(ingresos.map(i=>i.cliente).filter(Boolean))].sort(),[ingresos]);
   const monedaSym = m => m==="EUR"?"€":"$";
 
-  // Normaliza para búsqueda: minúsculas + sin acentos
-  const normaliza = (s) => String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-
-  const pfFiltrado = React.useMemo(()=>{
-    let arr = filtroDestinoPF ? porFacturar.filter(r=>r.destino===filtroDestinoPF) : porFacturar;
-    const q = normaliza(busquedaPF.trim());
-    if (q) {
-      arr = arr.filter(r =>
-        normaliza(r.cliente).includes(q) ||
-        normaliza(r.concepto).includes(q) ||
-        normaliza(r.numOs).includes(q) ||
-        normaliza(r.fechaVenta).includes(q) ||
-        normaliza(r.notas).includes(q) ||
-        normaliza(r.destino).includes(q) ||
-        normaliza(r.moneda).includes(q) ||
-        String(r.importe).includes(q)
-      );
-    }
-    return arr;
-  },[porFacturar, filtroDestinoPF, busquedaPF]);
-
-  // Grupos calculados una sola vez para que también los usen los botones expandir/colapsar
-  const grupos = React.useMemo(()=>{
-    if (vistaPF === "lista") return null;
-    const groupBy=(arr,fn)=>arr.reduce((acc,r)=>{const k=fn(r)||"—";if(!acc[k])acc[k]=[];acc[k].push(r);return acc;},{});
-    const groupTotal=(arr)=>arr.reduce((s,r)=>s+r.importe,0);
-    return vistaPF==="cliente"
-      ? Object.entries(groupBy(pfFiltrado,r=>r.cliente)).sort((a,b)=>groupTotal(b[1])-groupTotal(a[1]))
-      : Object.entries(groupBy(pfFiltrado,r=>r.destino||"Sin destino")).sort((a,b)=>groupTotal(b[1])-groupTotal(a[1]));
-  },[pfFiltrado, vistaPF]);
-
-  // Si hay búsqueda activa, forzamos todos los grupos abiertos (sin mutar estado).
-  // Si vista cambia, no perdemos el estado de colapsado anterior; solo aplica al volver.
-  const hayBusqueda = busquedaPF.trim().length > 0;
-  const colapsados = hayBusqueda ? new Set() : gruposColapsados;
-  const todasLasKeys = grupos ? grupos.map(g=>g[0]) : [];
-  const todasColapsadas = !hayBusqueda && todasLasKeys.length > 0 && todasLasKeys.every(k=>gruposColapsados.has(k));
-
-  const toggleGrupo = (key) => {
-    setGruposColapsados(prev=>{
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-  const expandirTodos = () => setGruposColapsados(new Set());
-  const colapsarTodos = () => setGruposColapsados(new Set(todasLasKeys));
+  const pfFiltrado = React.useMemo(()=>
+    filtroDestinoPF ? porFacturar.filter(r=>r.destino===filtroDestinoPF) : porFacturar
+  ,[porFacturar, filtroDestinoPF]);
 
   const totales = React.useMemo(()=>{
     const map={};
@@ -5105,26 +4997,18 @@ function PorFacturarModal({ empresaId, porFacturar, setPorFacturar, ingresos, cl
         )}
 
         {/* Action buttons */}
-        <div style={{padding:"12px 24px",borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,flexWrap:"wrap"}}>
-          {!esConsulta && (
-            <>
-              <button onClick={()=>{setForm(emptyForm());setEditId(null);}}
-                style={{...btnStyle,background:"#6A1B9A",padding:"8px 16px",fontSize:13}}>
-                + Agregar manual
-              </button>
-              <button onClick={()=>porFacturarRef.current?.click()}
-                style={{...btnStyle,background:"#E65100",color:"#fff",padding:"8px 16px",fontSize:13}}>
-                📥 Importar Excel
-              </button>
-            </>
-          )}
-          {porFacturar.length>0 && (
-            <button onClick={()=>setExportModal(true)}
-              style={{...btnStyle,background:"#388E3C",color:"#fff",padding:"8px 16px",fontSize:13}}>
-              📧 Exportar para clientes
+        {!esConsulta && (
+          <div style={{padding:"12px 24px",borderBottom:`1px solid ${C.border}`,display:"flex",gap:8}}>
+            <button onClick={()=>{setForm(emptyForm());setEditId(null);}}
+              style={{...btnStyle,background:"#6A1B9A",padding:"8px 16px",fontSize:13}}>
+              + Agregar manual
             </button>
-          )}
-        </div>
+            <button onClick={()=>porFacturarRef.current?.click()}
+              style={{...btnStyle,background:"#E65100",color:"#fff",padding:"8px 16px",fontSize:13}}>
+              📥 Importar Excel
+            </button>
+          </div>
+        )}
 
         {/* Add/Edit form */}
         {form && (
@@ -5219,60 +5103,8 @@ function PorFacturarModal({ empresaId, porFacturar, setPorFacturar, ingresos, cl
             {DESTINOS.map(d=><option key={d} value={d}>{d}</option>)}
           </select>
           {filtroDestinoPF && <button onClick={()=>setFiltroDestinoPF("")} style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"5px 10px",fontSize:12}}>✕</button>}
-
-          {/* Búsqueda en tiempo real */}
-          <div style={{position:"relative",display:"flex",alignItems:"center",flex:"1 1 220px",minWidth:200,maxWidth:360}}>
-            <span style={{position:"absolute",left:10,fontSize:13,color:C.muted,pointerEvents:"none"}}>🔍</span>
-            <input
-              value={busquedaPF}
-              onChange={e=>setBusquedaPF(e.target.value)}
-              placeholder="Buscar cliente, OS, concepto, fecha…"
-              style={{...inputStyle,paddingLeft:30,paddingRight:busquedaPF?28:10,fontSize:12,width:"100%",borderColor:busquedaPF?"#6A1B9A":C.border}}
-            />
-            {busquedaPF && (
-              <button onClick={()=>setBusquedaPF("")}
-                title="Limpiar búsqueda"
-                style={{position:"absolute",right:6,background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:14,padding:"2px 6px",fontFamily:"inherit"}}>✕</button>
-            )}
-          </div>
-
-          {/* Expandir/Colapsar todos — solo cuando hay grupos */}
-          {grupos && grupos.length>0 && !hayBusqueda && (
-            <button
-              onClick={todasColapsadas ? expandirTodos : colapsarTodos}
-              style={{...btnStyle,background:"#fff",color:"#6A1B9A",border:`1px solid #CE93D8`,padding:"5px 10px",fontSize:12}}>
-              {todasColapsadas ? "⊕ Expandir todos" : "⊖ Colapsar todos"}
-            </button>
-          )}
-
-          {/* Eliminar seleccionados — visible solo si hay selección y permiso */}
-          {!esConsulta && seleccionados.size>0 && (
-            <button onClick={()=>setConfirmMasivo(true)} disabled={borrandoMasivo}
-              style={{...btnStyle,background:C.danger,color:"#fff",padding:"5px 12px",fontSize:12,opacity:borrandoMasivo?0.5:1}}>
-              🗑️ Eliminar {seleccionados.size} seleccionado{seleccionados.size===1?"":"s"}
-            </button>
-          )}
-
-          <span style={{fontSize:12,color:C.muted,marginLeft:"auto"}}>
-            {pfFiltrado.length} {pfFiltrado.length===1?"registro":"registros"}
-            {hayBusqueda && porFacturar.length!==pfFiltrado.length && (
-              <span style={{color:"#6A1B9A",fontWeight:600}}> de {porFacturar.length}</span>
-            )}
-          </span>
+          <span style={{fontSize:12,color:C.muted,marginLeft:"auto"}}>{pfFiltrado.length} registros</span>
         </div>
-
-        {/* Banner de confirmación de borrado masivo */}
-        {confirmMasivo && (
-          <div style={{padding:"12px 24px",background:"#FFEBEE",borderBottom:`1px solid #FFCDD2`,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <span style={{fontSize:13,color:C.danger,fontWeight:600}}>⚠️ ¿Eliminar {seleccionados.size} registro{seleccionados.size===1?"":"s"} seleccionado{seleccionados.size===1?"":"s"}? Esta acción no se puede deshacer.</span>
-            <button onClick={borrarMasivo} disabled={borrandoMasivo}
-              style={{...btnStyle,background:C.danger,padding:"6px 16px",fontSize:13,opacity:borrandoMasivo?0.5:1}}>
-              {borrandoMasivo?"Eliminando...":`Sí, eliminar ${seleccionados.size}`}
-            </button>
-            <button onClick={()=>setConfirmMasivo(false)} disabled={borrandoMasivo}
-              style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"6px 12px",fontSize:13}}>Cancelar</button>
-          </div>
-        )}
         {/* Table */}
         <div style={{overflowY:"auto",flex:1}}>
           {porFacturar.length===0 ? (
@@ -5281,123 +5113,72 @@ function PorFacturarModal({ empresaId, porFacturar, setPorFacturar, ingresos, cl
               <div style={{fontSize:16}}>Sin registros pendientes por facturar</div>
               <div style={{fontSize:13,marginTop:6}}>Agrega manualmente o importa desde Excel</div>
             </div>
-          ) : pfFiltrado.length===0 ? (
-            <div style={{textAlign:"center",padding:60,color:C.muted}}>
-              <div style={{fontSize:48,marginBottom:12}}>🔍</div>
-              <div style={{fontSize:16}}>Sin resultados para "{busquedaPF || filtroDestinoPF}"</div>
-              <div style={{fontSize:13,marginTop:6}}>Prueba con otro término o limpia los filtros</div>
-              <button onClick={()=>{setBusquedaPF("");setFiltroDestinoPF("");}}
-                style={{...btnStyle,background:"#6A1B9A",padding:"6px 14px",fontSize:12,marginTop:12}}>
-                Limpiar filtros
-              </button>
-            </div>
           ) : (()=>{
-            // Columnas base; ocultarCol={"cliente"|"destino"|null} suprime la columna correspondiente
-            const ALL_COLS=[
-              {id:"cliente",   l:"Cliente",     align:"left"},
-              {id:"concepto",  l:"Concepto",    align:"left"},
-              {id:"destino",   l:"Destino",     align:"left"},
-              {id:"numOs",     l:"# OS",        align:"left"},
-              {id:"fechaVenta",l:"Fecha Venta", align:"left"},
-              {id:"moneda",    l:"Moneda",      align:"left"},
-              {id:"importe",   l:"Importe",     align:"right"},
-              {id:"acciones",  l:"Acciones",    align:"right"},
-            ];
-            const renderTabla = (regs, ocultarCol=null) => {
-              const COLS = ALL_COLS.filter(c => c.id !== ocultarCol);
-              const idsRegs = regs.map(r=>r.id);
-              const selEnGrupo = idsRegs.filter(id=>seleccionados.has(id));
-              const allSel  = idsRegs.length>0 && selEnGrupo.length === idsRegs.length;
-              const someSel = !allSel && selEnGrupo.length > 0;
-              return (
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                  <thead style={{position:"sticky",top:0}}>
-                    <tr style={{background:C.navy}}>
-                      {!esConsulta && (
-                        <th style={{padding:"10px 12px",width:30,textAlign:"center"}}>
-                          <MasterCheckbox checked={allSel} indeterminate={someSel}
-                            onChange={()=>toggleIdsGrupo(idsRegs, allSel)}
-                            title={allSel?"Deseleccionar grupo":"Seleccionar grupo"}/>
-                        </th>
-                      )}
-                      {COLS.map(h=>(
-                        <th key={h.id} style={{padding:"10px 12px",textAlign:h.align,color:"#fff",fontWeight:700,fontSize:11,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h.l}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {regs.map((r,i)=>{
-                      const checked = seleccionados.has(r.id);
-                      return (
-                      <tr key={r.id} style={{borderTop:`1px solid ${C.border}`,background:checked?"#F3E5F5":(i%2===0?"#fff":"#FAFBFF")}}>
-                        {!esConsulta && (
-                          <td style={{padding:"10px 12px",textAlign:"center"}}>
-                            <input type="checkbox" checked={checked} onChange={()=>toggleId(r.id)} style={{cursor:"pointer"}}/>
-                          </td>
-                        )}
-                        {ocultarCol!=="cliente" && (
-                          <td style={{padding:"10px 12px",fontWeight:700,color:"#6A1B9A",fontSize:13}}>{r.cliente}</td>
-                        )}
-                        <td style={{padding:"10px 12px",color:C.muted,fontSize:12}}>{r.concepto||"—"}</td>
-                        {ocultarCol!=="destino" && (
-                          <td style={{padding:"10px 12px",fontSize:12}}>
-                            {r.destino?<span style={{background:"#E8EAF6",color:"#3949AB",padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:700}}>{r.destino}</span>:<span style={{color:C.muted}}>—</span>}
-                          </td>
-                        )}
-                        <td style={{padding:"10px 12px",color:C.blue,fontWeight:600,fontSize:12}}>{r.numOs||"—"}</td>
-                        <td style={{padding:"10px 12px",color:C.muted,fontSize:12,whiteSpace:"nowrap"}}>{r.fechaVenta||"—"}</td>
-                        <td style={{padding:"10px 12px"}}>
-                          <span style={{background:r.moneda==="MXN"?"#E3F2FD":"#E8F5E9",color:r.moneda==="MXN"?"#1565C0":"#2E7D32",padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:700}}>{r.moneda}</span>
-                        </td>
-                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:800,fontSize:15,color:"#6A1B9A"}}>{r.moneda==="EUR"?"€":"$"}{fmt(r.importe)}</td>
-                        <td style={{padding:"10px 12px",textAlign:"right"}}>
-                          {!esConsulta && (
-                            <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
-                              <button onClick={()=>{setForm({...r,importe:String(r.importe)});setEditId(r.id);}}
-                                style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${C.blue}`,background:"#E8F0FE",color:C.blue,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>✏️</button>
-                              <button onClick={()=>setDeleteId(r.id)}
-                                style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${C.danger}`,background:"#FFEBEE",color:C.danger,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>🗑️</button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              );
-            };
-
-            if(vistaPF==="lista") return renderTabla(pfFiltrado, null);
-
-            // Dentro del grupo, ocultamos la columna que ya está en el header del grupo
-            const ocultarCol = vistaPF==="cliente" ? "cliente" : "destino";
-
+            const PFRow=({r,i})=>(
+              <tr key={r.id} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFF"}}>
+                <td style={{padding:"10px 12px",fontWeight:700,color:"#6A1B9A",fontSize:13}}>{r.cliente}</td>
+                <td style={{padding:"10px 12px",color:C.muted,fontSize:12}}>{r.concepto||"—"}</td>
+                <td style={{padding:"10px 12px",fontSize:12}}>
+                  {r.destino?<span style={{background:"#E8EAF6",color:"#3949AB",padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:700}}>{r.destino}</span>:<span style={{color:C.muted}}>—</span>}
+                </td>
+                <td style={{padding:"10px 12px",color:C.blue,fontWeight:600,fontSize:12}}>{r.numOs||"—"}</td>
+                <td style={{padding:"10px 12px",color:C.muted,fontSize:12,whiteSpace:"nowrap"}}>{r.fechaVenta||"—"}</td>
+                <td style={{padding:"10px 12px"}}>
+                  <span style={{background:r.moneda==="MXN"?"#E3F2FD":"#E8F5E9",color:r.moneda==="MXN"?"#1565C0":"#2E7D32",padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:700}}>{r.moneda}</span>
+                </td>
+                <td style={{padding:"10px 12px",textAlign:"right",fontWeight:800,fontSize:15,color:"#6A1B9A"}}>{r.moneda==="EUR"?"€":"$"}{fmt(r.importe)}</td>
+                <td style={{padding:"10px 12px",textAlign:"right"}}>
+                  {!esConsulta && (
+                    <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+                      <button onClick={()=>{setForm({...r,importe:String(r.importe)});setEditId(r.id);}}
+                        style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${C.blue}`,background:"#E8F0FE",color:C.blue,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>✏️</button>
+                      <button onClick={()=>setDeleteId(r.id)}
+                        style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${C.danger}`,background:"#FFEBEE",color:C.danger,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>🗑️</button>
+                    </div>
+                  )}
+                </td>
+              </tr>
+            );
+            const COLS=["Cliente","Concepto","Destino","# OS","Fecha Venta","Moneda","Importe","Acciones"];
+            const thead=(
+              <thead style={{position:"sticky",top:0}}>
+                <tr style={{background:C.navy}}>
+                  {COLS.map(h=>(
+                    <th key={h} style={{padding:"10px 12px",textAlign:h==="Importe"?"right":"left",color:"#fff",fontWeight:700,fontSize:11,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+            );
+            const groupBy=(arr,fn)=>arr.reduce((acc,r)=>{const k=fn(r)||"—";if(!acc[k])acc[k]=[];acc[k].push(r);return acc;},{});
+            const groupTotal=(arr)=>arr.reduce((s,r)=>s+r.importe,0);
+            if(vistaPF==="lista") return(
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                {thead}<tbody>{pfFiltrado.map((r,i)=><PFRow key={r.id} r={r} i={i}/>)}</tbody>
+              </table>
+            );
+            const grupos=vistaPF==="cliente"
+              ? Object.entries(groupBy(pfFiltrado,r=>r.cliente)).sort((a,b)=>groupTotal(b[1])-groupTotal(a[1]))
+              : Object.entries(groupBy(pfFiltrado,r=>r.destino||"Sin destino")).sort((a,b)=>groupTotal(b[1])-groupTotal(a[1]));
             return(
               <div>
                 {grupos.map(([grupo,regs])=>{
                   const porMon=regs.reduce((acc,r)=>{if(!acc[r.moneda])acc[r.moneda]=0;acc[r.moneda]+=r.importe;return acc;},{});
-                  const estaColapsado = colapsados.has(grupo);
                   return(
                     <div key={grupo}>
-                      <div
-                        onClick={()=>toggleGrupo(grupo)}
-                        title={estaColapsado?"Expandir":"Colapsar"}
-                        style={{background:"#EDE7F6",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"2px solid #9575CD",position:"sticky",top:0,zIndex:2,cursor:"pointer",userSelect:"none"}}>
-                        <span style={{fontWeight:800,fontSize:14,color:"#4527A0",display:"flex",alignItems:"center",gap:8}}>
-                          <span style={{display:"inline-block",width:14,fontSize:11,color:"#7E57C2",transition:"transform .15s",transform:estaColapsado?"rotate(-90deg)":"rotate(0deg)"}}>▼</span>
-                          {vistaPF==="cliente"?"👤":"🗺️"} {grupo}
-                        </span>
+                      <div style={{background:"#EDE7F6",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"2px solid #9575CD",position:"sticky",top:0,zIndex:2}}>
+                        <span style={{fontWeight:800,fontSize:14,color:"#4527A0"}}>{vistaPF==="cliente"?"👤":"🗺️"} {grupo}</span>
                         <div style={{display:"flex",gap:16,alignItems:"center"}}>
                           {Object.entries(porMon).map(([mon,t])=>(
                             <span key={mon} style={{fontSize:13,color:"#4527A0",fontWeight:700}}>
                               {mon==="MXN"?"🇲🇽":"🇺🇸"} {mon==="EUR"?"€":"$"}{fmt(t)}
                             </span>
                           ))}
-                          <span style={{fontSize:12,color:"#7E57C2"}}>{regs.length} {regs.length===1?"registro":"registros"}</span>
+                          <span style={{fontSize:12,color:"#7E57C2"}}>{regs.length} registros</span>
                         </div>
                       </div>
-                      {!estaColapsado && renderTabla(regs, ocultarCol)}
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                        {thead}<tbody>{regs.map((r,i)=><PFRow key={r.id} r={r} i={i}/>)}</tbody>
+                      </table>
                     </div>
                   );
                 })}
@@ -5405,834 +5186,6 @@ function PorFacturarModal({ empresaId, porFacturar, setPorFacturar, ingresos, cl
             );
           })()}
         </div>
-
-        {/* Sub-modal: Exportar para clientes */}
-        {exportModal && (
-          <ExportarClientesModal
-            porFacturar={porFacturar}
-            clientes={clientes}
-            preseleccionados={seleccionados}
-            fmt={fmt}
-            C={C}
-            btnStyle={btnStyle}
-            inputStyle={inputStyle}
-            onClose={()=>setExportModal(false)}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-
-
-/* ── ExportarClientesModal ────────────────────────────────────────
-   Sub-modal para elegir qué clientes y qué pendientes exportar a Excel
-   profesional. Soporta:
-   - Lista jerárquica: cliente con master checkbox tri-state + expand
-     para ver y refinar selección de pendientes individuales
-   - Buscador (cliente o # OS)
-   - Modo: archivos separados (uno por cliente, ZIP si >1) o consolidado
-   - Preselección: si llega un Set de ids preseleccionados, arranca con
-     esos marcados; si no, todos marcados
-*/
-function ExportarClientesModal({ porFacturar, clientes, preseleccionados, fmt, C, btnStyle, inputStyle, onClose }) {
-  // Calculamos selección inicial
-  const idInicial = React.useMemo(() => {
-    if (preseleccionados && preseleccionados.size > 0) {
-      // Si el usuario marcó algunos en el modal principal, respetamos esa selección
-      return new Set(preseleccionados);
-    }
-    return new Set(porFacturar.map(r => r.id));
-  }, [porFacturar, preseleccionados]);
-
-  const [marcados, setMarcados] = React.useState(idInicial);
-  const [expandidos, setExpandidos] = React.useState(()=>new Set());
-  const [busqueda, setBusqueda] = React.useState("");
-  const [modo, setModo] = React.useState("separados"); // "separados" | "consolidado"
-  const [generando, setGenerando] = React.useState(false);
-  const [error, setError] = React.useState(null);
-
-  const normaliza = (s) => String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-
-  // Mapa nombre cliente -> info de tabla clientes (RFC, email, etc) por nombre
-  const clientesInfoPorNombre = React.useMemo(() => {
-    const m = new Map();
-    (clientes||[]).forEach(c => {
-      if (c && c.nombre) m.set(normaliza(c.nombre), c);
-    });
-    return m;
-  }, [clientes]);
-
-  // Agrupamos pendientes por cliente
-  const gruposCliente = React.useMemo(() => {
-    const map = new Map();
-    porFacturar.forEach(r => {
-      const k = r.cliente || "(sin nombre)";
-      if (!map.has(k)) map.set(k, []);
-      map.get(k).push(r);
-    });
-    // Filtro de búsqueda
-    const q = normaliza(busqueda.trim());
-    const grupos = Array.from(map.entries()).map(([nombre, regs]) => {
-      const info = clientesInfoPorNombre.get(normaliza(nombre)) || null;
-      // Cálculo de totales por moneda
-      const totMon = {};
-      regs.forEach(r => {
-        const m = r.moneda || "MXN";
-        totMon[m] = (totMon[m]||0) + (+r.importe||0);
-      });
-      return { nombre, regs, info, totMon };
-    });
-    // Filtrar por búsqueda (matchea cliente o numOs de cualquier pendiente)
-    const filtrados = q ? grupos.filter(g =>
-      normaliza(g.nombre).includes(q) ||
-      g.regs.some(r => normaliza(r.numOs).includes(q))
-    ) : grupos;
-    // Orden por total descendente
-    return filtrados.sort((a,b) => {
-      const ta = Object.values(a.totMon).reduce((s,x)=>s+x,0);
-      const tb = Object.values(b.totMon).reduce((s,x)=>s+x,0);
-      return tb - ta;
-    });
-  }, [porFacturar, busqueda, clientesInfoPorNombre]);
-
-  // Estados derivados de selección
-  const estadoCliente = (g) => {
-    const ids = g.regs.map(r=>r.id);
-    const marcadosDeGrupo = ids.filter(id => marcados.has(id));
-    if (marcadosDeGrupo.length === 0) return "ninguno";
-    if (marcadosDeGrupo.length === ids.length) return "todos";
-    return "parcial";
-  };
-
-  const toggleCliente = (g) => {
-    const ids = g.regs.map(r=>r.id);
-    const est = estadoCliente(g);
-    setMarcados(prev => {
-      const n = new Set(prev);
-      if (est === "todos") ids.forEach(id => n.delete(id));
-      else ids.forEach(id => n.add(id));
-      return n;
-    });
-  };
-
-  const togglePendiente = (id) => {
-    setMarcados(prev => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id); else n.add(id);
-      return n;
-    });
-  };
-
-  const toggleExpand = (nombre) => {
-    setExpandidos(prev => {
-      const n = new Set(prev);
-      if (n.has(nombre)) n.delete(nombre); else n.add(nombre);
-      return n;
-    });
-  };
-
-  const marcarTodos = () => setMarcados(new Set(porFacturar.map(r=>r.id)));
-  const desmarcarTodos = () => setMarcados(new Set());
-
-  // Master tri-state controlado
-  const MasterTri = ({checked, indeterminate, onChange}) => {
-    const ref = React.useRef();
-    React.useEffect(()=>{ if (ref.current) ref.current.indeterminate = !!indeterminate; }, [indeterminate]);
-    return <input ref={ref} type="checkbox" checked={!!checked} onChange={onChange} onClick={e=>e.stopPropagation()} style={{cursor:"pointer"}}/>;
-  };
-
-  // Totales del plan
-  const plan = React.useMemo(() => {
-    let clientesConSel = 0;
-    let pendientesSel = 0;
-    const totMon = {};
-    gruposCliente.forEach(g => {
-      const seleccionadosEnG = g.regs.filter(r => marcados.has(r.id));
-      if (seleccionadosEnG.length > 0) {
-        clientesConSel++;
-        pendientesSel += seleccionadosEnG.length;
-        seleccionadosEnG.forEach(r => {
-          const m = r.moneda || "MXN";
-          totMon[m] = (totMon[m]||0) + (+r.importe||0);
-        });
-      }
-    });
-    return { clientesConSel, pendientesSel, totMon };
-  }, [gruposCliente, marcados]);
-
-  const puedeDescargar = plan.pendientesSel > 0;
-
-  const descargar = async () => {
-    if (!puedeDescargar) return;
-    setError(null);
-    setGenerando(true);
-    try {
-      // Construimos el payload solo con clientes que tienen algo marcado
-      const porCliente = gruposCliente
-        .map(g => ({
-          nombre: g.nombre,
-          info: g.info,
-          regs: g.regs.filter(r => marcados.has(r.id)),
-        }))
-        .filter(x => x.regs.length > 0);
-
-      await exportarPendientesFacturar({ porCliente, modo });
-      onClose();
-    } catch (e) {
-      console.error("exportarPendientesFacturar error:", e);
-      setError(`Error al generar: ${e.message || e}`);
-    } finally {
-      setGenerando(false);
-    }
-  };
-
-  const totalRegs = porFacturar.length;
-
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.65)",zIndex:1100,display:"flex",alignItems:"center",justifyContent:"center",padding:10}}
-      onClick={generando?undefined:onClose}>
-      <div style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:900,maxHeight:"92vh",display:"flex",flexDirection:"column",boxShadow:"0 24px 64px rgba(0,0,0,.4)"}}
-        onClick={e=>e.stopPropagation()}>
-
-        {/* Header */}
-        <div style={{padding:"18px 24px",background:"#388E3C",borderRadius:"16px 16px 0 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div>
-            <div style={{fontWeight:800,color:"#fff",fontSize:17}}>📧 Exportar para clientes</div>
-            <div style={{fontSize:12,color:"#C8E6C9",marginTop:3}}>Genera el Excel profesional para enviar a cada cliente</div>
-          </div>
-          <button onClick={onClose} disabled={generando}
-            style={{background:"rgba(255,255,255,.15)",border:"none",borderRadius:8,color:"#fff",width:34,height:34,cursor:generando?"not-allowed":"pointer",fontSize:20,opacity:generando?0.4:1}}>×</button>
-        </div>
-
-        {/* Controles arriba */}
-        <div style={{padding:"14px 24px",borderBottom:`1px solid ${C.border}`,background:"#FAFAFA",display:"flex",flexDirection:"column",gap:10}}>
-          <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-            <div style={{position:"relative",display:"flex",alignItems:"center",flex:"1 1 220px",minWidth:200,maxWidth:360}}>
-              <span style={{position:"absolute",left:10,fontSize:13,color:C.muted,pointerEvents:"none"}}>🔍</span>
-              <input
-                value={busqueda}
-                onChange={e=>setBusqueda(e.target.value)}
-                placeholder="Buscar cliente o # OS..."
-                style={{...inputStyle,paddingLeft:30,paddingRight:busqueda?28:10,fontSize:12,width:"100%",borderColor:busqueda?"#388E3C":C.border}}
-              />
-              {busqueda && (
-                <button onClick={()=>setBusqueda("")}
-                  style={{position:"absolute",right:6,background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:14,padding:"2px 6px",fontFamily:"inherit"}}>✕</button>
-              )}
-            </div>
-            <button onClick={marcarTodos}
-              style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"5px 10px",fontSize:12}}>
-              Marcar todos ({totalRegs})
-            </button>
-            <button onClick={desmarcarTodos}
-              style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"5px 10px",fontSize:12}}>
-              Desmarcar todos
-            </button>
-          </div>
-
-          {/* Formato */}
-          <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap",fontSize:12,color:C.text}}>
-            <span style={{color:C.muted}}>Formato:</span>
-            <label style={{display:"flex",alignItems:"center",gap:5,cursor:"pointer"}}>
-              <input type="radio" name="modo" checked={modo==="separados"} onChange={()=>setModo("separados")}/>
-              📧 Archivos separados {plan.clientesConSel>1 && <span style={{color:C.muted}}>(ZIP con {plan.clientesConSel})</span>}
-            </label>
-            <label style={{display:"flex",alignItems:"center",gap:5,cursor:"pointer"}}>
-              <input type="radio" name="modo" checked={modo==="consolidado"} onChange={()=>setModo("consolidado")}/>
-              📦 Un archivo (multi-hojas)
-            </label>
-          </div>
-        </div>
-
-        {/* Resumen de plan */}
-        <div style={{padding:"10px 24px",background:"#E8F5E9",borderBottom:`1px solid #A5D6A7`,fontSize:13,color:"#1B5E20",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
-          <div>
-            <b>{plan.clientesConSel}</b> cliente{plan.clientesConSel===1?"":"s"} · <b>{plan.pendientesSel}</b> pendiente{plan.pendientesSel===1?"":"s"} marcados
-          </div>
-          <div style={{display:"flex",gap:12,fontWeight:700}}>
-            {Object.entries(plan.totMon).sort().map(([mon,t])=>(
-              <span key={mon}>{mon==="MXN"?"🇲🇽":mon==="USD"?"🇺🇸":"€"} {mon==="EUR"?"€":"$"}{fmt(t)}</span>
-            ))}
-          </div>
-        </div>
-
-        {error && (
-          <div style={{padding:"10px 24px",background:"#FFEBEE",color:C.danger,fontSize:13,borderBottom:`1px solid #FFCDD2`}}>
-            ⚠️ {error}
-          </div>
-        )}
-
-        {/* Lista de clientes */}
-        <div style={{overflowY:"auto",flex:1,padding:"6px 0"}}>
-          {gruposCliente.length === 0 ? (
-            <div style={{textAlign:"center",padding:40,color:C.muted}}>
-              <div style={{fontSize:36,marginBottom:8}}>🔍</div>
-              <div>Sin resultados</div>
-            </div>
-          ) : (
-            gruposCliente.map(g => {
-              const est = estadoCliente(g);
-              const expandido = expandidos.has(g.nombre);
-              return (
-                <div key={g.nombre} style={{borderBottom:`1px solid ${C.border}`}}>
-                  {/* Fila del cliente */}
-                  <div
-                    onClick={()=>toggleExpand(g.nombre)}
-                    style={{display:"flex",alignItems:"center",padding:"10px 24px",cursor:"pointer",background:est==="parcial"?"#FFF3E0":(est==="todos"?"#F3E5F5":"#fff"),gap:10}}>
-                    <span style={{display:"inline-block",width:14,fontSize:11,color:C.muted,transform:expandido?"rotate(0deg)":"rotate(-90deg)",transition:"transform .15s"}}>▼</span>
-                    <MasterTri
-                      checked={est==="todos"}
-                      indeterminate={est==="parcial"}
-                      onChange={(e)=>{e.stopPropagation();toggleCliente(g);}}
-                    />
-                    <div style={{flex:1,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                      <span style={{fontWeight:700,color:est==="ninguno"?C.muted:"#1B5E20",fontSize:13}}>
-                        👤 {g.nombre}
-                      </span>
-                    </div>
-                    <span style={{fontSize:12,color:C.muted}}>
-                      {g.regs.length} pend.
-                    </span>
-                    <div style={{display:"flex",gap:10,minWidth:140,justifyContent:"flex-end"}}>
-                      {Object.entries(g.totMon).sort().map(([mon,t])=>(
-                        <span key={mon} style={{fontSize:12,color:"#1B5E20",fontWeight:700}}>
-                          {mon==="EUR"?"€":"$"}{fmt(t)} {mon}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Pendientes individuales expandidos */}
-                  {expandido && (
-                    <div style={{background:"#FAFAFA",padding:"4px 0 8px 0"}}>
-                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                        <tbody>
-                          {g.regs.map(r => {
-                            const ch = marcados.has(r.id);
-                            return (
-                              <tr key={r.id} style={{borderTop:`1px solid #EEE`}}>
-                                <td style={{padding:"4px 24px 4px 64px",width:30}}>
-                                  <input type="checkbox" checked={ch} onChange={()=>togglePendiente(r.id)} style={{cursor:"pointer"}}/>
-                                </td>
-                                <td style={{padding:"4px 8px",color:C.muted,fontSize:11,width:80}}>{r.concepto||"—"}</td>
-                                <td style={{padding:"4px 8px",color:C.blue,fontWeight:600,fontSize:11,width:60}}>OS {r.numOs||"—"}</td>
-                                <td style={{padding:"4px 8px",fontSize:11,width:100}}>{r.destino||"—"}</td>
-                                <td style={{padding:"4px 8px",color:C.muted,fontSize:11,width:90,whiteSpace:"nowrap"}}>{r.fechaVenta||"—"}</td>
-                                <td style={{padding:"4px 8px",fontSize:11}}>
-                                  <span style={{background:r.moneda==="MXN"?"#E3F2FD":"#E8F5E9",color:r.moneda==="MXN"?"#1565C0":"#2E7D32",padding:"1px 6px",borderRadius:10,fontSize:10,fontWeight:700}}>{r.moneda}</span>
-                                </td>
-                                <td style={{padding:"4px 24px 4px 8px",textAlign:"right",fontWeight:700,color:"#1B5E20",fontSize:12,whiteSpace:"nowrap"}}>
-                                  {r.moneda==="EUR"?"€":"$"}{fmt(+r.importe||0)}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Footer */}
-        <div style={{padding:"14px 24px",borderTop:`1px solid ${C.border}`,background:"#FAFAFA",display:"flex",justifyContent:"flex-end",gap:8}}>
-          <button onClick={onClose} disabled={generando}
-            style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"8px 16px",fontSize:13,opacity:generando?0.5:1}}>
-            Cancelar
-          </button>
-          <button onClick={descargar} disabled={!puedeDescargar || generando}
-            style={{...btnStyle,background:"#388E3C",color:"#fff",padding:"8px 18px",fontSize:13,opacity:(!puedeDescargar||generando)?0.5:1}}>
-            {generando ? "Generando..." : `✓ Descargar ${plan.pendientesSel}`}
-          </button>
-        </div>
-
-      </div>
-    </div>
-  );
-}
-
-/* ── ConciliacionModal ───────────────────────────────────────────────
-   Compara filas del Excel vs lo que ya hay en sistema (porFacturar)
-   usando la llave (num_os, cliente). Clasifica en 4 buckets y deja al
-   usuario decidir qué aplicar antes de tocar la BD. */
-function ConciliacionModal({
-  excelRows, fileName, porFacturar, empresaId, esConsulta,
-  insertPorFacturar, updatePorFacturar, deletePorFacturar, bulkInsertPorFacturarPlain,
-  setPorFacturar, fmt, C, btnStyle, inputStyle, onClose
-}) {
-  const [tab, setTab] = React.useState("nuevos");
-  const [ejecutando, setEjecutando] = React.useState(false);
-  const [resultado, setResultado] = React.useState(null);
-
-  const normCli = (s) => String(s||"").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-  const llave = (r) => {
-    const os = String(r.numOs||"").trim();
-    if (!os) return null;
-    return `${os}|${normCli(r.cliente)}`;
-  };
-
-  const CAMPOS_CMP = React.useMemo(()=>[
-    {id:"importe",    l:"Importe",     cmp:(a,b)=>Math.abs((+a||0)-(+b||0))<0.01, render:(v,m)=>`${m==="EUR"?"€":"$"}${fmt(+v||0)}`},
-    {id:"concepto",   l:"Concepto",    cmp:null, render:(v)=>v||"—"},
-    {id:"fechaVenta", l:"Fecha Venta", cmp:null, render:(v)=>v||"—"},
-    {id:"destino",    l:"Destino",     cmp:null, render:(v)=>v||"—"},
-    {id:"moneda",     l:"Moneda",      cmp:null, render:(v)=>v||"—"},
-    {id:"notas",      l:"Notas",       cmp:null, render:(v)=>v||"—"},
-  ],[fmt]);
-
-  const buckets = React.useMemo(()=>{
-    const mapaSistema = new Map();
-    porFacturar.forEach(s => {
-      const k = llave(s);
-      if (k !== null && !mapaSistema.has(k)) mapaSistema.set(k, s);
-    });
-
-    const nuevos = [], modificados = [], iguales = [], dupsInternos = [];
-    const llavesMatched = new Set();
-
-    excelRows.forEach(r => {
-      const k = llave(r);
-      if (k === null) { nuevos.push({row:r, sinOs:true}); return; }
-      if (llavesMatched.has(k)) { dupsInternos.push({k, row:r}); return; }
-      llavesMatched.add(k);
-
-      const sys = mapaSistema.get(k);
-      if (!sys) { nuevos.push({row:r, sinOs:false}); return; }
-
-      const diffs = [];
-      CAMPOS_CMP.forEach(c => {
-        const vE = r[c.id], vS = sys[c.id];
-        const ig = c.cmp ? c.cmp(vE, vS) : (String(vE||"").trim() === String(vS||"").trim());
-        if (!ig) diffs.push({campo:c.id, label:c.l, sistema:vS, excel:vE, render:c.render});
-      });
-      if (diffs.length) modificados.push({excel:r, sistema:sys, diffs});
-      else iguales.push({excel:r, sistema:sys});
-    });
-
-    const soloSistema = [];
-    mapaSistema.forEach((s, k) => { if (!llavesMatched.has(k)) soloSistema.push(s); });
-
-    return { nuevos, modificados, iguales, soloSistema, dupsInternos };
-  },[excelRows, porFacturar, CAMPOS_CMP]);
-
-  const [selNuevos, setSelNuevos] = React.useState(()=>new Set(buckets.nuevos.map((_,i)=>i)));
-  const [selMods,   setSelMods]   = React.useState(()=>new Set(buckets.modificados.map((_,i)=>i)));
-  const [selDel,    setSelDel]    = React.useState(()=>new Set());
-
-  // Sort por columna en cada tab tabular (Nuevos / Iguales / Solo en sistema).
-  // Modificados es card-based: usa un selector tipo "ordenar por".
-  const [sortNuevos,  setSortNuevos]  = React.useState({col:null, dir:"asc"});
-  const [sortIguales, setSortIguales] = React.useState({col:null, dir:"asc"});
-  const [sortSolo,    setSortSolo]    = React.useState({col:null, dir:"asc"});
-  const [sortMods,    setSortMods]    = React.useState("default"); // "default"|"cliente"|"numOs"|"cambios"
-
-  const onSortClick = (setFn) => (col) => setFn(prev =>
-    prev.col === col
-      ? { col, dir: prev.dir === "asc" ? "desc" : "asc" }
-      : { col, dir: "asc" }
-  );
-
-  const aplicarSort = (arr, sort, accessor) => {
-    if (!sort.col) return arr;
-    const sorted = [...arr].sort((a,b)=>{
-      const va = accessor(a, sort.col);
-      const vb = accessor(b, sort.col);
-      if (typeof va === "number" && typeof vb === "number") return va - vb;
-      return String(va||"").localeCompare(String(vb||""), "es", {numeric:true});
-    });
-    return sort.dir === "desc" ? sorted.reverse() : sorted;
-  };
-
-  const SortableTh = ({col, label, align, sortState, onClick:onClk, style:extraStyle}) => {
-    const active = sortState.col === col;
-    return (
-      <th onClick={()=>onClk(col)}
-        style={{padding:"8px 10px",textAlign:align||"left",color:"#fff",fontWeight:700,fontSize:11,textTransform:"uppercase",whiteSpace:"nowrap",cursor:"pointer",userSelect:"none",background:active?"rgba(255,255,255,.10)":"transparent",...(extraStyle||{})}}>
-        {label}{active && <span style={{marginLeft:4,fontSize:9}}>{sortState.dir==="asc"?"▲":"▼"}</span>}
-      </th>
-    );
-  };
-
-  const toggleSel = (setFn, idx) => setFn(prev => {
-    const n = new Set(prev);
-    if (n.has(idx)) n.delete(idx); else n.add(idx);
-    return n;
-  });
-  const toggleAll = (setFn, len, currentSel) => {
-    if (currentSel.size === len) setFn(new Set());
-    else setFn(new Set(Array.from({length:len},(_,i)=>i)));
-  };
-
-  const plan = {
-    insertar: selNuevos.size,
-    actualizar: selMods.size,
-    eliminar: selDel.size,
-  };
-
-  const ejecutar = async () => {
-    if (esConsulta) return;
-    setEjecutando(true);
-    const r = { inserted:0, updated:0, deleted:0, errors:[] };
-
-    const nuevosAInsertar = Array.from(selNuevos).map(i => buckets.nuevos[i].row);
-    if (nuevosAInsertar.length) {
-      try {
-        const res = await bulkInsertPorFacturarPlain(nuevosAInsertar.map(row => ({...row, empresaId})));
-        r.inserted = res.inserted || 0;
-        if (res.error) r.errors.push(`Inserción: ${res.error.message || res.error}`);
-      } catch (e) { r.errors.push(`Inserción: ${e.message || e}`); }
-    }
-
-    const modsAActualizar = Array.from(selMods).map(i => buckets.modificados[i]);
-    for (const m of modsAActualizar) {
-      try {
-        await updatePorFacturar(m.sistema.id, {
-          cliente: m.excel.cliente || m.sistema.cliente,
-          concepto: m.excel.concepto || "",
-          importe: +m.excel.importe || 0,
-          moneda: m.excel.moneda || "MXN",
-          notas: m.excel.notas || "",
-          numOs: m.excel.numOs || "",
-          fechaVenta: m.excel.fechaVenta || "",
-          destino: m.excel.destino || "",
-        });
-        r.updated++;
-      } catch (e) { r.errors.push(`Update ${m.sistema.numOs}: ${e.message || e}`); }
-    }
-
-    const aEliminar = Array.from(selDel).map(i => buckets.soloSistema[i]);
-    for (const s of aEliminar) {
-      try { await deletePorFacturar(s.id); r.deleted++; }
-      catch (e) { r.errors.push(`Delete ${s.numOs}: ${e.message || e}`); }
-    }
-
-    try {
-      const { supabase } = await import("./supabase.js");
-      const { data } = await supabase.from("por_facturar").select("*").eq("empresa_id", empresaId).order("created_at", { ascending:false });
-      const fresh = (data||[]).map(row => ({
-        id:row.id, empresaId:row.empresa_id, cliente:row.cliente||"", concepto:row.concepto||"",
-        importe:+row.importe||0, moneda:row.moneda||"MXN", notas:row.notas||"",
-        numOs:row.num_os||"", fechaVenta:row.fecha_venta||"", destino:row.destino||"",
-        createdAt:row.created_at||""
-      }));
-      setPorFacturar(fresh);
-    } catch (e) { r.errors.push(`Refresh: ${e.message || e}`); }
-
-    setResultado(r);
-    setEjecutando(false);
-  };
-
-  const TabBtn = ({id, l, count, color}) => (
-    <button onClick={()=>setTab(id)}
-      style={{padding:"8px 14px",border:"none",borderBottom:`3px solid ${tab===id?color:"transparent"}`,background:tab===id?"#fff":"#F5F5F5",color:tab===id?color:C.muted,fontWeight:tab===id?800:600,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
-      {l} <span style={{background:tab===id?color:"#E0E0E0",color:tab===id?"#fff":C.muted,borderRadius:10,padding:"1px 8px",fontSize:11,marginLeft:4}}>{count}</span>
-    </button>
-  );
-
-  const sinOsCount = buckets.nuevos.filter(n=>n.sinOs).length;
-
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.65)",zIndex:1100,display:"flex",alignItems:"center",justifyContent:"center",padding:10}}
-      onClick={ejecutando?undefined:onClose}>
-      <div style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:1400,maxHeight:"95vh",display:"flex",flexDirection:"column",boxShadow:"0 24px 64px rgba(0,0,0,.4)"}}
-        onClick={e=>e.stopPropagation()}>
-
-        <div style={{padding:"18px 24px",background:"#6A1B9A",borderRadius:"16px 16px 0 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div>
-            <div style={{fontWeight:800,color:"#fff",fontSize:17}}>🔄 Conciliar Excel — Pendiente por Facturar</div>
-            <div style={{fontSize:12,color:"#E1BEE7",marginTop:3}}>
-              Archivo: <b>{fileName}</b> · {excelRows.length} {excelRows.length===1?"registro leído":"registros leídos"} · Llave de match: <b>(# OS, cliente)</b>
-            </div>
-          </div>
-          <button onClick={onClose} disabled={ejecutando}
-            style={{background:"rgba(255,255,255,.15)",border:"none",borderRadius:8,color:"#fff",width:34,height:34,cursor:ejecutando?"not-allowed":"pointer",fontSize:20,opacity:ejecutando?0.4:1}}>×</button>
-        </div>
-
-        {resultado && (
-          <div style={{padding:"16px 24px",background:resultado.errors.length?"#FFEBEE":"#E8F5E9",borderBottom:`1px solid ${resultado.errors.length?"#FFCDD2":"#A5D6A7"}`}}>
-            <div style={{fontWeight:800,fontSize:14,color:resultado.errors.length?C.danger:"#2E7D32",marginBottom:6}}>
-              {resultado.errors.length?"⚠️ Conciliación completada con errores":"✅ Conciliación completada"}
-            </div>
-            <div style={{fontSize:13,color:C.text}}>
-              🆕 Insertados: <b>{resultado.inserted}</b> · ✏️ Actualizados: <b>{resultado.updated}</b> · ❌ Eliminados: <b>{resultado.deleted}</b>
-            </div>
-            {resultado.errors.length>0 && (
-              <ul style={{fontSize:12,color:C.danger,marginTop:8,paddingLeft:20}}>
-                {resultado.errors.slice(0,5).map((e,i)=><li key={i}>{e}</li>)}
-                {resultado.errors.length>5 && <li>...y {resultado.errors.length-5} más</li>}
-              </ul>
-            )}
-            <button onClick={onClose} style={{...btnStyle,background:"#2E7D32",padding:"6px 14px",fontSize:13,marginTop:10}}>Cerrar</button>
-          </div>
-        )}
-
-        {!resultado && (buckets.dupsInternos.length>0 || sinOsCount>0) && (
-          <div style={{padding:"10px 24px",background:"#FFF8E1",borderBottom:`1px solid #FFE082`,fontSize:12,color:"#E65100"}}>
-            {buckets.dupsInternos.length>0 && (
-              <div>⚠️ {buckets.dupsInternos.length} duplicado(s) interno(s) en el Excel (misma OS + cliente); se conservó el primero.</div>
-            )}
-            {sinOsCount>0 && (
-              <div>⚠️ {sinOsCount} registro(s) del Excel sin # OS — se importarán como nuevos sin intentar match.</div>
-            )}
-          </div>
-        )}
-
-        {!resultado && (
-          <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,background:"#FAFAFA"}}>
-            <TabBtn id="nuevos"       l="🆕 Nuevos"          count={buckets.nuevos.length}      color="#2E7D32"/>
-            <TabBtn id="modificados"  l="✏️ Modificados"     count={buckets.modificados.length} color="#8E24AA"/>
-            <TabBtn id="iguales"      l="✅ Iguales"         count={buckets.iguales.length}     color="#1565C0"/>
-            <TabBtn id="solo_sistema" l="❌ Solo en sistema" count={buckets.soloSistema.length} color="#C62828"/>
-          </div>
-        )}
-
-        {!resultado && (
-          <div style={{overflowY:"auto",flex:1,padding:"12px 24px"}}>
-
-            {tab==="nuevos" && (
-              buckets.nuevos.length===0 ? (
-                <div style={{textAlign:"center",padding:40,color:C.muted}}>No hay registros nuevos en este Excel.</div>
-              ) : (
-                <div>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                    <div style={{fontSize:13,color:C.muted}}>Marcadas para insertar: <b style={{color:"#2E7D32"}}>{selNuevos.size}</b> de {buckets.nuevos.length}</div>
-                    <button onClick={()=>toggleAll(setSelNuevos, buckets.nuevos.length, selNuevos)}
-                      style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"5px 12px",fontSize:12}}>
-                      {selNuevos.size===buckets.nuevos.length?"Deseleccionar todos":"Seleccionar todos"}
-                    </button>
-                  </div>
-                  {(()=>{
-                    const items = buckets.nuevos.map((n,idx)=>({n,idx}));
-                    const ordenados = aplicarSort(items, sortNuevos, (x,col)=>{
-                      if (col==="importe") return +x.n.row.importe||0;
-                      return String(x.n.row[col]||"");
-                    });
-                    const onClk = onSortClick(setSortNuevos);
-                    return (
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                    <thead><tr style={{background:C.navy,color:"#fff"}}>
-                      <th style={{padding:"8px",width:30}}></th>
-                      <SortableTh col="cliente"    label="Cliente"  sortState={sortNuevos} onClick={onClk}/>
-                      <SortableTh col="concepto"   label="Concepto" sortState={sortNuevos} onClick={onClk}/>
-                      <SortableTh col="numOs"      label="# OS"     sortState={sortNuevos} onClick={onClk}/>
-                      <SortableTh col="destino"    label="Destino"  sortState={sortNuevos} onClick={onClk}/>
-                      <SortableTh col="fechaVenta" label="Fecha"    sortState={sortNuevos} onClick={onClk}/>
-                      <SortableTh col="importe"    label="Importe"  align="right" sortState={sortNuevos} onClick={onClk}/>
-                    </tr></thead>
-                    <tbody>
-                      {ordenados.map(({n,idx},i)=>{
-                        const r = n.row;
-                        return (
-                          <tr key={idx} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFF"}}>
-                            <td style={{padding:"8px",textAlign:"center"}}>
-                              <input type="checkbox" checked={selNuevos.has(idx)} onChange={()=>toggleSel(setSelNuevos,idx)}/>
-                            </td>
-                            <td style={{padding:"8px 10px",fontWeight:700,color:"#2E7D32",fontSize:12}}>
-                              {r.cliente}
-                              {n.sinOs && <span style={{marginLeft:6,background:"#FFE0B2",color:"#E65100",padding:"1px 6px",borderRadius:8,fontSize:10}}>sin OS</span>}
-                            </td>
-                            <td style={{padding:"8px 10px",color:C.muted,fontSize:12}}>{r.concepto||"—"}</td>
-                            <td style={{padding:"8px 10px",color:C.blue,fontWeight:600,fontSize:12}}>{r.numOs||"—"}</td>
-                            <td style={{padding:"8px 10px",fontSize:12}}>{r.destino||"—"}</td>
-                            <td style={{padding:"8px 10px",fontSize:12,color:C.muted}}>{r.fechaVenta||"—"}</td>
-                            <td style={{padding:"8px 10px",textAlign:"right",fontWeight:800,color:"#2E7D32",fontSize:13}}>{r.moneda==="EUR"?"€":"$"}{fmt(+r.importe||0)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                    );})()}
-                </div>
-              )
-            )}
-
-            {tab==="modificados" && (
-              buckets.modificados.length===0 ? (
-                <div style={{textAlign:"center",padding:40,color:C.muted}}>No hay registros modificados. Todo lo que matchea coincide en todos los campos.</div>
-              ) : (
-                <div>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:10,flexWrap:"wrap"}}>
-                    <div style={{fontSize:13,color:C.muted}}>
-                      Aplicar cambios del Excel a: <b style={{color:"#8E24AA"}}>{selMods.size}</b> de {buckets.modificados.length}
-                    </div>
-                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                      <span style={{fontSize:11,color:C.muted}}>Ordenar por:</span>
-                      <select value={sortMods} onChange={e=>setSortMods(e.target.value)}
-                        style={{...inputStyle,fontSize:12,padding:"5px 8px"}}>
-                        <option value="default">Original</option>
-                        <option value="cliente">Cliente A→Z</option>
-                        <option value="numOs">Número de OS</option>
-                        <option value="cambios"># de cambios</option>
-                      </select>
-                      <button onClick={()=>toggleAll(setSelMods, buckets.modificados.length, selMods)}
-                        style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"5px 12px",fontSize:12}}>
-                        {selMods.size===buckets.modificados.length?"Deseleccionar todos":"Seleccionar todos"}
-                      </button>
-                    </div>
-                  </div>
-                  {(()=>{
-                    const items = buckets.modificados.map((m,idx)=>({m,idx}));
-                    if (sortMods==="default") return items;
-                    return [...items].sort((a,b)=>{
-                      if (sortMods==="cliente") return String(a.m.sistema.cliente||"").localeCompare(String(b.m.sistema.cliente||""),"es");
-                      if (sortMods==="numOs")   return String(a.m.sistema.numOs||"").localeCompare(String(b.m.sistema.numOs||""),"es",{numeric:true});
-                      if (sortMods==="cambios") return b.m.diffs.length - a.m.diffs.length;
-                      return 0;
-                    });
-                  })().map(({m,idx},i)=>(
-                    <div key={idx} style={{border:`1px solid ${selMods.has(idx)?"#CE93D8":C.border}`,borderRadius:8,padding:12,marginBottom:10,background:selMods.has(idx)?"#F3E5F5":"#FAFBFF"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                        <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:700,color:"#8E24AA"}}>
-                          <input type="checkbox" checked={selMods.has(idx)} onChange={()=>toggleSel(setSelMods,idx)}/>
-                          ✏️ {m.sistema.cliente} · OS {m.sistema.numOs}
-                        </label>
-                        <span style={{fontSize:11,color:C.muted}}>{m.diffs.length} {m.diffs.length===1?"campo cambió":"campos cambiaron"}</span>
-                      </div>
-                      <table style={{width:"100%",fontSize:12,borderCollapse:"collapse"}}>
-                        <thead><tr style={{background:"#F5F5F5"}}>
-                          <th style={{padding:"6px 10px",textAlign:"left",color:C.muted,fontWeight:600}}>Campo</th>
-                          <th style={{padding:"6px 10px",textAlign:"left",color:C.muted,fontWeight:600}}>En sistema</th>
-                          <th style={{padding:"6px 10px",textAlign:"left",color:C.muted,fontWeight:600}}>En Excel</th>
-                        </tr></thead>
-                        <tbody>
-                          {m.diffs.map(d=>(
-                            <tr key={d.campo} style={{borderTop:`1px solid ${C.border}`}}>
-                              <td style={{padding:"6px 10px",fontWeight:600}}>{d.label}</td>
-                              <td style={{padding:"6px 10px",color:C.danger,textDecoration:"line-through"}}>{d.render(d.sistema, m.sistema.moneda)}</td>
-                              <td style={{padding:"6px 10px",color:"#2E7D32",fontWeight:600}}>{d.render(d.excel, m.excel.moneda)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ))}
-                </div>
-              )
-            )}
-
-            {tab==="iguales" && (
-              buckets.iguales.length===0 ? (
-                <div style={{textAlign:"center",padding:40,color:C.muted}}>No hay registros idénticos.</div>
-              ) : (
-                <div>
-                  <div style={{fontSize:13,color:C.muted,marginBottom:8}}>Estos {buckets.iguales.length} registros ya están en sistema con los mismos datos. No se hará nada con ellos.</div>
-                  {(()=>{
-                    const ordenados = aplicarSort(buckets.iguales, sortIguales, (it,col)=>{
-                      if (col==="importe") return +it.sistema.importe||0;
-                      return String(it.sistema[col]||"");
-                    });
-                    const onClk = onSortClick(setSortIguales);
-                    return (
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                    <thead><tr style={{background:C.navy,color:"#fff"}}>
-                      <SortableTh col="cliente"  label="Cliente"  sortState={sortIguales} onClick={onClk}/>
-                      <SortableTh col="concepto" label="Concepto" sortState={sortIguales} onClick={onClk}/>
-                      <SortableTh col="numOs"    label="# OS"     sortState={sortIguales} onClick={onClk}/>
-                      <SortableTh col="importe"  label="Importe"  align="right" sortState={sortIguales} onClick={onClk}/>
-                    </tr></thead>
-                    <tbody>
-                      {ordenados.map((it,i)=>{
-                        const r = it.sistema;
-                        return (
-                          <tr key={r.id||i} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFF"}}>
-                            <td style={{padding:"8px 10px",fontWeight:600,color:"#1565C0",fontSize:12}}>{r.cliente}</td>
-                            <td style={{padding:"8px 10px",color:C.muted,fontSize:12}}>{r.concepto||"—"}</td>
-                            <td style={{padding:"8px 10px",color:C.blue,fontWeight:600,fontSize:12}}>{r.numOs||"—"}</td>
-                            <td style={{padding:"8px 10px",textAlign:"right",fontWeight:700,color:"#1565C0",fontSize:13}}>{r.moneda==="EUR"?"€":"$"}{fmt(+r.importe||0)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                    );})()}
-                </div>
-              )
-            )}
-
-            {tab==="solo_sistema" && (
-              buckets.soloSistema.length===0 ? (
-                <div style={{textAlign:"center",padding:40,color:C.muted}}>El Excel contiene todo lo que hay en sistema (o más). Nada que decidir aquí.</div>
-              ) : (
-                <div>
-                  <div style={{padding:"8px 12px",background:"#FFEBEE",borderRadius:8,marginBottom:10,fontSize:12,color:"#C62828"}}>
-                    ⚠️ Estos registros están en sistema pero NO en el Excel actual. Marca los que quieras eliminar. Por default <b>no</b> se elimina nada.
-                  </div>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                    <div style={{fontSize:13,color:C.muted}}>Marcados para eliminar: <b style={{color:C.danger}}>{selDel.size}</b> de {buckets.soloSistema.length}</div>
-                    <button onClick={()=>toggleAll(setSelDel, buckets.soloSistema.length, selDel)}
-                      style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"5px 12px",fontSize:12}}>
-                      {selDel.size===buckets.soloSistema.length?"Deseleccionar todos":"Seleccionar todos"}
-                    </button>
-                  </div>
-                  {(()=>{
-                    const items = buckets.soloSistema.map((r,idx)=>({r,idx}));
-                    const ordenados = aplicarSort(items, sortSolo, (x,col)=>{
-                      if (col==="importe") return +x.r.importe||0;
-                      return String(x.r[col]||"");
-                    });
-                    const onClk = onSortClick(setSortSolo);
-                    return (
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                    <thead><tr style={{background:C.navy,color:"#fff"}}>
-                      <th style={{padding:"8px",width:30}}></th>
-                      <SortableTh col="cliente"    label="Cliente"  sortState={sortSolo} onClick={onClk}/>
-                      <SortableTh col="concepto"   label="Concepto" sortState={sortSolo} onClick={onClk}/>
-                      <SortableTh col="numOs"      label="# OS"     sortState={sortSolo} onClick={onClk}/>
-                      <SortableTh col="destino"    label="Destino"  sortState={sortSolo} onClick={onClk}/>
-                      <SortableTh col="fechaVenta" label="Fecha"    sortState={sortSolo} onClick={onClk}/>
-                      <SortableTh col="importe"    label="Importe"  align="right" sortState={sortSolo} onClick={onClk}/>
-                    </tr></thead>
-                    <tbody>
-                      {ordenados.map(({r,idx},i)=>(
-                        <tr key={r.id} style={{borderTop:`1px solid ${C.border}`,background:selDel.has(idx)?"#FFEBEE":(i%2===0?"#fff":"#FAFBFF")}}>
-                          <td style={{padding:"8px",textAlign:"center"}}>
-                            <input type="checkbox" checked={selDel.has(idx)} onChange={()=>toggleSel(setSelDel,idx)}/>
-                          </td>
-                          <td style={{padding:"8px 10px",fontWeight:600,fontSize:12,color:selDel.has(idx)?C.danger:C.text}}>{r.cliente}</td>
-                          <td style={{padding:"8px 10px",color:C.muted,fontSize:12}}>{r.concepto||"—"}</td>
-                          <td style={{padding:"8px 10px",color:C.blue,fontWeight:600,fontSize:12}}>{r.numOs||"—"}</td>
-                          <td style={{padding:"8px 10px",fontSize:12}}>{r.destino||"—"}</td>
-                          <td style={{padding:"8px 10px",fontSize:12,color:C.muted}}>{r.fechaVenta||"—"}</td>
-                          <td style={{padding:"8px 10px",textAlign:"right",fontWeight:700,fontSize:13,color:selDel.has(idx)?C.danger:C.text}}>{r.moneda==="EUR"?"€":"$"}{fmt(+r.importe||0)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                    );})()}
-                </div>
-              )
-            )}
-
-          </div>
-        )}
-
-        {!resultado && (
-          <div style={{padding:"14px 24px",borderTop:`1px solid ${C.border}`,background:"#FAFAFA",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <div style={{fontSize:13,color:C.text}}>
-              <b>Plan:</b>
-              <span style={{marginLeft:10,color:"#2E7D32",fontWeight:700}}>🆕 Insertar {plan.insertar}</span>
-              <span style={{marginLeft:10,color:"#8E24AA",fontWeight:700}}>✏️ Actualizar {plan.actualizar}</span>
-              <span style={{marginLeft:10,color:C.danger,fontWeight:700}}>❌ Eliminar {plan.eliminar}</span>
-            </div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={onClose} disabled={ejecutando}
-                style={{...btnStyle,background:"#F1F5F9",color:C.text,padding:"8px 16px",fontSize:13,opacity:ejecutando?0.5:1}}>
-                Cancelar
-              </button>
-              <button onClick={ejecutar}
-                disabled={ejecutando || esConsulta || (plan.insertar+plan.actualizar+plan.eliminar===0)}
-                style={{...btnStyle,background:"#6A1B9A",color:"#fff",padding:"8px 18px",fontSize:13,opacity:(ejecutando||esConsulta||(plan.insertar+plan.actualizar+plan.eliminar===0))?0.5:1}}>
-                {ejecutando?"Aplicando...":"✓ Ejecutar conciliación"}
-              </button>
-            </div>
-          </div>
-        )}
-
       </div>
     </div>
   );
