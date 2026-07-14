@@ -376,16 +376,27 @@ function Dashboard({ session }) {
     if (c?.locked) { alert('Este circuito está cerrado. Ábrelo antes de editarlo.'); return true }
     return false
   }
+  // ── Funciones administrativas de pago/factura ────────────────────
+  // Estas NO respetan el candado del circuito (para que se puedan
+  // registrar facturas/pagos aunque Irlanda ya haya bloqueado el
+  // circuito). Sí respetan el modo solo lectura.
   const togglePaid = async (cid, rowId, current) => {
-    if (checkLocked(cid)) return
+    if (checkReadOnly()) return
     await supabase.from('circuit_rows').update({ paid: !current }).eq('id', rowId)
     updateRow(cid, rowId, { paid: !current })
   }
   const setFechaPago = async (cid, rowId, val) => {
-    if (checkLocked(cid)) return
+    if (checkReadOnly()) return
     await supabase.from('circuit_rows').update({ fecha_pago: val || null }).eq('id', rowId)
     updateRow(cid, rowId, { fecha_pago: val })
   }
+  const saveFactura = async (cid, rowId, field, val) => {
+    if (checkReadOnly()) return
+    await supabase.from('circuit_rows').update({ [field]: val }).eq('id', rowId)
+    updateRow(cid, rowId, { [field]: val })
+  }
+  // ── Funciones operativas del circuito ─────────────────────────────
+  // Estas SÍ respetan el candado (para editar hay que desbloquear).
   const setNota = useCallback(async (cid, rowId, val) => {
     const c = circuits.find(x => x.id === cid)
     if (c?.locked) { alert('Este circuito está cerrado. Ábrelo antes de editarlo.'); return }
@@ -416,11 +427,6 @@ function Dashboard({ session }) {
     if (checkLocked(cid)) return
     await supabase.from('circuit_rows').update({ precio_custom: precio || null, moneda_custom: moneda }).eq('id', rowId)
     updateRow(cid, rowId, { precio_custom: precio || null, moneda_custom: moneda })
-  }
-  const saveFactura = async (cid, rowId, field, val) => {
-    if (checkLocked(cid)) return
-    await supabase.from('circuit_rows').update({ [field]: val }).eq('id', rowId)
-    updateRow(cid, rowId, { [field]: val })
   }
   const saveRowField = async (cid, rowId, changes) => {
     if (checkLocked(cid)) return
@@ -3109,7 +3115,7 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
           <span style={{ fontSize: 18 }}>🔒</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: '#7d5a00' }}>Circuito cerrado</div>
-            <div style={{ fontSize: 11, color: '#8a7a3a' }}>Este circuito está en solo lectura. Ábrelo para poder editar.</div>
+            <div style={{ fontSize: 11, color: '#8a7a3a' }}>Datos operativos bloqueados. Puedes registrar facturas y pagos sin desbloquearlo.</div>
           </div>
         </div>
       )}
