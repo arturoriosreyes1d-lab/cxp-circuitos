@@ -3398,14 +3398,14 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
         ))}
       </div>
 
-      {activeTab==='cxp'&&<CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow}/>}
+      {activeTab==='cxp'&&<CxPPanel circ={circ} tarifario={tarifario} F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode} isReadOnly={isReadOnly} togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota} saveProv={saveProv} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow}/>}
       {activeTab==='proveedores'&&<ProvPanel circ={circ} tarifario={tarifario} TC={TC}/>}
       {activeTab==='timeline'&&<TimelinePanel circ={circ} tarifario={tarifario}/>}
     </div>
   )
 }
 // ── CxP Panel ──
-function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveFactura, saveRowField, addRow, deleteRow }) {
+function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isReadOnly, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveFactura, saveRowField, addRow, deleteRow }) {
   const [editCell, setEditCell] = useState(null)
   const [editVal, setEditVal] = useState('')
   const [editVal2, setEditVal2] = useState('')
