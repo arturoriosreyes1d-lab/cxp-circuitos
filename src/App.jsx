@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from './supabase'
 import Login from './Login'
 import { Badge, TipoBadge, Btn, KPIGrid, Modal, Spinner } from './components'
-import { norm, clean, parseAmt, fmtMXN, fmtUSD, cap, getDC, parseCircuito, monthKeySortable, dateToMonthKey } from './helpers'
+import { norm, clean, parseAmt, fmtMXN, fmtUSD, cap, getDC, parseCircuito, monthKeySortable, dateToMonthKey, parseLocalDate, dateToLocalStr } from './helpers'
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell } from 'recharts'
 
 function useXLSX() {
@@ -34,7 +34,7 @@ function getImporte(row, circInfo, tarifario) {
     } else {
       // Auto-detect temporada by service date vs fecha_inicio/fecha_fin ranges
       // Ranges are stored as "DD/MM" strings (year-agnostic)
-      const svcDate = row.fecha ? (row.fecha instanceof Date ? row.fecha : new Date(row.fecha)) : null
+      const svcDate = row.fecha ? (parseLocalDate(row.fecha)) : null
       if (svcDate) {
         const svcMD = svcDate.getMonth() * 100 + svcDate.getDate() // e.g. 1215 for Dec-15
         match = provEntries.find(t => {
@@ -212,6 +212,8 @@ function Dashboard({ session }) {
   }, [socioRange])
   // Modal de configuración al activar Vista Socio
   const [socioConfigModal, setSocioConfigModal] = useState(false)
+  // Modal para agregar servicio (en lugar de crear una fila vacía al final)
+  const [addRowModal, setAddRowModal] = useState(null) // { cid } | null
   const fileRef = useRef()
   const tarFileRef = useRef()
 
@@ -246,7 +248,7 @@ function Dashboard({ session }) {
         }
         const full = circs.map((c) => ({
           ...c,
-          rows: (allRows || []).filter((r) => r.circuit_id === c.id).map((r) => ({ ...r, fecha: r.fecha ? new Date(r.fecha) : null })),
+          rows: (allRows || []).filter((r) => r.circuit_id === c.id).map((r) => ({ ...r, fecha: parseLocalDate(r.fecha) })),
         }))
         setCircuits(full)
         if (full.length > 0) setView({ type: 'all' })
@@ -273,7 +275,7 @@ function Dashboard({ session }) {
       await supabase.from('circuits').upsert({ id: pendingCircuit.id, month_key: pendingCircuit.monthKey, info: pendingCircuit.info })
       await supabase.from('circuit_rows').delete().eq('circuit_id', pendingCircuit.id)
       await supabase.from('circuit_rows').insert(pendingCircuit.rows.map((r) => ({
-        circuit_id: pendingCircuit.id, idx: r.idx, fecha: r.fecha,
+        circuit_id: pendingCircuit.id, idx: r.idx, fecha: dateToLocalStr(r.fecha),
         destino: r.destino, clasificacion: r.clasificacion, servicio: r.servicio,
         tipo: r.tipo, prov_general: r.prov_general, t_venta: r.t_venta,
         paid: false, fecha_pago: null, nota: '', precio_custom: null, moneda_custom: null,
@@ -433,25 +435,48 @@ function Dashboard({ session }) {
     await supabase.from('circuit_rows').update(changes).eq('id', rowId)
     updateRow(cid, rowId, changes)
   }
-  const addRow = async (cid) => {
+  const addRow = (cid) => {
+    if (checkLocked(cid)) return
+    setAddRowModal({ cid })
+  }
+  const addRowWithData = async (cid, fields) => {
     if (checkLocked(cid)) return
     const circ = circuits.find(c => c.id === cid)
     const nextIdx = circ ? Math.max(0, ...circ.rows.map(r => r.idx || 0)) + 1 : 1
+    // Si hay proveedor con precio_pax, calcular importe automáticamente
+    let extra = {}
+    if (fields.prov_general) {
+      const tarEntry = tarifario.find(t => (t.tipo_tarifa || 'precio_fijo') === 'precio_pax' && t.proveedor === fields.prov_general)
+      if (tarEntry && circ) {
+        const pax = parseInt(circ.info?.pax) || 0
+        const tl  = tarEntry.incluye_tl ? 1 : 0
+        const total = tarEntry.precio_pax * (pax + tl)
+        if (total > 0) extra = { precio_custom: total, moneda_custom: tarEntry.moneda || 'MXN' }
+      }
+    }
     const { data, error } = await supabase.from('circuit_rows').insert({
-      circuit_id: cid, idx: nextIdx, fecha: null, destino: '', clasificacion: 'HOSPEDAJE',
-      servicio: 'Nuevo servicio', tipo: 'LIBERO', prov_general: '', t_venta: 0,
+      circuit_id: cid, idx: nextIdx,
+      fecha: fields.fecha ? dateToLocalStr(fields.fecha) : null,
+      destino: fields.destino || '',
+      clasificacion: fields.clasificacion || 'HOSPEDAJE',
+      servicio: fields.servicio || 'Nuevo servicio',
+      tipo: fields.tipo || 'LIBERO',
+      prov_general: fields.prov_general || '',
+      t_venta: 0,
       paid: false, fecha_pago: null, nota: '', precio_custom: null, moneda_custom: null,
-      factura_recibida: false, folio_factura: null, visto_bueno_auditoria: false, visto_bueno_pago: false
+      factura_recibida: false, folio_factura: null, visto_bueno_auditoria: false, visto_bueno_pago: false,
+      ...extra,
     }).select().single()
     if (!error && data) {
-      setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, rows: [...c.rows, { ...data, fecha: data.fecha ? new Date(data.fecha) : null }].sort((a,b) => {
-        const fa = a.fecha ? (a.fecha instanceof Date ? a.fecha : new Date(a.fecha)) : null
-        const fb = b.fecha ? (b.fecha instanceof Date ? b.fecha : new Date(b.fecha)) : null
+      setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, rows: [...c.rows, { ...data, fecha: parseLocalDate(data.fecha) }].sort((a,b) => {
+        const fa = a.fecha ? (parseLocalDate(a.fecha)) : null
+        const fb = b.fecha ? (parseLocalDate(b.fecha)) : null
         if (!fa && !fb) return (a.idx||0)-(b.idx||0)
         if (!fa) return 1; if (!fb) return -1
         return fa - fb
       })}))
     }
+    setAddRowModal(null)
   }
   const deleteRow = async (cid, rowId) => {
     if (checkLocked(cid)) return
@@ -549,8 +574,8 @@ function Dashboard({ session }) {
   // Ordenar circuitos dentro de cada mes por fecha_inicio ascendente
   Object.keys(monthMap).forEach(mk => {
     monthMap[mk].sort((a, b) => {
-      const fa = a.info?.fecha_inicio ? new Date(a.info.fecha_inicio) : null
-      const fb = b.info?.fecha_inicio ? new Date(b.info.fecha_inicio) : null
+      const fa = parseLocalDate(a.info?.fecha_inicio)
+      const fb = parseLocalDate(b.info?.fecha_inicio)
       if (!fa && !fb) return (a.id || '').localeCompare(b.id || '')
       if (!fa) return 1; if (!fb) return -1
       return fa - fb
@@ -795,6 +820,13 @@ function Dashboard({ session }) {
           items={gastosItems}
           onCancel={() => setGastosModal(false)}
           onConfirm={(items) => { updateGastosItems(items); setGastosModal(false) }}
+        />
+      )}
+      {addRowModal && (
+        <AddRowModal
+          tarifario={tarifario}
+          onCancel={() => setAddRowModal(null)}
+          onConfirm={(fields) => addRowWithData(addRowModal.cid, fields)}
         />
       )}
     </div>
@@ -1892,6 +1924,113 @@ function HBtn({ children, onClick, style }) {
 
 // Modal de configuración de Vista Socio: rango de meses a presentar
 // Modal para editar la lista de conceptos de Gastos Operativos
+// Modal para agregar un nuevo servicio a un circuito
+function AddRowModal({ tarifario, onCancel, onConfirm }) {
+  const [fecha, setFecha] = useState('')
+  const [destino, setDestino] = useState('')
+  const [clasificacion, setClasificacion] = useState('HOSPEDAJE')
+  const [servicio, setServicio] = useState('')
+  const [tipo, setTipo] = useState('LIBERO')
+  const [prov, setProv] = useState('')
+
+  // Solo se requiere fecha + servicio para agregar (según decisión del usuario)
+  const puedeAgregar = fecha && servicio.trim().length > 0
+
+  // Lista única de proveedores del tarifario para el dropdown
+  const proveedores = [...new Set((tarifario || []).map(t => t.proveedor).filter(Boolean))].sort()
+
+  const CLASIFICACIONES = ['HOSPEDAJE', 'TRANSPORTE', 'ACTIVIDADES', 'ALIMENTOS', 'GUIA', 'OTROS']
+
+  const handleConfirm = () => {
+    if (!puedeAgregar) return
+    onConfirm({
+      fecha, destino: destino.trim(), clasificacion,
+      servicio: servicio.trim(), tipo, prov_general: prov.trim(),
+    })
+  }
+
+  return (
+    <Modal title="＋ Agregar servicio" onClose={onCancel}>
+      <p style={{ color: '#8a8278', fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+        Captura los datos básicos. Los campos con <span style={{ color: '#b83232', fontWeight: 700 }}>*</span> son obligatorios; el resto puedes editarlos después en la fila.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+            Fecha <span style={{ color: '#b83232' }}>*</span>
+          </label>
+          <input
+            type="date" value={fecha} onChange={e => setFecha(e.target.value)} autoFocus
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none' }}
+          />
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Destino</label>
+          <input
+            type="text" value={destino} onChange={e => setDestino(e.target.value)}
+            placeholder="Ej. CANCUN"
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none' }}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Clasificación</label>
+          <select
+            value={clasificacion} onChange={e => setClasificacion(e.target.value)}
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none', cursor: 'pointer' }}
+          >
+            {CLASIFICACIONES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Tipo</label>
+          <select
+            value={tipo} onChange={e => setTipo(e.target.value)}
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none', cursor: 'pointer' }}
+          >
+            <option value="LIBERO">LIBERO</option>
+            <option value="OPCIONAL">OPCIONAL</option>
+          </select>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+          Servicio <span style={{ color: '#b83232' }}>*</span>
+        </label>
+        <input
+          type="text" value={servicio} onChange={e => setServicio(e.target.value)}
+          placeholder="Ej. HOTEL/B&B, TRANSFER-APTO, TOUR CENOTES…"
+          style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none' }}
+        />
+      </div>
+
+      <div style={{ marginBottom: 8 }}>
+        <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Proveedor (opcional)</label>
+        <input
+          type="text" value={prov} onChange={e => setProv(e.target.value)} list="prov-list"
+          placeholder="Elegir del tarifario o teclear…"
+          style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none' }}
+        />
+        <datalist id="prov-list">
+          {proveedores.map(p => <option key={p} value={p}/>)}
+        </datalist>
+        <div style={{ fontSize: 10, color: '#8a8278', marginTop: 4, fontStyle: 'italic' }}>
+          Si el proveedor tiene precio en el tarifario, se calculará automáticamente.
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+        <Btn outline onClick={onCancel}>Cancelar</Btn>
+        <Btn disabled={!puedeAgregar} onClick={handleConfirm}>Agregar ✓</Btn>
+      </div>
+    </Modal>
+  )
+}
+
 function GastosOperativosModal({ items, onCancel, onConfirm }) {
   const [list, setList] = useState(() => items.map(it => ({...it, monto: it.monto ?? 0})))
   const total = list.reduce((sum, it) => sum + (parseFloat(it.monto)||0), 0)
@@ -2065,8 +2204,8 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveImpo
   const finSemana = new Date(inicioSemana); finSemana.setDate(inicioSemana.getDate() + 6)
   const sinFecha   = pendientes.filter(r => !r.fecha_pago)
   const conFecha   = pendientes.filter(r => !!r.fecha_pago)
-  const vencidos   = conFecha.filter(r => { const d=new Date(r.fecha_pago); d.setHours(0,0,0,0); return d < today })
-  const estaSemana = conFecha.filter(r => { const d=new Date(r.fecha_pago); d.setHours(0,0,0,0); return d >= inicioSemana && d <= finSemana })
+  const vencidos   = conFecha.filter(r => { const d=parseLocalDate(r.fecha_pago); d.setHours(0,0,0,0); return d < today })
+  const estaSemana = conFecha.filter(r => { const d=parseLocalDate(r.fecha_pago); d.setHours(0,0,0,0); return d >= inicioSemana && d <= finSemana })
 
   const sumMXN = arr => arr.reduce((a,r)=>a+r._mxn,0)
   const sumUSD = arr => arr.reduce((a,r)=>a+r._usd,0)
@@ -2358,7 +2497,7 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveImpo
             const pagadosDia = porFechaPagado[k] || []
             const mxnDia = pagos.reduce((a,r)=>a+r._mxn,0)
             const usdDia = pagos.reduce((a,r)=>a+r._usd,0)
-            const esHoy = k === today.toISOString().slice(0,10)
+            const esHoy = k === dateToLocalStr(today)
             const esSel = k === diaSeleccionado
             const vencido = pagos.length>0 && new Date(k)<today
             const hayPagos = pagos.length > 0
@@ -2509,7 +2648,7 @@ function UploadZone({ xlsxReady, onFile, pending, fileRef, onUpdatePending, exis
 
   // Si ya hay un circuito cargado, mostrar el preview enriquecido
   if (pending) {
-    const fechaIni = pending.info?.fecha_inicio ? new Date(pending.info.fecha_inicio) : null
+    const fechaIni = parseLocalDate(pending.info?.fecha_inicio)
     const fechaIniValid = fechaIni && !isNaN(fechaIni.getTime())
     // Valor para input type="date" (formato YYYY-MM-DD)
     const fechaIsoForInput = fechaIniValid
@@ -3315,7 +3454,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
       setEditMoneda(row.moneda_custom||(usd>0?'USD':'MXN'))
       setEditVal(row.precio_custom||(usd>0?usd:mxn)||'')
     }
-    else if (field==='fecha') setEditVal(row.fecha?(row.fecha instanceof Date?row.fecha:new Date(row.fecha)).toISOString().slice(0,10):'')
+    else if (field==='fecha') setEditVal(row.fecha ? dateToLocalStr(row.fecha) : '')
     else if (field==='destino') setEditVal(row.destino||'')
     else if (field==='clasificacion') setEditVal(row.clasificacion||'HOSPEDAJE')
     else if (field==='servicio') setEditVal(row.servicio||'')
@@ -3416,7 +3555,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                     const dc=getDC(r,tarifario)
                     const eC=(f)=>editCell?.rowId===r.id&&editCell?.field===f
                     let dStr='—'
-                    if (r.fecha){const d=r.fecha instanceof Date?r.fecha:new Date(r.fecha);dStr=d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}
+                    if (r.fecha){const d=parseLocalDate(r.fecha);dStr=d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}
                     const InlineBtn = ({f,display}) => eC(f)
                       ? null
                       : <span onClick={()=>startEdit(r.id,f,r)} style={{cursor:'pointer',borderBottom:'1px dotted #d8d2c8'}}>{display}</span>
@@ -3473,7 +3612,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                                 {(()=>{ const t=tarifario.find(x=>(x.tipo_tarifa||'precio_fijo')==='precio_pax'&&x.proveedor===r.prov_general); if(!t) return null; const pax=parseInt(circ.info?.pax)||0; const tl=t.incluye_tl?1:0; return <div style={{fontSize:9,color:'#1565a0',fontWeight:600,marginTop:1}}>👥 {pax+tl} PAX{t.incluye_tl?' (c/TL)':''} × {t.moneda==='USD'?'$'+t.precio_pax+' USD':'$'+t.precio_pax+' MN'}</div> })()}
                                 {/* Temporada detectada automáticamente por fecha */}
                                 {(r.clasificacion||'').toUpperCase()==='HOSPEDAJE'&&(()=>{
-                                  const svcDate = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
+                                  const svcDate = r.fecha ? (parseLocalDate(r.fecha)) : null
                                   const provEntries = tarifario.filter(t=>(t.proveedor||'').toUpperCase().trim()===(r.prov_general||'').toUpperCase().trim())
                                   if(provEntries.length < 2 || !svcDate) return null
                                   const svcMD = svcDate.getMonth()*100 + svcDate.getDate()
@@ -3617,7 +3756,7 @@ function TimelinePanel({ circ, tarifario }) {
   const dm = {}
   circ.rows.forEach((r) => {
     let k = 'Sin fecha', dl = ''
-    if (r.fecha) { const d = r.fecha instanceof Date ? r.fecha : new Date(r.fecha); k = d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }); dl = d.toLocaleDateString('es-MX', { weekday: 'long' }) }
+    if (r.fecha) { const d = parseLocalDate(r.fecha); k = d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }); dl = d.toLocaleDateString('es-MX', { weekday: 'long' }) }
     if (!dm[k]) dm[k] = { dl, items: [] }
     dm[k].items.push(r)
   })
@@ -3661,7 +3800,7 @@ function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setF
   const toggleMes = (key) => setMesesAbiertos(p => ({...p, [key]: !p[key]}))
 
   const FilaTabla = ({r}) => {
-    const fi = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
+    const fi = r.fecha ? (parseLocalDate(r.fecha)) : null
     const fStr = fi ? fi.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—'
     const pax = r._circ.info?.pax || '—'
     const habs = ((parseInt(r._circ.info?.habs_single)||0)+(parseInt(r._circ.info?.habs_doble)||0)) || '—'
@@ -3741,7 +3880,7 @@ function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setF
         // Agrupar por mes YYYY-MM basado en fecha del servicio
         const porMes = {}
         filasP.forEach(r => {
-          const fi = r.fecha ? (r.fecha instanceof Date ? r.fecha : new Date(r.fecha)) : null
+          const fi = r.fecha ? (parseLocalDate(r.fecha)) : null
           const mk = fi ? fi.getFullYear()+'-'+String(fi.getMonth()+1).padStart(2,'0') : '0000-00'
           if (!porMes[mk]) porMes[mk] = []
           porMes[mk].push(r)

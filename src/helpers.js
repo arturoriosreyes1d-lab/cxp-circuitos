@@ -11,6 +11,42 @@ export const fmtUSD = (v) =>
   v > 0 ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v) : '—'
 export const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s)
 
+// ─────────────────────────────────────────────────────────────────
+// Helpers de fecha SIN desfase por zona horaria
+// ─────────────────────────────────────────────────────────────────
+// Convierte cualquier input de fecha (string, Date, número) a un Date
+// interpretado en zona horaria LOCAL (no UTC). Evita el bug clásico
+// donde new Date("2026-07-15") queda como 14 Jul en zonas UTC-.
+export function parseLocalDate(v) {
+  if (!v) return null
+  if (v instanceof Date) return isNaN(v) ? null : v
+  const s = String(v).trim()
+  if (!s) return null
+  // Formato "YYYY-MM-DD" o "YYYY-MM-DDTHH:MM:SS…" → construir con año/mes/día locales
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (m) {
+    const y = parseInt(m[1]); const mo = parseInt(m[2]) - 1; const d = parseInt(m[3])
+    const dt = new Date(y, mo, d)
+    return isNaN(dt) ? null : dt
+  }
+  // Fallback: dejar que JS parsee (ej. dd/mm/aaaa lo maneja distinto según browser,
+  // aquí asumimos formatos ISO principalmente).
+  const dt = new Date(s)
+  return isNaN(dt) ? null : dt
+}
+
+// Convierte un Date (o string) a un string "YYYY-MM-DD" usando la fecha LOCAL.
+// Útil para guardar en Supabase (columna type date) sin que se corra al día anterior.
+export function dateToLocalStr(v) {
+  if (!v) return null
+  const d = v instanceof Date ? v : parseLocalDate(v)
+  if (!d) return null
+  const y = d.getFullYear()
+  const mo = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${mo}-${day}`
+}
+
 // Convierte un month_key como "abril de 2026", "diciembre 2025", "Mayo De 2026"
 // a una clave cronológicamente ordenable tipo "2026-04". Devuelve "9999-99"
 // para meses desconocidos para que queden al final del listado.
