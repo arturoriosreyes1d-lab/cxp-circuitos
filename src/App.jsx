@@ -748,7 +748,7 @@ function Dashboard({ session }) {
           {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'resultados_all' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} />}
           {view.type === 'resultados_mes' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} initModo="mes" initMes={view.monthKey} />}
-          {view.type === 'pagos' && <PagosView circuits={socioMode ? visibleCircuits : circuits} tarifario={tarifario} TC={TC} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
+          {view.type === 'pagos' && <PagosView circuits={socioMode ? visibleCircuits : circuits} tarifario={tarifario} TC={TC} isReadOnly={isReadOnly} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
           {view.type === 'circuit' && activeCircuit && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode} isReadOnly={isReadOnly}
@@ -2178,7 +2178,7 @@ function SocioConfigModal({ allMonths, currentRange, onCancel, onConfirm }) {
 // ═══════════════════════════════════════════════
 //  PAGOS VIEW
 // ═══════════════════════════════════════════════
-function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveImporte, saveFactura, saveRowField, onGoCircuit }) {
+function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPago, saveImporte, saveFactura, saveRowField, onGoCircuit }) {
   const today = new Date(); today.setHours(0,0,0,0)
   const [mesVista, setMesVista] = useState(() => { const d=new Date(); return {y:d.getFullYear(),m:d.getMonth()} })
   const [diaSeleccionado, setDiaSeleccionado] = useState(null) // 'YYYY-MM-DD'
@@ -2390,6 +2390,7 @@ function PagosView({ circuits, tarifario, TC, togglePaid, setFechaPago, saveImpo
                   togglePaid={togglePaid}
                   onGoCircuit={onGoCircuit}
                   tarifario={tarifario}
+                  isReadOnly={isReadOnly}
                 />
             }
           </div>
@@ -3122,7 +3123,7 @@ function CircuitCards({ circs, tarifario, TC, socioMode, onSelect }) {
 
 
 // ── EditableInfoField — campo editable inline en header ──
-function EditableInfoField({ label, value, type, onSave }) {
+function EditableInfoField({ label, value, type, onSave, isReadOnly }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(value || '')
   if (editing) return (
@@ -3138,10 +3139,10 @@ function EditableInfoField({ label, value, type, onSave }) {
     </div>
   )
   return (
-    <div onClick={()=>{setVal(value||'');setEditing(true)}} style={{cursor:'pointer'}}>
+    <div onClick={()=>{if(isReadOnly)return;setVal(value||'');setEditing(true)}} style={{cursor:isReadOnly?'default':'pointer'}}>
       <div style={{fontSize:11,color:'#8a8278',marginBottom:2}}>{label}</div>
-      <div style={{fontSize:13,fontWeight:600,borderBottom:'1px dotted #b8952a',display:'inline-block',minWidth:24}}>
-        {value||<span style={{color:'#ccc'}}>—</span>} <span style={{fontSize:10,color:'#b8952a'}}>✎</span>
+      <div style={{fontSize:13,fontWeight:600,borderBottom:isReadOnly?'none':'1px dotted #b8952a',display:'inline-block',minWidth:24}}>
+        {value||<span style={{color:'#ccc'}}>—</span>} {!isReadOnly && <span style={{fontSize:10,color:'#b8952a'}}>✎</span>}
       </div>
     </div>
   )
@@ -3196,7 +3197,7 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
             <div><div style={{fontSize:11,color:'#8a8278'}}>Fecha</div><div style={{fontSize:13,fontWeight:600}}>{fStr}</div></div>
             {/* TL, PAX, Operador — editables inline */}
             {[['tl','Tour Leader','text'],['pax','PAX','number'],['operador','Operador','text']].map(([field,label,type]) => (
-              <EditableInfoField key={field} label={label} value={circ.info?.[field]} type={type}
+              <EditableInfoField key={field} label={label} value={circ.info?.[field]} type={type} isReadOnly={isReadOnly}
                 onSave={v => saveCircInfo(circ.id, {[field]: type==='number'?parseInt(v)||0:v})}/>
             ))}
             {/* Habitaciones Single + Doble */}
@@ -3288,9 +3289,9 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
                   <button onClick={()=>setEditIC(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
                 </div>
               ) : (
-                <div onClick={()=>setEditIC(true)} style={{cursor:'pointer'}}>
-                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:hayIngLib?'#1565a0':'#8a8278',borderBottom:'1px dotted #b8952a'}}>
-                    {hayIngLib?fmtUSD(circ.importe_cobrado):'Clic para capturar'} <span style={{fontSize:10,color:'#b8952a'}}>✎</span>
+                <div onClick={()=>{if(isReadOnly)return;setEditIC(true)}} style={{cursor:isReadOnly?'default':'pointer'}}>
+                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:hayIngLib?'#1565a0':'#8a8278',borderBottom:isReadOnly?'none':'1px dotted #b8952a'}}>
+                    {hayIngLib?fmtUSD(circ.importe_cobrado):(isReadOnly?'—':'Clic para capturar')} {!isReadOnly && <span style={{fontSize:10,color:'#b8952a'}}>✎</span>}
                   </span>
                   {hayIngLib&&<div style={{fontSize:10,color:'#8a8278'}}>{fmtMXN(circ.importe_cobrado*TC)} MN</div>}
                 </div>
@@ -3315,12 +3316,12 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
                   <button onClick={()=>{ setComVal(circ.commission_pct ?? ''); setEditCom(false) }} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
                 </div>
               ) : (
-                <div onClick={()=>setEditCom(true)} style={{cursor:'pointer'}}>
-                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:T.commissionPct>0?'#a05a00':'#8a8278',borderBottom:'1px dotted #b8952a'}}>
-                    {T.commissionPct>0 ? `${T.commissionPct}%` : '0%'} <span style={{fontSize:10,color:'#b8952a'}}>✎</span>
+                <div onClick={()=>{if(isReadOnly)return;setEditCom(true)}} style={{cursor:isReadOnly?'default':'pointer'}}>
+                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:T.commissionPct>0?'#a05a00':'#8a8278',borderBottom:isReadOnly?'none':'1px dotted #b8952a'}}>
+                    {T.commissionPct>0 ? `${T.commissionPct}%` : '0%'} {!isReadOnly && <span style={{fontSize:10,color:'#b8952a'}}>✎</span>}
                   </span>
                   {T.commissionPct>0 && hayIngLib && <div style={{fontSize:10,color:'#a05a00'}}>−{fmtMXN(T.comision)} MN</div>}
-                  {!T.commissionPct && <div style={{fontSize:10,color:'#8a8278',fontStyle:'italic'}}>Clic para capturar</div>}
+                  {!T.commissionPct && !isReadOnly && <div style={{fontSize:10,color:'#8a8278',fontStyle:'italic'}}>Clic para capturar</div>}
                 </div>
               )}
             </div>
@@ -3356,12 +3357,12 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
                   </div>
                 </div>
               ) : (
-                <div onClick={()=>setEditOpc(true)} style={{cursor:'pointer'}}>
+                <div onClick={()=>{if(isReadOnly)return;setEditOpc(true)}} style={{cursor:isReadOnly?'default':'pointer'}}>
                   {hayIngOpc ? (
                     <div>
                       {T.ingresoOpcMXN>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>{fmtMXN(T.ingresoOpcMXN)} <span style={{fontSize:10,color:'#8a8278'}}>MXN</span></div>}
                       {T.ingresoOpcUSD>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700,color:'#1565a0'}}>{fmtUSD(T.ingresoOpcUSD)} <span style={{fontSize:10}}>USD</span></div>}
-                      <span style={{fontSize:10,color:'#b8952a'}}>✎ editar</span>
+                      {!isReadOnly && <span style={{fontSize:10,color:'#b8952a'}}>✎ editar</span>}
                     </div>
                   ) : <span style={{fontSize:13,color:'#8a8278',borderBottom:'1px dotted #1565a0'}}>Clic para capturar <span style={{color:'#b8952a'}}>✎</span></span>}
                 </div>
@@ -3447,6 +3448,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
   const proveedoresCircuito = [...new Set(circ.rows.map(r=>norm(r.prov_general)).filter(Boolean))].sort()
 
   const startEdit = (rowId, field, row) => {
+    if (isReadOnly) return
     setEditCell({rowId,field}); setEditVal2('')
     if (field==='prov') setEditVal(row.prov_general||'')
     else if (field==='importe') {
@@ -3481,7 +3483,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
   const hayFiltros = F.tipo!=='ALL'||F.cat!=='ALL'||F.pago!=='ALL'||F.fecha||F.proveedor!=='ALL'||busqueda.trim()
   const EditTD = ({children,onClick,style}) => <td onClick={onClick} style={{padding:'8px 10px',cursor:'pointer',...style}} title="Clic para editar">{children}</td>
   const YesNo = ({val,onClick,small}) => (
-    <button onClick={onClick} style={{padding:small?'2px 8px':'3px 10px',borderRadius:12,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',background:val?'#d8f3dc':'#ffe0e0',color:val?'#1b4332':'#7f1d1d',whiteSpace:'nowrap'}}>
+    <button onClick={isReadOnly ? undefined : onClick} disabled={isReadOnly} style={{padding:small?'2px 8px':'3px 10px',borderRadius:12,border:'none',cursor:isReadOnly?'default':'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',background:val?'#d8f3dc':'#ffe0e0',color:val?'#1b4332':'#7f1d1d',whiteSpace:'nowrap',opacity:isReadOnly?0.85:1}}>
       {val?'✅ Sí':'❌ No'}
     </button>
   )
@@ -3529,7 +3531,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
         <div style={{fontSize:12,color:'#8a8278',display:'flex',alignItems:'center',gap:10}}>
           {hayFiltros&&<><span>Mostrando <strong>{rows.length}</strong> de {circ.rows.length} servicios</span><button onClick={()=>{setFilters({tipo:'ALL',cat:'ALL',pago:'ALL',fecha:'',proveedor:'ALL'});setBusqueda('')}} style={{fontSize:11,background:'none',border:'1px solid #d8d2c8',borderRadius:10,padding:'2px 8px',color:'#8a8278',cursor:'pointer'}}>Limpiar filtros</button></>}
         </div>
-        <button onClick={()=>addRow(circ.id)} style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'7px 14px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>＋ Agregar servicio</button>
+        {!isReadOnly && <button onClick={()=>addRow(circ.id)} style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'7px 14px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>＋ Agregar servicio</button>}
       </div>
 
       {rows.length===0
@@ -3558,7 +3560,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                     if (r.fecha){const d=parseLocalDate(r.fecha);dStr=d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}
                     const InlineBtn = ({f,display}) => eC(f)
                       ? null
-                      : <span onClick={()=>startEdit(r.id,f,r)} style={{cursor:'pointer',borderBottom:'1px dotted #d8d2c8'}}>{display}</span>
+                      : <span onClick={()=>startEdit(r.id,f,r)} style={{cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{display}</span>
 
                     return (
                       <tr key={r.id} style={{borderBottom:'1px solid #ece7df',background:r.paid?'#f0faf4':'transparent'}}>
@@ -3567,14 +3569,14 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                         <td style={{padding:'8px 8px',whiteSpace:'nowrap',minWidth:90}}>
                           {eC('fecha')
                             ? <div style={{display:'flex',gap:3}}><input type="date" autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:110}}/><button onClick={()=>confirmEdit(circ.id,r.id,'fecha')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'fecha',r)} style={{cursor:'pointer',fontSize:11,borderBottom:'1px dotted #d8d2c8'}}>{dStr}</span>}
+                            : <span onClick={()=>startEdit(r.id,'fecha',r)} style={{cursor:isReadOnly?'default':'pointer',fontSize:11,borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{dStr}</span>}
                         </td>
 
                         {/* Destino */}
                         <td style={{padding:'8px 8px',minWidth:90}}>
                           {eC('destino')
                             ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:90}}/><button onClick={()=>confirmEdit(circ.id,r.id,'destino')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'destino',r)} style={{cursor:'pointer',fontSize:11,borderBottom:'1px dotted #d8d2c8'}}>{r.destino||'—'}</span>}
+                            : <span onClick={()=>startEdit(r.id,'destino',r)} style={{cursor:isReadOnly?'default':'pointer',fontSize:11,borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{r.destino||'—'}</span>}
                         </td>
 
                         {/* Categoría */}
@@ -3583,14 +3585,14 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                             ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'#fff'}}>
                                 {['HOSPEDAJE','TRANSPORTE','ACTIVIDADES','ALIMENTOS','GUIA','OTRO'].map(o=><option key={o}>{o}</option>)}
                               </select><button onClick={()=>confirmEdit(circ.id,r.id,'clasificacion')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'clasificacion',r)} style={{cursor:'pointer'}}><Badge text={r.clasificacion}/></span>}
+                            : <span onClick={()=>startEdit(r.id,'clasificacion',r)} style={{cursor:isReadOnly?'default':'pointer'}}><Badge text={r.clasificacion}/></span>}
                         </td>
 
                         {/* Servicio */}
                         <td style={{padding:'8px 8px',minWidth:130}}>
                           {eC('servicio')
                             ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:120}}/><button onClick={()=>confirmEdit(circ.id,r.id,'servicio')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'servicio',r)} style={{cursor:'pointer',fontWeight:500,fontSize:11,borderBottom:'1px dotted #d8d2c8'}}>{r.servicio||'—'}</span>}
+                            : <span onClick={()=>startEdit(r.id,'servicio',r)} style={{cursor:isReadOnly?'default':'pointer',fontWeight:500,fontSize:11,borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{r.servicio||'—'}</span>}
                         </td>
 
                         {/* Tipo */}
@@ -3599,7 +3601,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                             ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'#fff'}}>
                                 <option>LIBERO</option><option>OPCIONAL</option>
                               </select><button onClick={()=>confirmEdit(circ.id,r.id,'tipo')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'tipo',r)} style={{cursor:'pointer'}}><TipoBadge tipo={r.tipo}/></span>}
+                            : <span onClick={()=>startEdit(r.id,'tipo',r)} style={{cursor:isReadOnly?'default':'pointer'}}><TipoBadge tipo={r.tipo}/></span>}
                         </td>
 
                         {/* Proveedor */}
@@ -3607,7 +3609,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                           {eC('prov')
                             ? <div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'3px 6px',fontSize:11,fontFamily:'inherit',background:'#fff',maxWidth:150}}><option value="">— Sin proveedor —</option>{tarifario.map(t=><option key={t.id||t.proveedor} value={t.proveedor}>{t.proveedor}{(t.tipo_tarifa||'precio_fijo')==='precio_pax'?' 👥 x PAX':''}</option>)}</select><button onClick={()=>confirmEdit(circ.id,r.id,'prov')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
                             : <div>
-                                <span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:'pointer',borderBottom:'1px dotted #b8952a'}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'#b83232',fontSize:10}}> ⚠</span>}</span>
+                                <span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':'1px dotted #b8952a'}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'#b83232',fontSize:10}}> ⚠</span>}</span>
                                 {dc>0&&!r.paid&&<div style={{fontSize:9,color:'#8a8278'}}>{dc}d crédito</div>}
                                 {(()=>{ const t=tarifario.find(x=>(x.tipo_tarifa||'precio_fijo')==='precio_pax'&&x.proveedor===r.prov_general); if(!t) return null; const pax=parseInt(circ.info?.pax)||0; const tl=t.incluye_tl?1:0; return <div style={{fontSize:9,color:'#1565a0',fontWeight:600,marginTop:1}}>👥 {pax+tl} PAX{t.incluye_tl?' (c/TL)':''} × {t.moneda==='USD'?'$'+t.precio_pax+' USD':'$'+t.precio_pax+' MN'}</div> })()}
                                 {/* Temporada detectada automáticamente por fecha */}
@@ -3634,12 +3636,12 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
                         <td style={{padding:'8px 8px',minWidth:105}}>
                           {eC('importe')
                             ? <div style={{display:'flex',flexDirection:'column',gap:3}}><input type="number" value={editVal} onChange={e=>setEditVal(e.target.value)} placeholder="Importe" autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 6px',fontSize:11,fontFamily:'inherit',width:90}}/><div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editMoneda} onChange={e=>setEditMoneda(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 4px',fontSize:11,fontFamily:'inherit',background:'#fff'}}><option>MXN</option><option>USD</option></select><button onClick={()=>confirmEdit(circ.id,r.id,'importe')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div></div>
-                            : <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:'pointer',borderBottom:`1px dotted ${custom?'#b8952a':'#ddd'}`,color:custom?'#b8952a':'#12151f'}}>{mxn>0?fmtMXN(mxn):<span style={{color:'#ccc'}}>—</span>}{custom&&mxn>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>}
+                            : <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':`1px dotted ${custom?'#b8952a':'#ddd'}`,color:custom?'#b8952a':'#12151f'}}>{mxn>0?fmtMXN(mxn):<span style={{color:'#ccc'}}>—</span>}{custom&&mxn>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>}
                         </td>
 
                         {/* USD */}
                         <td style={{padding:'8px 8px',minWidth:85}}>
-                          <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:'pointer',borderBottom:`1px dotted ${custom?'#b8952a':'#ddd'}`,color:usd>0?(custom?'#b8952a':'#1565a0'):'#ccc'}}>{usd>0?fmtUSD(usd):'—'}{custom&&usd>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>
+                          <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':`1px dotted ${custom?'#b8952a':'#ddd'}`,color:usd>0?(custom?'#b8952a':'#1565a0'):'#ccc'}}>{usd>0?fmtUSD(usd):'—'}{custom&&usd>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>
                         </td>
 
                         {/* VB Auditoria */}
@@ -3654,10 +3656,10 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
 
                         {/* Folio Factura */}
                         <td style={{padding:'8px 8px',minWidth:115}}>
-                          <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…"
+                          <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…" disabled={isReadOnly}
                             onBlur={e=>{if(e.target.value!==(r.folio_factura||''))saveFactura(circ.id,r.id,'folio_factura',e.target.value)}}
-                            style={{width:'100%',fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 6px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'transparent',color:'#12151f',outline:'none'}}
-                            onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+                            style={{width:'100%',fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 6px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'transparent',color:'#12151f',outline:'none',cursor:isReadOnly?'default':'text'}}
+                            onFocus={e=>{if(isReadOnly)return;e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
                             onBlurCapture={e=>{e.target.style.borderColor='transparent';if(!r.folio_factura)e.target.style.background='transparent'}}/>
                         </td>
 
@@ -3668,13 +3670,13 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
 
                         {/* Fecha Pago */}
                         <td style={{padding:'8px 8px',minWidth:118}}>
-                          <input type="date" value={r.fecha_pago||''} onChange={e=>setFechaPago(circ.id,r.id,e.target.value)} style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 6px',fontSize:11,fontFamily:'inherit',width:115}}/>
+                          <input type="date" value={r.fecha_pago||''} disabled={isReadOnly} onChange={e=>setFechaPago(circ.id,r.id,e.target.value)} style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 6px',fontSize:11,fontFamily:'inherit',width:115,cursor:isReadOnly?'default':'text',opacity:isReadOnly?0.7:1}}/>
                         </td>
 
                         {/* Estatus */}
                         <td style={{padding:'8px 8px'}}>
                           <div style={{display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
-                            <button onClick={()=>togglePaid(circ.id,r.id,r.paid)} style={{width:32,height:17,borderRadius:9,border:'none',background:r.paid?'#52b788':'#ccc',cursor:'pointer',position:'relative',flexShrink:0}}>
+                            <button onClick={isReadOnly?undefined:()=>togglePaid(circ.id,r.id,r.paid)} disabled={isReadOnly} style={{width:32,height:17,borderRadius:9,border:'none',background:r.paid?'#52b788':'#ccc',cursor:isReadOnly?'default':'pointer',position:'relative',flexShrink:0,opacity:isReadOnly?0.85:1}}>
                               <div style={{position:'absolute',top:2,left:r.paid?15:2,width:13,height:13,borderRadius:'50%',background:'#fff',transition:'left .2s',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}/>
                             </button>
                             <span style={{fontSize:10,fontWeight:700,color:r.paid?'#1e5c3a':'#b83232'}}>{r.paid?'PAGADO':'PENDIENTE'}</span>
@@ -3683,15 +3685,15 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, tog
 
                         {/* Notas */}
                         <td style={{padding:'8px 8px'}}>
-                          <textarea defaultValue={r.nota||''} placeholder="Nota…" rows={1} onBlur={e=>setNota(circ.id,r.id,e.target.value)}
-                            style={{width:110,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',resize:'none',background:'transparent',lineHeight:1.4}}
-                            onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+                          <textarea defaultValue={r.nota||''} placeholder="Nota…" rows={1} disabled={isReadOnly} onBlur={e=>setNota(circ.id,r.id,e.target.value)}
+                            style={{width:110,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',resize:'none',background:'transparent',lineHeight:1.4,cursor:isReadOnly?'default':'text',opacity:isReadOnly?0.85:1}}
+                            onFocus={e=>{if(isReadOnly)return;e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
                             onBlurCapture={e=>{e.target.style.borderColor='transparent';e.target.style.background='transparent'}}/>
                         </td>
 
                         {/* Eliminar */}
                         <td style={{padding:'8px 8px',textAlign:'center',minWidth:30}}>
-                          <button onClick={()=>deleteRow(circ.id,r.id)} style={{background:'none',border:'none',color:'#e0b8b8',cursor:'pointer',fontSize:14,lineHeight:1}} title="Eliminar fila">🗑</button>
+                          {!isReadOnly && <button onClick={()=>deleteRow(circ.id,r.id)} style={{background:'none',border:'none',color:'#e0b8b8',cursor:'pointer',fontSize:14,lineHeight:1}} title="Eliminar fila">🗑</button>}
                         </td>
                       </tr>
                     )
@@ -3794,7 +3796,7 @@ function TimelinePanel({ circ, tarifario }) {
 
 
 // ── BuscadorResultados — agrupa por proveedor → mes colapsable ──
-function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setFechaPago, togglePaid, onGoCircuit, tarifario }) {
+function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setFechaPago, togglePaid, onGoCircuit, tarifario, isReadOnly }) {
   const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
   const [mesesAbiertos, setMesesAbiertos] = useState({}) // key: "provNombre|YYYY-MM"
   const toggleMes = (key) => setMesesAbiertos(p => ({...p, [key]: !p[key]}))
@@ -3814,43 +3816,43 @@ function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setF
         <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{pax}</td>
         <td style={{padding:'6px 8px',fontSize:11,textAlign:'center',fontWeight:600}}>{habs}</td>
         <td style={{padding:'4px 6px',minWidth:130}}>
-          <FilaImporte r={r} saveImporte={saveImporte} tarifario={tarifario}/>
+          <FilaImporte r={r} saveImporte={saveImporte} tarifario={tarifario} isReadOnly={isReadOnly}/>
         </td>
         <td style={{padding:'4px 6px',textAlign:'center'}}>
-          <button onClick={()=>saveFactura(r._circ.id,r.id,'factura_recibida',!r.factura_recibida)}
-            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.factura_recibida?'#d8f3dc':'#ffe0e0',color:r.factura_recibida?'#1b4332':'#7f1d1d'}}>
+          <button onClick={isReadOnly?undefined:()=>saveFactura(r._circ.id,r.id,'factura_recibida',!r.factura_recibida)} disabled={isReadOnly}
+            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:isReadOnly?'default':'pointer',fontSize:10,fontWeight:700,background:r.factura_recibida?'#d8f3dc':'#ffe0e0',color:r.factura_recibida?'#1b4332':'#7f1d1d',opacity:isReadOnly?0.85:1}}>
             {r.factura_recibida?'✅':'❌'}
           </button>
         </td>
         <td style={{padding:'4px 6px',minWidth:80}}>
-          <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…"
+          <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…" disabled={isReadOnly}
             onBlur={e=>{if(e.target.value!==(r.folio_factura||''))saveFactura(r._circ.id,r.id,'folio_factura',e.target.value)}}
-            style={{width:78,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'#f5f1eb',outline:'none'}}
-            onFocus={e=>{e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+            style={{width:78,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'#f5f1eb',outline:'none',cursor:isReadOnly?'default':'text'}}
+            onFocus={e=>{if(isReadOnly)return;e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
             onBlurCapture={e=>{e.target.style.borderColor='transparent';if(!r.folio_factura)e.target.style.background='#f5f1eb'}}/>
         </td>
         <td style={{padding:'4px 6px',minWidth:118}}>
-          <input type="date" defaultValue={r.fecha_pago||''}
+          <input type="date" defaultValue={r.fecha_pago||''} disabled={isReadOnly}
             onBlur={e=>{if(e.target.value!==(r.fecha_pago||''))setFechaPago(r._circ.id,r.id,e.target.value)}}
-            style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 5px',fontSize:11,fontFamily:'inherit',width:115,background:'#fff'}}/>
+            style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 5px',fontSize:11,fontFamily:'inherit',width:115,background:'#fff',cursor:isReadOnly?'default':'text',opacity:isReadOnly?0.7:1}}/>
         </td>
         <td style={{padding:'4px 6px',textAlign:'center'}}>
-          <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_auditoria',!r.visto_bueno_auditoria)}
-            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_auditoria?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_auditoria?'#1b4332':'#7f1d1d'}}>
+          <button onClick={isReadOnly?undefined:()=>saveFactura(r._circ.id,r.id,'visto_bueno_auditoria',!r.visto_bueno_auditoria)} disabled={isReadOnly}
+            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:isReadOnly?'default':'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_auditoria?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_auditoria?'#1b4332':'#7f1d1d',opacity:isReadOnly?0.85:1}}>
             {r.visto_bueno_auditoria?'✅ Sí':'❌ No'}
           </button>
         </td>
         <td style={{padding:'4px 6px',textAlign:'center'}}>
-          <button onClick={()=>saveFactura(r._circ.id,r.id,'visto_bueno_pago',!r.visto_bueno_pago)}
-            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_pago?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_pago?'#1b4332':'#7f1d1d'}}>
+          <button onClick={isReadOnly?undefined:()=>saveFactura(r._circ.id,r.id,'visto_bueno_pago',!r.visto_bueno_pago)} disabled={isReadOnly}
+            style={{padding:'2px 6px',borderRadius:10,border:'none',cursor:isReadOnly?'default':'pointer',fontSize:10,fontWeight:700,background:r.visto_bueno_pago?'#d8f3dc':'#ffe0e0',color:r.visto_bueno_pago?'#1b4332':'#7f1d1d',opacity:isReadOnly?0.85:1}}>
             {r.visto_bueno_pago?'✅ Sí':'❌ No'}
           </button>
         </td>
         <td style={{padding:'4px 6px',textAlign:'center'}}>
           {r.paid
             ? <span style={{background:'#d8f3dc',color:'#1b4332',borderRadius:8,padding:'3px 7px',fontSize:10,fontWeight:700,whiteSpace:'nowrap'}}>✅ Pagado</span>
-            : <button onClick={()=>togglePaid(r._circ.id,r.id,false)}
-                style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:6,padding:'3px 8px',fontSize:10,cursor:'pointer',fontWeight:700,whiteSpace:'nowrap'}}>
+            : <button onClick={isReadOnly?undefined:()=>togglePaid(r._circ.id,r.id,false)} disabled={isReadOnly}
+                style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:6,padding:'3px 8px',fontSize:10,cursor:isReadOnly?'default':'pointer',fontWeight:700,whiteSpace:'nowrap',opacity:isReadOnly?0.7:1}}>
                 Marcar pagado ✓
               </button>
           }
@@ -3961,12 +3963,13 @@ function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setF
 }
 
 // ── FilaImporte — importe editable en tabla de búsqueda de Pagos ──
-function FilaImporte({ r, saveImporte, tarifario }) {
+function FilaImporte({ r, saveImporte, tarifario, isReadOnly }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState('')
   const [mon, setMon] = useState('MXN')
 
   const startEdit = () => {
+    if (isReadOnly) return
     setEditing(true)
     if (r.precio_custom != null && r.precio_custom > 0) {
       setVal(r.precio_custom); setMon(r.moneda_custom || 'MXN')
@@ -3996,14 +3999,14 @@ function FilaImporte({ r, saveImporte, tarifario }) {
   )
 
   return (
-    <div onClick={startEdit} style={{cursor:'pointer',minWidth:110}}>
-      {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,borderBottom:'1px dotted '+(custom?'#b8952a':'#ddd'),color:custom?'#b8952a':'#12151f',display:'inline-block'}}>
-        {fmtMXN(r._mxn)} <span style={{fontSize:9,color:'#8a8278'}}>MN</span>{custom&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}
+    <div onClick={startEdit} style={{cursor:isReadOnly?'default':'pointer',minWidth:110}}>
+      {r._mxn>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,borderBottom:isReadOnly?'none':'1px dotted '+(custom?'#b8952a':'#ddd'),color:custom?'#b8952a':'#12151f',display:'inline-block'}}>
+        {fmtMXN(r._mxn)} <span style={{fontSize:9,color:'#8a8278'}}>MN</span>{custom&&!isReadOnly&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}
       </div>}
-      {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,borderBottom:'1px dotted '+(custom?'#b8952a':'#ddd'),color:custom?'#b8952a':'#1565a0',display:'inline-block'}}>
-        {fmtUSD(r._usd)} <span style={{fontSize:9}}>USD</span>{custom&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}
+      {r._usd>0&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:12,borderBottom:isReadOnly?'none':'1px dotted '+(custom?'#b8952a':'#ddd'),color:custom?'#b8952a':'#1565a0',display:'inline-block'}}>
+        {fmtUSD(r._usd)} <span style={{fontSize:9}}>USD</span>{custom&&!isReadOnly&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}
       </div>}
-      {r._mxn===0&&r._usd===0&&<span style={{fontSize:10,color:'#ccc',borderBottom:'1px dotted #ddd'}}>— ✎</span>}
+      {r._mxn===0&&r._usd===0&&<span style={{fontSize:10,color:'#ccc',borderBottom:isReadOnly?'none':'1px dotted #ddd'}}>—{!isReadOnly&&' ✎'}</span>}
     </div>
   )
 }
