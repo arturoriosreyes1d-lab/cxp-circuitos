@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from './supabase'
 import Login from './Login'
 import { Badge, TipoBadge, Btn, KPIGrid, Modal, Spinner } from './components'
@@ -2187,6 +2187,7 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
   const [kpiModal, setKpiModal] = useState(null)
   const [mesExpandido, setMesExpandido] = useState(null) // null | 'pendiente' | 'semana' | 'vencidos' | 'sin_fecha' | 'pagado'
   const [busqProv, setBusqProv] = useState('')   // búsqueda por proveedor
+  const [exportModal, setExportModal] = useState(null) // null | { desde, hasta }
 
   // Recopilar TODOS los servicios (pagados y pendientes)
   const todos = []
@@ -2356,7 +2357,21 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
 
   return (
     <div>
-      <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,marginBottom:12}}>💳 Programación de Pagos</h2>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,gap:12,flexWrap:'wrap'}}>
+        <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,margin:0}}>💳 Programación de Pagos</h2>
+        <button
+          onClick={() => {
+            // Por defecto: mañana como fecha desde y +7 días como hasta
+            const d = new Date(); d.setDate(d.getDate() + 1)
+            const h = new Date(); h.setDate(h.getDate() + 7)
+            setExportModal({ desde: dateToLocalStr(d), hasta: dateToLocalStr(h) })
+          }}
+          style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:6,whiteSpace:'nowrap'}}
+          title="Exportar pagos pendientes a Excel (formato flujo de efectivo)"
+        >
+          📥 Exportar Excel
+        </button>
+      </div>
 
       {/* ── BUSCADOR DE PROVEEDOR — siempre visible ── */}
       <div style={{background:'#fff',borderRadius:12,padding:'16px 18px',boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:20}}>
@@ -2619,7 +2634,288 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
             </div>
         }
       </div>
+
+      {exportModal && (
+        <ExportPagosModal
+          circuits={circuits}
+          tarifario={tarifario}
+          TC={TC}
+          initial={exportModal}
+          onClose={() => setExportModal(null)}
+        />
+      )}
     </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ExportPagosModal — Exporta pagos pendientes a Excel formato flujo de efectivo
+// ═══════════════════════════════════════════════════════════════════
+function ExportPagosModal({ circuits, tarifario, TC, initial, onClose }) {
+  const [desde, setDesde] = useState(initial.desde)
+  const [hasta, setHasta] = useState(initial.hasta)
+
+  // ── Cálculo de servicios que se van a exportar ────────────────────
+  const { filasExport, resumen } = useMemo(() => {
+    if (!desde || !hasta) return { filasExport: [], resumen: { servicios:0, circuitos:0, mn:0, usd:0 } }
+    const dDesde = parseLocalDate(desde)
+    const dHasta = parseLocalDate(hasta)
+    if (!dDesde || !dHasta || dDesde > dHasta) return { filasExport: [], resumen: { servicios:0, circuitos:0, mn:0, usd:0 } }
+
+    // Índice razón social por proveedor (upper trim)
+    const rsIndex = {}
+    tarifario.forEach(t => {
+      if (t.proveedor && t.razon_social) {
+        rsIndex[String(t.proveedor).toUpperCase().trim()] = t.razon_social
+      }
+    })
+
+    // Colectar rows: pendientes (paid=false) con fecha_pago en rango
+    // Guardo por (circuito_id, proveedor_norm, clasificacion, moneda) para agrupar
+    const grupos = {} // key -> { circ, rows: [], moneda }
+    circuits.forEach(circ => {
+      circ.rows.forEach(r => {
+        if (r.paid) return
+        if (!r.fecha_pago) return
+        const fp = parseLocalDate(r.fecha_pago)
+        if (!fp) return
+        if (fp < dDesde || fp > dHasta) return
+        const { mxn, usd } = getImporte(r, circ.info, tarifario)
+        const imp = mxn > 0 ? mxn : usd
+        if (!imp || imp <= 0) return
+        const moneda = usd > 0 ? 'USD' : 'MN'
+        const provNorm = (r.prov_general || '').toUpperCase().trim()
+        const clas = (r.clasificacion || '').toUpperCase().trim()
+        // Agrupación: sólo HOSPEDAJE del mismo (circuito+proveedor+moneda) se junta
+        // Los demás quedan como línea individual (key único por r.id)
+        const isHospedaje = clas === 'HOSPEDAJE'
+        const key = isHospedaje
+          ? `H|${circ.id}|${provNorm}|${moneda}`
+          : `S|${r.id}`
+        if (!grupos[key]) {
+          grupos[key] = { circ, prov_general: r.prov_general || '', clasificacion: r.clasificacion || '', moneda, rows: [] }
+        }
+        grupos[key].rows.push({ r, fp, imp })
+      })
+    })
+
+    // Convertir grupos a filas del Excel
+    const filas = []
+    Object.entries(grupos).forEach(([key, g]) => {
+      // Ordenar por fecha de pago para agrupar hospedajes multi-noche correctamente
+      g.rows.sort((a, b) => a.fp - b.fp)
+      // Fecha de pago del grupo: usamos la primera (la más temprana)
+      const fechaPagoGrupo = g.rows[0].fp
+      // Importe total
+      const importeTotal = g.rows.reduce((s, x) => s + x.imp, 0)
+      // Concepto:
+      //   - HOSPEDAJE con múltiples fechas: "HOSPEDAJE DEL X AL Y DE MES"
+      //   - Otros: "{CLASIFICACION} {DD} {MES}"
+      const clas = (g.clasificacion || '').toUpperCase().trim()
+      const MESES = ['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE']
+      const MESES_CORTO = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC']
+      let concepto
+      if (clas === 'HOSPEDAJE' && g.rows.length > 1) {
+        // Rango de fechas ordenadas
+        const primera = g.rows[0].fp
+        const ultima = g.rows[g.rows.length - 1].fp
+        concepto = `HOSPEDAJE DEL ${primera.getDate()} AL ${ultima.getDate()} DE ${MESES[primera.getMonth()]}`
+      } else {
+        concepto = `${clas} ${String(fechaPagoGrupo.getDate()).padStart(2,'0')} ${MESES_CORTO[fechaPagoGrupo.getMonth()]}`
+      }
+      // Razón social
+      const rs = rsIndex[(g.prov_general || '').toUpperCase().trim()] || g.prov_general || ''
+      // Destino: del primer row
+      const destino = g.rows[0].r.destino || ''
+      filas.push({
+        rubro: 'Circuitos',
+        segmento: 'Circuitos',
+        egresos: rs,
+        nombre_comercial: g.prov_general,
+        destino,
+        fecha_pago: fechaPagoGrupo,
+        importe: importeTotal,
+        moneda: g.moneda,
+        concepto,
+        nombre_circuito: g.circ.id,
+      })
+    })
+
+    // Ordenar filas: primero por moneda (MN antes de USD), luego por fecha de pago, luego por razón social
+    filas.sort((a, b) => {
+      if (a.moneda !== b.moneda) return a.moneda === 'MN' ? -1 : 1
+      if (a.fecha_pago - b.fecha_pago !== 0) return a.fecha_pago - b.fecha_pago
+      return a.egresos.localeCompare(b.egresos)
+    })
+
+    const totalMn = filas.filter(f => f.moneda === 'MN').reduce((s, f) => s + f.importe, 0)
+    const totalUsd = filas.filter(f => f.moneda === 'USD').reduce((s, f) => s + f.importe, 0)
+    const circuitosUnicos = new Set(filas.map(f => f.nombre_circuito)).size
+
+    return {
+      filasExport: filas,
+      resumen: { servicios: filas.length, circuitos: circuitosUnicos, mn: totalMn, usd: totalUsd }
+    }
+  }, [circuits, tarifario, desde, hasta])
+
+  // Generar días del rango
+  const diasRango = useMemo(() => {
+    if (!desde || !hasta) return []
+    const d0 = parseLocalDate(desde); const d1 = parseLocalDate(hasta)
+    if (!d0 || !d1 || d0 > d1) return []
+    const arr = []
+    const d = new Date(d0)
+    while (d <= d1) {
+      arr.push(new Date(d))
+      d.setDate(d.getDate() + 1)
+    }
+    return arr
+  }, [desde, hasta])
+
+  // ── Descarga del Excel ────────────────────────────────────────────
+  const descargar = () => {
+    if (!window.XLSX) { alert('La librería de Excel aún se está cargando. Espera unos segundos y vuelve a intentar.'); return }
+    if (filasExport.length === 0) { alert('No hay pagos pendientes en el rango seleccionado.'); return }
+
+    const MESES_CORTO = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
+    const fmtDia = d => `${String(d.getDate()).padStart(2,'0')}-${MESES_CORTO[d.getMonth()]}`
+
+    // Headers exactos
+    const headersFijosIzq = ['RUBRO', 'SEGMENTO', 'EGRESOS', 'NOMBRE COMERCIAL', 'DESTINO']
+    const headersDias = diasRango.map(fmtDia)
+    const headersFijosDer = ['TOTAL', 'MONEDA', 'CONCEPTO', 'NOMBRE']
+    const headers = [...headersFijosIzq, ...headersDias, ...headersFijosDer]
+
+    // Datos: array de arrays
+    const aoa = [headers]
+    filasExport.forEach(f => {
+      const row = [f.rubro, f.segmento, f.egresos, f.nombre_comercial, f.destino]
+      // Columnas de días: importe en la columna del día correcto
+      diasRango.forEach(d => {
+        const mismoDia = d.getFullYear() === f.fecha_pago.getFullYear() &&
+                         d.getMonth() === f.fecha_pago.getMonth() &&
+                         d.getDate() === f.fecha_pago.getDate()
+        row.push(mismoDia ? f.importe : '')
+      })
+      // TOTAL, MONEDA, CONCEPTO, NOMBRE
+      row.push(f.importe, f.moneda, f.concepto, f.nombre_circuito)
+      aoa.push(row)
+    })
+
+    // Fila subtotal MN y USD
+    const totalRowMn = ['TOTAL MN', '', '', '', '']
+    const totalRowUsd = ['TOTAL USD', '', '', '', '']
+    diasRango.forEach((d, idx) => {
+      const iCol = 5 + idx  // 0-indexed column
+      const mnDia = filasExport.filter(f => f.moneda==='MN' &&
+        f.fecha_pago.getFullYear()===d.getFullYear() &&
+        f.fecha_pago.getMonth()===d.getMonth() &&
+        f.fecha_pago.getDate()===d.getDate()).reduce((s,f)=>s+f.importe, 0)
+      const usdDia = filasExport.filter(f => f.moneda==='USD' &&
+        f.fecha_pago.getFullYear()===d.getFullYear() &&
+        f.fecha_pago.getMonth()===d.getMonth() &&
+        f.fecha_pago.getDate()===d.getDate()).reduce((s,f)=>s+f.importe, 0)
+      totalRowMn.push(mnDia || '')
+      totalRowUsd.push(usdDia || '')
+    })
+    totalRowMn.push(resumen.mn, 'MN', '', '')
+    totalRowUsd.push(resumen.usd, 'USD', '', '')
+    aoa.push(totalRowMn)
+    aoa.push(totalRowUsd)
+
+    // Crear workbook
+    const wb = window.XLSX.utils.book_new()
+    const ws = window.XLSX.utils.aoa_to_sheet(aoa)
+
+    // Anchos de columna
+    const widths = [
+      { wch: 11 }, { wch: 11 }, { wch: 42 }, { wch: 26 }, { wch: 18 },
+      ...diasRango.map(() => ({ wch: 11 })),
+      { wch: 12 }, { wch: 8 }, { wch: 34 }, { wch: 34 }
+    ]
+    ws['!cols'] = widths
+
+    // Formato de moneda para columnas numéricas
+    const colDiaStart = 5
+    const colTotal = 5 + diasRango.length
+    const range = window.XLSX.utils.decode_range(ws['!ref'])
+    for (let R = 1; R <= range.e.r; R++) {
+      for (let C = colDiaStart; C <= colTotal; C++) {
+        const ref = window.XLSX.utils.encode_cell({ r: R, c: C })
+        if (ws[ref] && typeof ws[ref].v === 'number') {
+          ws[ref].z = '"$"#,##0.00'
+        }
+      }
+    }
+
+    window.XLSX.utils.book_append_sheet(wb, ws, 'Flujo de Efectivo')
+
+    // Nombre de archivo
+    const dEsp = parseLocalDate(desde)
+    const dHst = parseLocalDate(hasta)
+    const nombreArchivo = `pagos_${fmtDia(dEsp)}_al_${fmtDia(dHst)}.xlsx`
+    window.XLSX.writeFile(wb, nombreArchivo)
+
+    onClose()
+  }
+
+  const rangoValido = desde && hasta && parseLocalDate(desde) && parseLocalDate(hasta) && parseLocalDate(desde) <= parseLocalDate(hasta)
+
+  return (
+    <Modal title="📥 Exportar Excel de Flujo de Efectivo" onClose={onClose}>
+      <p style={{color:'#8a8278',fontSize:13,marginBottom:16,lineHeight:1.5}}>
+        Se exportarán únicamente los <strong>pagos pendientes</strong> con fecha de pago dentro del rango seleccionado.
+      </p>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+        <div>
+          <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Desde</label>
+          <input type="date" value={desde} onChange={e=>setDesde(e.target.value)}
+            style={{width:'100%',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 12px',fontFamily:'inherit',fontSize:14,background:'#fff',outline:'none'}}/>
+        </div>
+        <div>
+          <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Hasta</label>
+          <input type="date" value={hasta} onChange={e=>setHasta(e.target.value)}
+            style={{width:'100%',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 12px',fontFamily:'inherit',fontSize:14,background:'#fff',outline:'none'}}/>
+        </div>
+      </div>
+
+      <div style={{background:'#f5f1eb',border:'1px solid #ece7df',borderRadius:8,padding:'12px 14px',marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:8}}>
+          📊 Vista previa del reporte
+        </div>
+        {!rangoValido ? (
+          <div style={{fontSize:12,color:'#b83232',fontStyle:'italic'}}>Selecciona un rango de fechas válido</div>
+        ) : (
+          <>
+            <div style={{fontSize:13,color:'#12151f',marginBottom:6}}>
+              <strong>{resumen.servicios}</strong> {resumen.servicios===1?'servicio':'servicios'} pendientes
+              &nbsp;·&nbsp;
+              <strong>{resumen.circuitos}</strong> {resumen.circuitos===1?'circuito':'circuitos'} distintos
+            </div>
+            <div style={{fontSize:13,color:'#12151f'}}>
+              {resumen.mn>0 && <span>Total <strong style={{color:'#12151f'}}>{fmtMXN(resumen.mn)} MN</strong></span>}
+              {resumen.mn>0 && resumen.usd>0 && <span style={{color:'#8a8278'}}> · </span>}
+              {resumen.usd>0 && <span>Total <strong style={{color:'#1565a0'}}>{fmtUSD(resumen.usd)} USD</strong></span>}
+              {resumen.mn===0 && resumen.usd===0 && <span style={{color:'#8a8278',fontStyle:'italic'}}>No hay pagos pendientes en este rango</span>}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{background:'#fef8e6',border:'1px solid #e0c96a',borderRadius:8,padding:'10px 14px',marginBottom:16}}>
+        <div style={{fontSize:11,color:'#7d5a00',lineHeight:1.5}}>
+          ✎ <strong>Notas del formato:</strong><br/>
+          • Los hospedajes de varios días del mismo proveedor + circuito se agrupan en una línea con concepto "HOSPEDAJE DEL X AL Y DE MES".<br/>
+          • Los servicios sin razón social capturada muestran el nombre comercial como fallback (podrás corregirlos en el Tarifario).
+        </div>
+      </div>
+
+      <div style={{display:'flex',justifyContent:'flex-end',gap:8}}>
+        <Btn outline onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={descargar} disabled={!rangoValido || resumen.servicios===0}>📥 Descargar</Btn>
+      </div>
+    </Modal>
   )
 }
 
