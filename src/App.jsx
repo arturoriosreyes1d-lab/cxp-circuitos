@@ -2188,6 +2188,8 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
   const [mesExpandido, setMesExpandido] = useState(null) // null | 'pendiente' | 'semana' | 'vencidos' | 'sin_fecha' | 'pagado'
   const [busqProv, setBusqProv] = useState('')   // búsqueda por proveedor
   const [exportModal, setExportModal] = useState(null) // null | { desde, hasta }
+  const [marcarPagadosModal, setMarcarPagadosModal] = useState(null) // null | { desde, hasta }
+  const [validarFlujoModal, setValidarFlujoModal] = useState(null) // null | true
 
   // Recopilar TODOS los servicios (pagados y pendientes)
   const todos = []
@@ -2359,18 +2361,44 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
     <div>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,gap:12,flexWrap:'wrap'}}>
         <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,margin:0}}>💳 Programación de Pagos</h2>
-        <button
-          onClick={() => {
-            // Por defecto: mañana como fecha desde y +7 días como hasta
-            const d = new Date(); d.setDate(d.getDate() + 1)
-            const h = new Date(); h.setDate(h.getDate() + 7)
-            setExportModal({ desde: dateToLocalStr(d), hasta: dateToLocalStr(h) })
-          }}
-          style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:6,whiteSpace:'nowrap'}}
-          title="Exportar pagos pendientes a Excel (formato flujo de efectivo)"
-        >
-          📥 Exportar Excel
-        </button>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {!isReadOnly && (
+            <button
+              onClick={() => {
+                const d = new Date()
+                setValidarFlujoModal({ desde: dateToLocalStr(d), hasta: dateToLocalStr(d) })
+              }}
+              style={{background:'#fff',color:'#12151f',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 14px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:6,whiteSpace:'nowrap'}}
+              title="Validar tu Excel de flujo maestro contra los datos de la app"
+            >
+              📤 Validar Flujo Maestro
+            </button>
+          )}
+          {!isReadOnly && (
+            <button
+              onClick={() => {
+                const d = new Date(); d.setHours(0,0,0,0)
+                setMarcarPagadosModal({ desde: dateToLocalStr(d), hasta: dateToLocalStr(d) })
+              }}
+              style={{background:'#fff',color:'#1e5c3a',border:'1.5px solid #52b788',borderRadius:8,padding:'8px 14px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:6,whiteSpace:'nowrap'}}
+              title="Marcar como pagados los servicios del rango"
+            >
+              ✅ Marcar pagados
+            </button>
+          )}
+          <button
+            onClick={() => {
+              // Por defecto: mañana como fecha desde y +7 días como hasta
+              const d = new Date(); d.setDate(d.getDate() + 1)
+              const h = new Date(); h.setDate(h.getDate() + 7)
+              setExportModal({ desde: dateToLocalStr(d), hasta: dateToLocalStr(h) })
+            }}
+            style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:6,whiteSpace:'nowrap'}}
+            title="Exportar pagos pendientes a Excel (formato flujo de efectivo)"
+          >
+            📥 Exportar Excel
+          </button>
+        </div>
       </div>
 
       {/* ── BUSCADOR DE PROVEEDOR — siempre visible ── */}
@@ -2644,6 +2672,23 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
           onClose={() => setExportModal(null)}
         />
       )}
+      {marcarPagadosModal && (
+        <MarcarPagadosModal
+          circuits={circuits}
+          tarifario={tarifario}
+          initial={marcarPagadosModal}
+          togglePaid={togglePaid}
+          onClose={() => setMarcarPagadosModal(null)}
+        />
+      )}
+      {validarFlujoModal && (
+        <ValidarFlujoModal
+          circuits={circuits}
+          tarifario={tarifario}
+          initial={validarFlujoModal}
+          onClose={() => setValidarFlujoModal(null)}
+        />
+      )}
     </div>
   )
 }
@@ -2757,6 +2802,166 @@ function ExportPagosModal({ circuits, tarifario, TC, initial, onClose }) {
       resumen: { servicios: filas.length, circuitos: circuitosUnicos, mn: totalMn, usd: totalUsd }
     }
   }, [circuits, tarifario, desde, hasta])
+
+  // ── Validaciones automáticas antes de exportar ────────────────────
+  const alertas = useMemo(() => {
+    if (filasExport.length === 0) return { criticas: [], revisar: [], warnings: [], okCount: 0 }
+    // También necesito revisar las filas ANTES de agrupar (por si un servicio individual tiene problema)
+    // Reconstruyo la lista de rows individuales del rango
+    if (!desde || !hasta) return { criticas: [], revisar: [], warnings: [], okCount: 0 }
+    const dDesde = parseLocalDate(desde)
+    const dHasta = parseLocalDate(hasta)
+    if (!dDesde || !dHasta) return { criticas: [], revisar: [], warnings: [], okCount: 0 }
+
+    const rsIndex = {}
+    tarifario.forEach(t => {
+      if (t.proveedor && t.razon_social) {
+        rsIndex[String(t.proveedor).toUpperCase().trim()] = t.razon_social
+      }
+    })
+
+    const criticas = []
+    const revisar = []
+    const warnings = []
+    // Total de rows (individuales, sin agrupar) para el conteo final "OK"
+    let totalRows = 0
+    // Track para detectar duplicados por (circuito+proveedor+moneda+importe+fecha)
+    const dedupSeen = {}
+
+    circuits.forEach(circ => {
+      circ.rows.forEach(r => {
+        if (r.paid) return
+        if (!r.fecha_pago) return
+        const fp = parseLocalDate(r.fecha_pago)
+        if (!fp) return
+        if (fp < dDesde || fp > dHasta) return
+        const { mxn, usd } = getImporte(r, circ.info, tarifario)
+        const imp = mxn > 0 ? mxn : usd
+        const moneda = usd > 0 ? 'USD' : 'MN'
+        totalRows++
+        const circIdCorto = circ.id.split('-').slice(-3).join('-')
+        const provDisplay = r.prov_general || '(sin proveedor)'
+        const clas = (r.clasificacion || '').toUpperCase().trim()
+
+        // CRÍTICO: sin proveedor
+        if (!r.prov_general || r.prov_general.trim() === '') {
+          criticas.push({
+            tipo: 'sin_proveedor',
+            circuito: circIdCorto,
+            servicio: r.servicio || '(sin servicio)',
+            fecha: fp,
+            mensaje: `Servicio sin proveedor asignado — no se sabe a quién pagar`
+          })
+        }
+
+        // CRÍTICO: importe cero o inválido
+        if (!imp || imp <= 0) {
+          criticas.push({
+            tipo: 'importe_cero',
+            circuito: circIdCorto,
+            proveedor: provDisplay,
+            servicio: r.servicio || '',
+            fecha: fp,
+            mensaje: `Importe = 0 — no se sabe cuánto pagar`
+          })
+        }
+
+        // REVISAR: sin razón social (se usará nombre comercial como fallback)
+        if (r.prov_general) {
+          const rs = rsIndex[r.prov_general.toUpperCase().trim()]
+          if (!rs) {
+            revisar.push({
+              tipo: 'sin_razon_social',
+              circuito: circIdCorto,
+              proveedor: provDisplay,
+              fecha: fp,
+              importe: imp,
+              moneda,
+              mensaje: `Sin razón social capturada — se usará "${provDisplay}" en EGRESOS`
+            })
+          }
+        }
+
+        // REVISAR: sin clasificación
+        if (!clas) {
+          revisar.push({
+            tipo: 'sin_clasificacion',
+            circuito: circIdCorto,
+            proveedor: provDisplay,
+            fecha: fp,
+            mensaje: `Sin clasificación — concepto quedará vacío`
+          })
+        }
+
+        // WARNING: detectar duplicados (mismo circuito+prov+moneda+importe+fecha)
+        const dupKey = `${circ.id}|${(r.prov_general||'').toUpperCase().trim()}|${moneda}|${imp}|${fp.getTime()}`
+        if (dedupSeen[dupKey]) {
+          warnings.push({
+            tipo: 'posible_duplicado',
+            circuito: circIdCorto,
+            proveedor: provDisplay,
+            fecha: fp,
+            importe: imp,
+            moneda,
+            mensaje: `Posible duplicado: ${provDisplay} con mismo importe y misma fecha en el mismo circuito`
+          })
+        } else {
+          dedupSeen[dupKey] = true
+        }
+
+        // WARNING: fecha de pago muy alejada del inicio del circuito
+        const fechaInicioCirc = circ.info?.fecha_inicio ? parseLocalDate(circ.info.fecha_inicio) : null
+        if (fechaInicioCirc && clas !== 'HOSPEDAJE') {
+          const diffDias = Math.abs((fp - fechaInicioCirc) / (1000*60*60*24))
+          if (diffDias > 30) {
+            warnings.push({
+              tipo: 'fecha_lejana',
+              circuito: circIdCorto,
+              proveedor: provDisplay,
+              fecha: fp,
+              mensaje: `Fecha de pago ${fp.toLocaleDateString('es-MX')} está a ${Math.round(diffDias)} días del inicio del circuito`
+            })
+          }
+        }
+      })
+    })
+
+    // Detectar mismo proveedor en el MISMO circuito con importes muy distintos (posible typo)
+    const provPorCirc = {}
+    circuits.forEach(circ => {
+      circ.rows.forEach(r => {
+        if (r.paid || !r.fecha_pago) return
+        const fp = parseLocalDate(r.fecha_pago)
+        if (!fp || fp < dDesde || fp > dHasta) return
+        const { mxn, usd } = getImporte(r, circ.info, tarifario)
+        const imp = mxn > 0 ? mxn : usd
+        if (!imp || imp <= 0) return
+        const key = `${circ.id}|${(r.prov_general||'').toUpperCase().trim()}|${usd > 0 ? 'USD' : 'MN'}`
+        if (!provPorCirc[key]) provPorCirc[key] = []
+        provPorCirc[key].push({ imp, r, circ, fp })
+      })
+    })
+    Object.entries(provPorCirc).forEach(([k, items]) => {
+      if (items.length < 2) return
+      const imps = items.map(x => x.imp)
+      const min = Math.min(...imps)
+      const max = Math.max(...imps)
+      // Si el mayor es más del doble del menor Y no es hospedaje (donde varias noches suelen tener el mismo precio, no muy distinto)
+      // Solo alertamos si son muy distintos (2x o más)
+      if (max > min * 2 && min > 0) {
+        const first = items[0]
+        warnings.push({
+          tipo: 'importes_dispersos',
+          circuito: first.circ.id.split('-').slice(-3).join('-'),
+          proveedor: first.r.prov_general || '(sin proveedor)',
+          mensaje: `${first.r.prov_general || 'Proveedor'} aparece ${items.length} veces en el circuito con importes muy distintos (${fmtMXN(min)} vs ${fmtMXN(max)}) — ¿posible typo?`
+        })
+      }
+    })
+
+    const okCount = totalRows - criticas.length - revisar.length - warnings.length
+    return { criticas, revisar, warnings, okCount: Math.max(0, okCount) }
+  }, [circuits, tarifario, desde, hasta, filasExport])
 
   // Generar días del rango
   const diasRango = useMemo(() => {
@@ -2903,6 +3108,65 @@ function ExportPagosModal({ circuits, tarifario, TC, initial, onClose }) {
         )}
       </div>
 
+      {/* ── Panel de Auditor pre-exportación ────────────────────── */}
+      {rangoValido && resumen.servicios > 0 && (
+        <div style={{border:'1px solid #ece7df',borderRadius:8,marginBottom:16,overflow:'hidden'}}>
+          <div style={{background:'#f5f1eb',padding:'8px 14px',fontSize:11,fontWeight:700,color:'#12151f',textTransform:'uppercase',letterSpacing:0.5,display:'flex',alignItems:'center',gap:6}}>
+            🔍 Auditor de exportación
+            {(alertas.criticas.length + alertas.revisar.length + alertas.warnings.length) === 0
+              ? <span style={{background:'#d8f3dc',color:'#1b4332',padding:'1px 8px',borderRadius:10,fontSize:10,fontWeight:700}}>✅ Sin alertas</span>
+              : <span style={{background:'#fff3d6',color:'#7d5a00',padding:'1px 8px',borderRadius:10,fontSize:10,fontWeight:700}}>{alertas.criticas.length + alertas.revisar.length + alertas.warnings.length} alertas</span>}
+          </div>
+          <div style={{maxHeight:220,overflowY:'auto',background:'#fff'}}>
+            {alertas.criticas.length === 0 && alertas.revisar.length === 0 && alertas.warnings.length === 0 ? (
+              <div style={{padding:'12px 14px',fontSize:12,color:'#1b4332',fontStyle:'italic'}}>
+                ✅ Los {alertas.okCount} servicios están listos para exportar sin alertas.
+              </div>
+            ) : (
+              <div style={{padding:'8px 14px'}}>
+                {alertas.criticas.length > 0 && (
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'#b83232',marginBottom:4}}>🔴 CRÍTICO ({alertas.criticas.length}) — revisar antes de pagar</div>
+                    {alertas.criticas.map((a, i) => (
+                      <div key={i} style={{fontSize:11,color:'#12151f',padding:'4px 8px',marginBottom:2,background:'#ffe0e0',borderRadius:4,lineHeight:1.4}}>
+                        <strong>{a.circuito}</strong> · {a.mensaje}
+                        {a.servicio && <span style={{color:'#8a8278'}}> ({a.servicio})</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {alertas.revisar.length > 0 && (
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'#7d5a00',marginBottom:4}}>🟠 REVISAR ({alertas.revisar.length}) — se exportarán con fallback</div>
+                    {alertas.revisar.slice(0, 10).map((a, i) => (
+                      <div key={i} style={{fontSize:11,color:'#12151f',padding:'4px 8px',marginBottom:2,background:'#fff3d6',borderRadius:4,lineHeight:1.4}}>
+                        <strong>{a.circuito}</strong> · {a.mensaje}
+                      </div>
+                    ))}
+                    {alertas.revisar.length > 10 && (
+                      <div style={{fontSize:10,color:'#8a8278',fontStyle:'italic',padding:'2px 8px'}}>...y {alertas.revisar.length - 10} más</div>
+                    )}
+                  </div>
+                )}
+                {alertas.warnings.length > 0 && (
+                  <div>
+                    <div style={{fontSize:11,fontWeight:700,color:'#1565a0',marginBottom:4}}>🟡 ADVERTENCIA ({alertas.warnings.length}) — posibles inconsistencias</div>
+                    {alertas.warnings.slice(0, 10).map((a, i) => (
+                      <div key={i} style={{fontSize:11,color:'#12151f',padding:'4px 8px',marginBottom:2,background:'#d6e7f5',borderRadius:4,lineHeight:1.4}}>
+                        <strong>{a.circuito}</strong> · {a.mensaje}
+                      </div>
+                    ))}
+                    {alertas.warnings.length > 10 && (
+                      <div style={{fontSize:10,color:'#8a8278',fontStyle:'italic',padding:'2px 8px'}}>...y {alertas.warnings.length - 10} más</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div style={{background:'#fef8e6',border:'1px solid #e0c96a',borderRadius:8,padding:'10px 14px',marginBottom:16}}>
         <div style={{fontSize:11,color:'#7d5a00',lineHeight:1.5}}>
           ✎ <strong>Notas del formato:</strong><br/>
@@ -2916,6 +3180,604 @@ function ExportPagosModal({ circuits, tarifario, TC, initial, onClose }) {
         <Btn onClick={descargar} disabled={!rangoValido || resumen.servicios===0}>📥 Descargar</Btn>
       </div>
     </Modal>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MarcarPagadosModal — Marca en bloque como pagados los servicios del rango
+// ═══════════════════════════════════════════════════════════════════
+function MarcarPagadosModal({ circuits, tarifario, initial, togglePaid, onClose }) {
+  const [desde, setDesde] = useState(initial.desde)
+  const [hasta, setHasta] = useState(initial.hasta)
+  const [confirmando, setConfirmando] = useState(false)
+  const [ejecutando, setEjecutando] = useState(false)
+
+  const { servicios, resumen } = useMemo(() => {
+    if (!desde || !hasta) return { servicios: [], resumen: { mn:0, usd:0, circuitos:0 } }
+    const dDesde = parseLocalDate(desde)
+    const dHasta = parseLocalDate(hasta)
+    if (!dDesde || !dHasta || dDesde > dHasta) return { servicios: [], resumen: { mn:0, usd:0, circuitos:0 } }
+
+    const lista = []
+    circuits.forEach(circ => {
+      circ.rows.forEach(r => {
+        if (r.paid) return
+        if (!r.fecha_pago) return
+        const fp = parseLocalDate(r.fecha_pago)
+        if (!fp || fp < dDesde || fp > dHasta) return
+        const { mxn, usd } = getImporte(r, circ.info, tarifario)
+        const imp = mxn > 0 ? mxn : usd
+        if (!imp || imp <= 0) return
+        lista.push({ circ, row: r, mxn, usd, fecha_pago: fp })
+      })
+    })
+
+    const mn = lista.reduce((s,x) => s + x.mxn, 0)
+    const usd = lista.reduce((s,x) => s + x.usd, 0)
+    const circuitos = new Set(lista.map(x => x.circ.id)).size
+    return { servicios: lista, resumen: { mn, usd, circuitos } }
+  }, [circuits, tarifario, desde, hasta])
+
+  const ejecutar = async () => {
+    setEjecutando(true)
+    // Ejecutar togglePaid en serie para no saturar; cada uno hace update en Supabase
+    for (const s of servicios) {
+      // togglePaid espera (cid, rowId, current); current=false porque queremos pasarlos a paid=true
+      await togglePaid(s.circ.id, s.row.id, false)
+    }
+    setEjecutando(false)
+    onClose()
+  }
+
+  const rangoValido = desde && hasta && parseLocalDate(desde) && parseLocalDate(hasta) && parseLocalDate(desde) <= parseLocalDate(hasta)
+
+  return (
+    <Modal title="✅ Marcar servicios como pagados" onClose={onClose}>
+      <p style={{color:'#8a8278',fontSize:13,marginBottom:16,lineHeight:1.5}}>
+        Marca en <strong>bloque</strong> todos los servicios pendientes con fecha de pago dentro del rango. Úsalo después de haber realizado los pagos reales para cerrar el ciclo y evitar que vuelvan a salir en próximas exportaciones.
+      </p>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+        <div>
+          <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Desde</label>
+          <input type="date" value={desde} onChange={e=>{setDesde(e.target.value);setConfirmando(false)}}
+            style={{width:'100%',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 12px',fontFamily:'inherit',fontSize:14,background:'#fff',outline:'none'}}/>
+        </div>
+        <div>
+          <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Hasta</label>
+          <input type="date" value={hasta} onChange={e=>{setHasta(e.target.value);setConfirmando(false)}}
+            style={{width:'100%',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 12px',fontFamily:'inherit',fontSize:14,background:'#fff',outline:'none'}}/>
+        </div>
+      </div>
+
+      <div style={{background:'#f5f1eb',border:'1px solid #ece7df',borderRadius:8,padding:'12px 14px',marginBottom:16}}>
+        {!rangoValido ? (
+          <div style={{fontSize:12,color:'#b83232',fontStyle:'italic'}}>Selecciona un rango de fechas válido</div>
+        ) : servicios.length === 0 ? (
+          <div style={{fontSize:12,color:'#8a8278',fontStyle:'italic'}}>No hay servicios pendientes en este rango.</div>
+        ) : (
+          <>
+            <div style={{fontSize:13,color:'#12151f',marginBottom:6}}>
+              Se marcarán como pagados <strong>{servicios.length}</strong> {servicios.length===1?'servicio':'servicios'} de <strong>{resumen.circuitos}</strong> {resumen.circuitos===1?'circuito':'circuitos'}
+            </div>
+            <div style={{fontSize:13,color:'#12151f'}}>
+              {resumen.mn>0 && <span>Total <strong>{fmtMXN(resumen.mn)} MN</strong></span>}
+              {resumen.mn>0 && resumen.usd>0 && <span style={{color:'#8a8278'}}> · </span>}
+              {resumen.usd>0 && <span>Total <strong style={{color:'#1565a0'}}>{fmtUSD(resumen.usd)} USD</strong></span>}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{background:'#ffe0e0',border:'1px solid #b83232',borderRadius:8,padding:'10px 14px',marginBottom:16}}>
+        <div style={{fontSize:11,color:'#7f1d1d',lineHeight:1.5}}>
+          ⚠ <strong>Esta acción no se puede deshacer en bloque.</strong> Si te equivocas, tendrías que desmarcar cada servicio uno por uno desde el módulo Pagos. Asegúrate de que los pagos reales ya se realizaron.
+        </div>
+      </div>
+
+      <div style={{display:'flex',justifyContent:'flex-end',gap:8}}>
+        <Btn outline onClick={onClose} disabled={ejecutando}>Cancelar</Btn>
+        {!confirmando ? (
+          <Btn onClick={()=>setConfirmando(true)} disabled={!rangoValido || servicios.length === 0}>
+            Continuar →
+          </Btn>
+        ) : (
+          <Btn onClick={ejecutar} disabled={ejecutando} style={{background:'#52b788',borderColor:'#52b788',color:'#fff'}}>
+            {ejecutando ? `⏳ Marcando... (${servicios.length})` : `✅ Sí, marcar los ${servicios.length} como pagados`}
+          </Btn>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ValidarFlujoModal — Audita el Excel maestro contra los datos de la app
+// ═══════════════════════════════════════════════════════════════════
+function ValidarFlujoModal({ circuits, tarifario, initial, onClose }) {
+  const [desde, setDesde] = useState(initial.desde)
+  const [hasta, setHasta] = useState(initial.hasta)
+  const [file, setFile] = useState(null)
+  const [hojasDetectadas, setHojasDetectadas] = useState([]) // [{ nombre, desde, hasta, incluida }]
+  const [reporte, setReporte] = useState(null) // null | { ok:[], warn:[], falta:[], solo:[] }
+  const [procesando, setProcesando] = useState(false)
+  const fileRef = useRef(null)
+
+  // Parseo el nombre de la hoja para extraer rango
+  const parseNombreHoja = (nombre) => {
+    // Patrones esperados:
+    //   "01 AL 08 AGO"           → misma mes
+    //   "06 AL 12 DE SEPT"       → misma mes con "DE"
+    //   "30 DE AGOST AL 05 DE SEP"  → cambio de mes
+    const MESES = {
+      'ENE':0,'ENERO':0,'ENR':0,
+      'FEB':1,'FEBRERO':1,
+      'MAR':2,'MARZO':2,'MZO':2,
+      'ABR':3,'ABRIL':3,
+      'MAY':4,'MAYO':4,
+      'JUN':5,'JUNIO':5,
+      'JUL':6,'JULIO':6,
+      'AGO':7,'AGOST':7,'AGOSTO':7,'AGT':7,
+      'SEP':8,'SEPT':8,'SEPTIEMBRE':8,
+      'OCT':9,'OCTUBRE':9,
+      'NOV':10,'NOVIEMBRE':10,
+      'DIC':11,'DICIEMBRE':11
+    }
+    const s = String(nombre).toUpperCase().trim()
+    const currentYear = new Date().getFullYear()
+    // Patrón cross-mes: "30 DE AGOST AL 05 DE SEP"
+    let m = s.match(/^(\d{1,2})\s+DE\s+(\w+)\s+AL\s+(\d{1,2})\s+DE\s+(\w+)/)
+    if (m) {
+      const [_,d1,mes1,d2,mes2] = m
+      const idx1 = MESES[mes1]; const idx2 = MESES[mes2]
+      if (idx1 == null || idx2 == null) return null
+      // Determinar año: si mes2 < mes1, es año siguiente
+      const y1 = currentYear, y2 = idx2 < idx1 ? currentYear + 1 : currentYear
+      return { desde: new Date(y1, idx1, parseInt(d1)), hasta: new Date(y2, idx2, parseInt(d2)) }
+    }
+    // Patrón mismo-mes: "01 AL 08 AGO" o "06 AL 12 DE SEPT"
+    m = s.match(/^(\d{1,2})\s+AL\s+(\d{1,2})\s+(?:DE\s+)?(\w+)/)
+    if (m) {
+      const [_,d1,d2,mes] = m
+      const idx = MESES[mes]
+      if (idx == null) return null
+      return { desde: new Date(currentYear, idx, parseInt(d1)), hasta: new Date(currentYear, idx, parseInt(d2)) }
+    }
+    return null
+  }
+
+  const handleFileChange = async (e) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setFile(f)
+    setReporte(null)
+    if (!window.XLSX) { alert('La librería de Excel aún se está cargando. Espera unos segundos y vuelve a intentar.'); return }
+    try {
+      const buf = await f.arrayBuffer()
+      const wb = window.XLSX.read(buf, { type: 'array', cellDates: true })
+      const dDesde = parseLocalDate(desde)
+      const dHasta = parseLocalDate(hasta)
+      const hojas = wb.SheetNames.map(nombre => {
+        const rango = parseNombreHoja(nombre)
+        const incluida = rango && dDesde && dHasta && !(rango.hasta < dDesde || rango.desde > dHasta)
+        return { nombre, rango, incluida: !!incluida }
+      })
+      setHojasDetectadas(hojas)
+    } catch(err) {
+      alert('No pude leer el Excel: ' + err.message)
+    }
+  }
+
+  // Cuando cambia el rango, recalculo qué hojas están incluidas
+  useEffect(() => {
+    if (hojasDetectadas.length === 0) return
+    const dDesde = parseLocalDate(desde)
+    const dHasta = parseLocalDate(hasta)
+    setHojasDetectadas(hojas => hojas.map(h => ({
+      ...h,
+      incluida: h.rango && dDesde && dHasta && !(h.rango.hasta < dDesde || h.rango.desde > dHasta)
+    })))
+  // eslint-disable-next-line
+  }, [desde, hasta])
+
+  const auditar = async () => {
+    if (!file || !window.XLSX) { alert('Sube el Excel primero'); return }
+    const dDesde = parseLocalDate(desde)
+    const dHasta = parseLocalDate(hasta)
+    if (!dDesde || !dHasta || dDesde > dHasta) { alert('Rango de fechas inválido'); return }
+    setProcesando(true)
+
+    try {
+      // 1) Leer todas las filas relevantes del Excel
+      const buf = await file.arrayBuffer()
+      const wb = window.XLSX.read(buf, { type: 'array', cellDates: true })
+      const hojasIncluidas = hojasDetectadas.filter(h => h.incluida)
+
+      // Estructura de fila del Excel: extraeré RUBRO, EGRESOS, NOMBRE COMERCIAL, día del pago, TOTAL, MONEDA, CONCEPTO, NOMBRE
+      const filasExcel = []
+      hojasIncluidas.forEach(hoja => {
+        const ws = wb.Sheets[hoja.nombre]
+        if (!ws) return
+        const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
+        if (rows.length === 0) return
+        // Buscar la fila de header — la que contenga RUBRO
+        let headerRow = -1
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
+          const r = rows[i]
+          if (r.some(c => String(c || '').trim().toUpperCase() === 'RUBRO')) {
+            headerRow = i
+            break
+          }
+        }
+        if (headerRow === -1) return
+
+        const headers = rows[headerRow].map(h => String(h || '').trim().toUpperCase())
+        const idxRubro = headers.indexOf('RUBRO')
+        const idxSegmento = headers.indexOf('SEGMENTO')
+        const idxEgresos = headers.indexOf('EGRESOS')
+        const idxNomCom = headers.indexOf('NOMBRE COMERCIAL')
+        const idxDestino = headers.indexOf('DESTINO')
+        const idxTotal = headers.indexOf('TOTAL')
+        const idxMoneda = headers.indexOf('MONEDA')
+        const idxConcepto = headers.indexOf('CONCEPTO')
+        const idxNombre = headers.indexOf('NOMBRE')
+        // Identificar columnas de días. Un día viene como "10-ago", "11-ago", "10-AGO", o incluso Date object
+        const MESES = {'ENE':0,'FEB':1,'MAR':2,'ABR':3,'MAY':4,'JUN':5,'JUL':6,'AGO':7,'SEP':8,'OCT':9,'NOV':10,'DIC':11,
+                       'JAN':0,'APR':3,'AUG':7,'DEC':11}
+        const parseColDia = (v) => {
+          if (!v) return null
+          if (v instanceof Date) return v
+          const s = String(v).trim().toUpperCase().replace(/\./g,'')
+          // Formatos: "10-AGO", "10 AGO", "10AGO", "10/08", "10-AUG"
+          let m = s.match(/^(\d{1,2})[\s\-\/]+([A-Z]{3,})/)
+          if (m) {
+            const d = parseInt(m[1]); const idx = MESES[m[2].substring(0,3)]
+            if (idx == null) return null
+            return new Date(new Date().getFullYear(), idx, d)
+          }
+          m = s.match(/^(\d{1,2})[\s\-\/]+(\d{1,2})/)
+          if (m) return new Date(new Date().getFullYear(), parseInt(m[2])-1, parseInt(m[1]))
+          return null
+        }
+        const diasColumns = []
+        headers.forEach((h, ci) => {
+          const d = parseColDia(h)
+          if (d) diasColumns.push({ col: ci, fecha: d })
+        })
+
+        // Iterar filas de datos
+        for (let i = headerRow + 1; i < rows.length; i++) {
+          const r = rows[i]
+          if (!r || r.length === 0) continue
+          const rubro = String(r[idxRubro] || '').trim().toUpperCase()
+          if (rubro !== 'CIRCUITOS') continue // Solo lo que exportamos desde la app
+          const egresos = String(r[idxEgresos] || '').trim()
+          const nomCom = String(r[idxNomCom] || '').trim()
+          const nombre = String(r[idxNombre] || '').trim()
+          const moneda = String(r[idxMoneda] || '').trim().toUpperCase()
+          const concepto = String(r[idxConcepto] || '').trim()
+          const total = parseAmt(r[idxTotal])
+          // Fecha: la columna donde haya un importe
+          let fechaPago = null; let importeDia = 0
+          for (const dc of diasColumns) {
+            const val = parseAmt(r[dc.col])
+            if (val > 0) {
+              fechaPago = dc.fecha
+              importeDia = val
+              break
+            }
+          }
+          // Solo consideramos filas dentro del rango
+          if (!fechaPago) continue
+          if (fechaPago < dDesde || fechaPago > dHasta) continue
+          filasExcel.push({
+            hoja: hoja.nombre,
+            rubro, egresos, nomCom, nombre, moneda, concepto,
+            fechaPago, importe: total || importeDia,
+            rowNum: i + 1,
+          })
+        }
+      })
+
+      // 2) Construir la lista de servicios de la app en el rango
+      const rsIndex = {}
+      tarifario.forEach(t => {
+        if (t.proveedor && t.razon_social) {
+          rsIndex[String(t.proveedor).toUpperCase().trim()] = t.razon_social
+        }
+      })
+
+      const serviciosApp = []
+      circuits.forEach(circ => {
+        // Agrupar HOSPEDAJEs del mismo (circuito+prov+moneda) como se agrupan al exportar
+        const grupos = {}
+        circ.rows.forEach(r => {
+          if (r.paid) return
+          if (!r.fecha_pago) return
+          const fp = parseLocalDate(r.fecha_pago)
+          if (!fp || fp < dDesde || fp > dHasta) return
+          const { mxn, usd } = getImporte(r, circ.info, tarifario)
+          const imp = mxn > 0 ? mxn : usd
+          if (!imp || imp <= 0) return
+          const moneda = usd > 0 ? 'USD' : 'MN'
+          const provNorm = (r.prov_general || '').toUpperCase().trim()
+          const clas = (r.clasificacion || '').toUpperCase().trim()
+          const isHosp = clas === 'HOSPEDAJE'
+          const key = isHosp
+            ? `H|${provNorm}|${moneda}`
+            : `S|${r.id}`
+          if (!grupos[key]) grupos[key] = { rows: [], prov: r.prov_general || '', moneda, clas }
+          grupos[key].rows.push({ r, fp, imp })
+        })
+
+        Object.values(grupos).forEach(g => {
+          g.rows.sort((a,b) => a.fp - b.fp)
+          const fechaPago = g.rows[0].fp
+          const importe = g.rows.reduce((s,x)=>s+x.imp, 0)
+          const rs = rsIndex[g.prov.toUpperCase().trim()] || g.prov
+          serviciosApp.push({
+            circuito: circ.id,
+            prov: g.prov,
+            rs,
+            moneda: g.moneda,
+            fechaPago,
+            importe,
+            clas: g.clas,
+          })
+        })
+      })
+
+      // 3) Matching
+      const norm = s => String(s || '').toUpperCase().trim()
+      const sameDay = (a,b) => a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate()
+
+      const usadosExcel = new Set()
+      const ok = []
+      const warn = []
+      const falta = []
+
+      serviciosApp.forEach(s => {
+        // Buscar mejor match en Excel
+        // Nivel 1: circuito + nomCom + moneda + importe + fecha exactos
+        let match = filasExcel.findIndex((e,i) => !usadosExcel.has(i) &&
+          norm(e.nombre) === norm(s.circuito) &&
+          norm(e.nomCom) === norm(s.prov) &&
+          e.moneda === s.moneda &&
+          Math.abs(e.importe - s.importe) < 0.01 &&
+          sameDay(e.fechaPago, s.fechaPago))
+        if (match >= 0) {
+          usadosExcel.add(match)
+          const e = filasExcel[match]
+          // Verificar razón social
+          if (norm(e.egresos) !== norm(s.rs) && s.rs) {
+            warn.push({ tipo:'rs_diff', app: s, excel: e, mensaje: `Razón social distinta` })
+          } else {
+            ok.push({ app: s, excel: e })
+          }
+          return
+        }
+
+        // Nivel 2: match parcial. Intenta encontrar candidatos y elegir el más cercano.
+        // 2a: circuito + nomCom + moneda coinciden — pero importe o fecha distintos
+        const candidatos2a = filasExcel
+          .map((e,i)=>({e,i}))
+          .filter(({e,i}) => !usadosExcel.has(i) && norm(e.nombre)===norm(s.circuito) && norm(e.nomCom)===norm(s.prov) && e.moneda===s.moneda)
+        if (candidatos2a.length > 0) {
+          const {e,i} = candidatos2a[0]
+          usadosExcel.add(i)
+          const problemas = []
+          if (Math.abs(e.importe - s.importe) >= 0.01) {
+            problemas.push(`Importe app ${s.moneda==='USD'?fmtUSD(s.importe):fmtMXN(s.importe)} vs Excel ${s.moneda==='USD'?fmtUSD(e.importe):fmtMXN(e.importe)}`)
+          }
+          if (!sameDay(e.fechaPago, s.fechaPago)) {
+            problemas.push(`Fecha app ${s.fechaPago.toLocaleDateString('es-MX')} vs Excel ${e.fechaPago.toLocaleDateString('es-MX')}`)
+          }
+          if (norm(e.egresos) !== norm(s.rs) && s.rs) {
+            problemas.push(`Razón social distinta`)
+          }
+          warn.push({ tipo:'partial_match', app: s, excel: e, mensaje: problemas.join(' · ') })
+          return
+        }
+
+        // 2b: circuito + moneda + importe + fecha coinciden — nombre comercial distinto
+        const candidatos2b = filasExcel
+          .map((e,i)=>({e,i}))
+          .filter(({e,i}) => !usadosExcel.has(i) && norm(e.nombre)===norm(s.circuito) && e.moneda===s.moneda && Math.abs(e.importe-s.importe)<0.01 && sameDay(e.fechaPago, s.fechaPago))
+        if (candidatos2b.length > 0) {
+          const {e,i} = candidatos2b[0]
+          usadosExcel.add(i)
+          warn.push({ tipo:'nomcom_diff', app: s, excel: e, mensaje: `Nombre comercial distinto: app "${s.prov}" vs Excel "${e.nomCom}"` })
+          return
+        }
+
+        // Sin match: falta en el flujo
+        falta.push({ app: s })
+      })
+
+      // Detectar duplicados en el Excel (misma fila lógica repetida)
+      const dupsMap = {}
+      filasExcel.forEach((e,i) => {
+        const key = `${norm(e.nombre)}|${norm(e.nomCom)}|${e.moneda}|${e.importe}|${e.fechaPago.getTime()}`
+        if (!dupsMap[key]) dupsMap[key] = []
+        dupsMap[key].push({ e, i })
+      })
+      const duplicados = []
+      Object.values(dupsMap).forEach(arr => {
+        if (arr.length > 1) duplicados.push(arr)
+      })
+
+      // Filas del Excel que no se usaron (solo Excel — informativo, no crítico)
+      const soloExcel = filasExcel
+        .map((e,i)=>({e,i}))
+        .filter(({i})=>!usadosExcel.has(i))
+        .map(({e})=>e)
+
+      setReporte({ ok, warn, falta, soloExcel, duplicados, totalApp: serviciosApp.length, totalExcel: filasExcel.length })
+    } catch (err) {
+      alert('Error al auditar: ' + err.message)
+    } finally {
+      setProcesando(false)
+    }
+  }
+
+  const rangoValido = desde && hasta && parseLocalDate(desde) && parseLocalDate(hasta) && parseLocalDate(desde) <= parseLocalDate(hasta)
+
+  return (
+    <Modal title="📤 Validar Flujo Maestro contra la app" onClose={onClose}>
+      {!reporte ? (
+        <>
+          <p style={{color:'#8a8278',fontSize:13,marginBottom:16,lineHeight:1.5}}>
+            Sube tu Excel de flujo de efectivo y compararé fila por fila contra los datos de la app. Solo se auditan filas con <strong>RUBRO="Circuitos"</strong>.
+          </p>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+            <div>
+              <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Desde</label>
+              <input type="date" value={desde} onChange={e=>setDesde(e.target.value)}
+                style={{width:'100%',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 12px',fontFamily:'inherit',fontSize:14,background:'#fff',outline:'none'}}/>
+            </div>
+            <div>
+              <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Hasta</label>
+              <input type="date" value={hasta} onChange={e=>setHasta(e.target.value)}
+                style={{width:'100%',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 12px',fontFamily:'inherit',fontSize:14,background:'#fff',outline:'none'}}/>
+            </div>
+          </div>
+
+          <div style={{marginBottom:16}}>
+            <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Excel maestro</label>
+            <input type="file" ref={fileRef} accept=".xlsx,.xls" onChange={handleFileChange} style={{display:'none'}}/>
+            <button onClick={()=>fileRef.current?.click()} style={{background:'#fff',color:'#12151f',border:'1.5px dashed #d8d2c8',borderRadius:8,padding:'10px 14px',fontSize:12,cursor:'pointer',fontFamily:'inherit',width:'100%',textAlign:'left'}}>
+              📎 {file ? file.name : 'Elegir archivo…'}
+            </button>
+          </div>
+
+          {hojasDetectadas.length > 0 && (
+            <div style={{background:'#f5f1eb',border:'1px solid #ece7df',borderRadius:8,padding:'10px 14px',marginBottom:16,maxHeight:160,overflowY:'auto'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>
+                Hojas detectadas ({hojasDetectadas.filter(h=>h.incluida).length} incluidas de {hojasDetectadas.length})
+              </div>
+              {hojasDetectadas.map((h,i) => (
+                <div key={i} style={{fontSize:11,color:h.incluida?'#12151f':'#aaa',padding:'2px 0',display:'flex',alignItems:'center',gap:6}}>
+                  {h.incluida ? '✅' : '⚪'} <strong>{h.nombre}</strong>
+                  {h.rango && <span style={{color:'#8a8278'}}>({h.rango.desde.toLocaleDateString('es-MX')} — {h.rango.hasta.toLocaleDateString('es-MX')})</span>}
+                  {!h.rango && <span style={{color:'#8a8278',fontStyle:'italic'}}>no reconozco el formato del nombre</span>}
+                  {h.rango && !h.incluida && <span style={{color:'#aaa'}}>fuera del rango</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{display:'flex',justifyContent:'flex-end',gap:8}}>
+            <Btn outline onClick={onClose}>Cancelar</Btn>
+            <Btn onClick={auditar} disabled={!rangoValido || !file || procesando || hojasDetectadas.filter(h=>h.incluida).length===0}>
+              {procesando ? '⏳ Auditando...' : '🔍 Auditar'}
+            </Btn>
+          </div>
+        </>
+      ) : (
+        <ReporteAuditoria reporte={reporte} desde={desde} hasta={hasta} onVolver={()=>setReporte(null)} onCerrar={onClose}/>
+      )}
+    </Modal>
+  )
+}
+
+// Componente del reporte de auditoría
+function ReporteAuditoria({ reporte, desde, hasta, onVolver, onCerrar }) {
+  const { ok, warn, falta, soloExcel, duplicados, totalApp, totalExcel } = reporte
+  const fmtF = d => d.toLocaleDateString('es-MX', { day:'2-digit', month:'short' })
+
+  return (
+    <>
+      <div style={{background:'#12151f',color:'#e0c96a',padding:'10px 14px',borderRadius:8,marginBottom:12}}>
+        <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>REPORTE DE AUDITORÍA</div>
+        <div style={{fontSize:13,color:'#fff'}}>Rango: <strong>{parseLocalDate(desde).toLocaleDateString('es-MX')}</strong> al <strong>{parseLocalDate(hasta).toLocaleDateString('es-MX')}</strong></div>
+        <div style={{fontSize:11,color:'rgba(255,255,255,.6)',marginTop:4}}>{totalApp} servicios en la app · {totalExcel} filas de Circuitos en el Excel</div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4, 1fr)',gap:8,marginBottom:16}}>
+        <div style={{background:'#d8f3dc',borderRadius:6,padding:8,textAlign:'center'}}>
+          <div style={{fontSize:20,fontWeight:700,color:'#1b4332'}}>{ok.length}</div>
+          <div style={{fontSize:10,color:'#1b4332'}}>✅ OK</div>
+        </div>
+        <div style={{background:'#d6e7f5',borderRadius:6,padding:8,textAlign:'center'}}>
+          <div style={{fontSize:20,fontWeight:700,color:'#1565a0'}}>{warn.length}</div>
+          <div style={{fontSize:10,color:'#1565a0'}}>🟡 Advertencias</div>
+        </div>
+        <div style={{background:'#ffe0e0',borderRadius:6,padding:8,textAlign:'center'}}>
+          <div style={{fontSize:20,fontWeight:700,color:'#b83232'}}>{falta.length}</div>
+          <div style={{fontSize:10,color:'#b83232'}}>🔴 Faltan</div>
+        </div>
+        <div style={{background:'#fff3d6',borderRadius:6,padding:8,textAlign:'center'}}>
+          <div style={{fontSize:20,fontWeight:700,color:'#7d5a00'}}>{duplicados.length}</div>
+          <div style={{fontSize:10,color:'#7d5a00'}}>🟠 Duplicados</div>
+        </div>
+      </div>
+
+      <div style={{maxHeight:340,overflowY:'auto',border:'1px solid #ece7df',borderRadius:8,background:'#fff'}}>
+        {falta.length > 0 && (
+          <div style={{padding:'10px 14px',borderBottom:'1px solid #ece7df'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#b83232',marginBottom:6}}>🔴 FALTAN EN EL FLUJO ({falta.length})</div>
+            {falta.map((x,i) => (
+              <div key={i} style={{fontSize:11,padding:'5px 8px',marginBottom:3,background:'#ffe0e0',borderRadius:4,lineHeight:1.4}}>
+                <strong>{x.app.prov}</strong> · <span style={{color:'#8a8278'}}>{x.app.circuito.split('-').slice(-3).join('-')}</span> · {x.app.moneda==='USD'?fmtUSD(x.app.importe):fmtMXN(x.app.importe)} {x.app.moneda} · {fmtF(x.app.fechaPago)}
+                <div style={{color:'#7f1d1d',fontSize:10,marginTop:2}}>No lo encontré en el Excel — ¿lo pegaste?</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {warn.length > 0 && (
+          <div style={{padding:'10px 14px',borderBottom:'1px solid #ece7df'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#1565a0',marginBottom:6}}>🟡 CON ADVERTENCIAS ({warn.length})</div>
+            {warn.map((x,i) => (
+              <div key={i} style={{fontSize:11,padding:'5px 8px',marginBottom:3,background:'#d6e7f5',borderRadius:4,lineHeight:1.4}}>
+                <strong>{x.app.prov}</strong> · <span style={{color:'#8a8278'}}>{x.app.circuito.split('-').slice(-3).join('-')}</span> · <span style={{fontSize:10,color:'#8a8278'}}>fila {x.excel.rowNum} del Excel (hoja "{x.excel.hoja}")</span>
+                <div style={{color:'#1e3a5c',fontSize:10,marginTop:2}}>{x.mensaje}</div>
+                {x.tipo === 'rs_diff' && (
+                  <div style={{fontSize:10,color:'#8a8278',marginTop:2}}>
+                    App: <em>{x.app.rs}</em> · Excel: <em>{x.excel.egresos}</em>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {duplicados.length > 0 && (
+          <div style={{padding:'10px 14px',borderBottom:'1px solid #ece7df'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#7d5a00',marginBottom:6}}>🟠 POSIBLES DUPLICADOS EN EL EXCEL ({duplicados.length})</div>
+            {duplicados.map((arr,i) => (
+              <div key={i} style={{fontSize:11,padding:'5px 8px',marginBottom:3,background:'#fff3d6',borderRadius:4,lineHeight:1.4}}>
+                <strong>{arr[0].e.nomCom}</strong> · {arr[0].e.moneda==='USD'?fmtUSD(arr[0].e.importe):fmtMXN(arr[0].e.importe)} {arr[0].e.moneda} en {fmtF(arr[0].e.fechaPago)}
+                <div style={{color:'#7d5a00',fontSize:10,marginTop:2}}>
+                  Aparece {arr.length} veces: filas {arr.map(x=>x.i+2).join(', ')} — ¿pegaste dos veces?
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {ok.length > 0 && (
+          <div style={{padding:'10px 14px'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#1b4332',marginBottom:6}}>✅ COINCIDENCIAS PERFECTAS ({ok.length})</div>
+            <div style={{fontSize:11,color:'#8a8278',fontStyle:'italic'}}>
+              Estos {ok.length} servicios están correctamente pegados en el Excel.
+            </div>
+          </div>
+        )}
+
+        {ok.length === 0 && warn.length === 0 && falta.length === 0 && duplicados.length === 0 && (
+          <div style={{padding:20,textAlign:'center',color:'#8a8278',fontSize:12,fontStyle:'italic'}}>
+            No hay servicios de la app en este rango para auditar.
+          </div>
+        )}
+      </div>
+
+      <div style={{display:'flex',justifyContent:'space-between',gap:8,marginTop:16}}>
+        <Btn outline onClick={onVolver}>← Nueva auditoría</Btn>
+        <Btn onClick={onCerrar}>Cerrar</Btn>
+      </div>
+    </>
   )
 }
 
