@@ -3970,6 +3970,7 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
   const [rows, setRows] = useState(() => {
     if (tarifario.length > 0) return tarifario.map(t => ({
       proveedor: t.proveedor || '',
+      razon_social: t.razon_social || '',
       tipo_servicio: t.tipo_servicio || 'HOSPEDAJE',
       tipo_tarifa: t.tipo_tarifa || 'precio_fijo',
       precio_single: t.precio_single || t.precio || 0,
@@ -3978,6 +3979,8 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
       incluye_tl: !!t.incluye_tl,
       moneda: t.moneda || 'MXN',
       temporada: t.temporada || 'General',
+      temp_inicio: t.temp_inicio || null,
+      temp_fin: t.temp_fin || null,
       cortesia_cada: t.cortesia_cada || 0,
       dias_credito: t.dias_credito || 0,
       notas: t.notas || '',
@@ -3986,7 +3989,7 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
     circuits.forEach(c => c.rows.forEach(r => {
       const p = r.prov_general; if (p && !seen.has(p.toUpperCase())) {
         seen.add(p.toUpperCase())
-        out.push({ proveedor: p, tipo_servicio: r.clasificacion||'HOSPEDAJE', precio_single: 0, precio_doble: 0, moneda: 'MXN', temporada: 'General', cortesia_cada: 0, dias_credito: 30, notas: '' })
+        out.push({ proveedor: p, razon_social: '', tipo_servicio: r.clasificacion||'HOSPEDAJE', precio_single: 0, precio_doble: 0, moneda: 'MXN', temporada: 'General', cortesia_cada: 0, dias_credito: 30, notas: '' })
       }
     }))
     return out
