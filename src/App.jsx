@@ -326,6 +326,7 @@ function Dashboard({ session }) {
       // Step 3: insert new rows (skip blank proveedores)
       const toInsert = rows.filter(r => (r.proveedor || '').trim()).map(r => ({
         proveedor:    r.proveedor.trim(),
+        razon_social: (r.razon_social || '').trim() || null,
         tipo_servicio: r.tipo_servicio || 'HOSPEDAJE',
         tipo_tarifa:   r.tipo_tarifa   || 'precio_fijo',
         precio:        parseFloat(r.precio_single) || 0,
@@ -4175,11 +4176,160 @@ function TarifarioEditor({ tarifario, circuits, tarFileRef, onTarFile, onSave, o
         )}
       </div>
 
+      {/* ═══════════════════════════════════════════════ */}
+      {/* 🏢 PANEL DE RAZONES SOCIALES                    */}
+      {/* ═══════════════════════════════════════════════ */}
+      <RazonesSocialesPanel rows={rows} update={update}/>
+
       <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20,paddingTop:14,borderTop:'1px solid #ece7df'}}>
         <Btn outline onClick={onCancel}>Cancelar</Btn>
         <span style={{fontSize:11,color:'#8a8278',marginRight:'auto'}}>{rows.filter(r=>(r.proveedor||'').trim()).length} proveedores a guardar</span>
         <Btn disabled={saving} onClick={()=>onSave(rows)}>{saving?'⏳ Guardando...':'💾 Guardar tarifario'}</Btn>
       </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RazonesSocialesPanel — Vista dedicada para capturar/editar razones sociales
+// ═══════════════════════════════════════════════════════════════════
+function RazonesSocialesPanel({ rows, update }) {
+  const [filtro, setFiltro] = useState('todos') // todos | con | sin
+  const [busq, setBusq] = useState('')
+  const [expandido, setExpandido] = useState(true)
+
+  const filtered = useMemo(() => {
+    // rows viene ya como array indexado; necesitamos preservar el _i original para el update
+    // Como acá recibimos "rows" directo (que tiene _i por scope de update), reconstruyo con índice del array
+    const withIdx = rows.map((r, i) => ({ ...r, _i: i }))
+    let list = withIdx.filter(r => (r.proveedor || '').trim())
+    if (filtro === 'con') list = list.filter(r => (r.razon_social || '').trim())
+    else if (filtro === 'sin') list = list.filter(r => !(r.razon_social || '').trim())
+    if (busq.trim()) {
+      const q = busq.toLowerCase().trim()
+      list = list.filter(r =>
+        (r.proveedor || '').toLowerCase().includes(q) ||
+        (r.razon_social || '').toLowerCase().includes(q)
+      )
+    }
+    // Ordenar: primero SIN razón social (para que las veas primero), después CON
+    list.sort((a, b) => {
+      const aTiene = !!(a.razon_social || '').trim()
+      const bTiene = !!(b.razon_social || '').trim()
+      if (aTiene !== bTiene) return aTiene ? 1 : -1
+      return (a.proveedor || '').localeCompare(b.proveedor || '')
+    })
+    return list
+  }, [rows, filtro, busq])
+
+  const conCount = rows.filter(r => (r.proveedor || '').trim() && (r.razon_social || '').trim()).length
+  const sinCount = rows.filter(r => (r.proveedor || '').trim() && !(r.razon_social || '').trim()).length
+
+  return (
+    <div style={{marginTop:24,border:'1.5px solid #12151f',borderRadius:10,background:'#fff',overflow:'hidden'}}>
+      <div
+        onClick={()=>setExpandido(!expandido)}
+        style={{background:'#12151f',color:'#e0c96a',padding:'12px 16px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between'}}
+      >
+        <div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:17,fontWeight:700,display:'flex',alignItems:'center',gap:8}}>
+          🏢 Razones Sociales
+          <span style={{background:'rgba(224,201,106,.15)',color:'#e0c96a',padding:'2px 10px',borderRadius:12,fontSize:11,fontWeight:400}}>
+            {conCount} capturadas · {sinCount} faltantes
+          </span>
+        </div>
+        <span style={{fontSize:16}}>{expandido ? '▲' : '▼'}</span>
+      </div>
+
+      {expandido && (
+        <div style={{padding:16}}>
+          <div style={{fontSize:12,color:'#8a8278',marginBottom:12,lineHeight:1.5}}>
+            La <strong>razón social</strong> es el nombre que aparecerá en la columna <strong>EGRESOS</strong> del Excel de flujo de efectivo (a quién le facturas/pagas). Si está vacía, el Excel usará el nombre comercial como fallback.
+          </div>
+
+          {/* Filtros */}
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
+            <input
+              type="text" placeholder="🔍 Buscar por nombre..." value={busq} onChange={e=>setBusq(e.target.value)}
+              style={{flex:1,minWidth:200,border:'1px solid #d8d2c8',borderRadius:6,padding:'6px 10px',fontFamily:'inherit',fontSize:12,outline:'none'}}
+            />
+            <div style={{display:'flex',gap:4}}>
+              {[
+                {v:'todos', label:`Todos (${rows.filter(r=>(r.proveedor||'').trim()).length})`},
+                {v:'sin', label:`⚠ Faltantes (${sinCount})`, color:'#b83232'},
+                {v:'con', label:`✓ Con razón (${conCount})`, color:'#1e5c3a'},
+              ].map(f => (
+                <button
+                  key={f.v}
+                  onClick={()=>setFiltro(f.v)}
+                  style={{
+                    background: filtro===f.v ? '#12151f' : '#f5f1eb',
+                    color: filtro===f.v ? '#e0c96a' : (f.color || '#8a8278'),
+                    border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 11, cursor: 'pointer',
+                    fontWeight: filtro===f.v ? 700 : 500, fontFamily: 'inherit', whiteSpace: 'nowrap'
+                  }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Lista */}
+          <div style={{maxHeight:400,overflowY:'auto',border:'1px solid #ece7df',borderRadius:6}}>
+            {filtered.length === 0 ? (
+              <div style={{padding:20,textAlign:'center',color:'#8a8278',fontSize:12,fontStyle:'italic'}}>
+                {busq ? 'Sin resultados para tu búsqueda.' : 'No hay proveedores.'}
+              </div>
+            ) : (
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead>
+                  <tr style={{background:'#f5f1eb',position:'sticky',top:0,zIndex:1}}>
+                    <th style={{padding:'8px 10px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.6,color:'#8a8278',fontWeight:700,minWidth:220}}>Nombre Comercial (app)</th>
+                    <th style={{padding:'8px 10px',textAlign:'left',fontSize:10,textTransform:'uppercase',letterSpacing:.6,color:'#8a8278',fontWeight:700}}>Razón Social (para EGRESOS)</th>
+                    <th style={{padding:'8px 10px',textAlign:'center',fontSize:10,textTransform:'uppercase',letterSpacing:.6,color:'#8a8278',fontWeight:700,width:80}}>Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((r, idx) => {
+                    const tiene = !!(r.razon_social || '').trim()
+                    return (
+                      <tr key={r._i} style={{borderBottom:'1px solid #f0ebe3',background: idx%2===0 ? '#fff' : '#fafaf8'}}>
+                        <td style={{padding:'6px 10px',fontWeight:600}}>{r.proveedor}</td>
+                        <td style={{padding:'6px 10px'}}>
+                          <input
+                            type="text"
+                            value={r.razon_social || ''}
+                            onChange={e => update(r._i, 'razon_social', e.target.value)}
+                            placeholder={tiene ? '' : '⚠ Sin capturar — el Excel usará el nombre comercial'}
+                            style={{
+                              width:'100%',
+                              border:'1px solid ' + (tiene ? '#d8d2c8' : '#f0d4d4'),
+                              borderRadius:5,padding:'5px 8px',fontFamily:'inherit',fontSize:12,
+                              background: tiene ? '#fff' : '#fdf5f5',
+                              outline:'none'
+                            }}
+                          />
+                        </td>
+                        <td style={{padding:'6px 10px',textAlign:'center'}}>
+                          {tiene ? (
+                            <span style={{fontSize:11,color:'#1e5c3a',fontWeight:700}}>✓ OK</span>
+                          ) : (
+                            <span style={{fontSize:11,color:'#b83232',fontWeight:700}}>⚠ Falta</span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div style={{fontSize:10,color:'#8a8278',marginTop:8,fontStyle:'italic'}}>
+            ✎ Los cambios se aplican cuando presionas "💾 Guardar tarifario" abajo.
+          </div>
+        </div>
+      )}
     </div>
   )
 }
