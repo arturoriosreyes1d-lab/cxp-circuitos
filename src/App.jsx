@@ -2740,33 +2740,43 @@ function ExportPagosModal({ circuits, tarifario, TC, initial, onClose }) {
         if (!grupos[key]) {
           grupos[key] = { circ, prov_general: r.prov_general || '', clasificacion: r.clasificacion || '', moneda, rows: [] }
         }
-        grupos[key].rows.push({ r, fp, imp })
+        grupos[key].rows.push({ r, fp, imp, fs: r.fecha ? parseLocalDate(r.fecha) : null })
       })
     })
 
     // Convertir grupos a filas del Excel
     const filas = []
     Object.entries(grupos).forEach(([key, g]) => {
-      // Ordenar por fecha de pago para agrupar hospedajes multi-noche correctamente
-      g.rows.sort((a, b) => a.fp - b.fp)
+      // Ordenar por fecha del SERVICIO (no fecha de pago) para agrupar hospedajes correctamente
+      // Si un row no tiene fecha de servicio, cae al final
+      g.rows.sort((a, b) => {
+        if (!a.fs && !b.fs) return a.fp - b.fp
+        if (!a.fs) return 1
+        if (!b.fs) return -1
+        return a.fs - b.fs
+      })
       // Fecha de pago del grupo: usamos la primera (la más temprana)
       const fechaPagoGrupo = g.rows[0].fp
       // Importe total
       const importeTotal = g.rows.reduce((s, x) => s + x.imp, 0)
-      // Concepto:
-      //   - HOSPEDAJE con múltiples fechas: "HOSPEDAJE DEL X AL Y DE MES"
-      //   - Otros: "{CLASIFICACION} {DD} {MES}"
+      // Concepto: usa la FECHA DEL SERVICIO (no la de pago)
+      //   - HOSPEDAJE: "HOSPEDAJE DEL X AL Y DE MES" donde Y = último_día_servicio + 1 (checkout)
+      //     • 1 noche: "HOSPEDAJE DEL 13 AL 14 DE AGOSTO"
+      //     • 2 noches (13 y 14): "HOSPEDAJE DEL 13 AL 15 DE AGOSTO"
+      //   - Otros: "{CLASIFICACION} {DD} {MES}" con fecha del servicio
       const clas = (g.clasificacion || '').toUpperCase().trim()
       const MESES = ['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE']
       const MESES_CORTO = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC']
+      // Fecha del servicio para el concepto: si no hay, fallback a fecha de pago
+      const fsPrimera = g.rows[0].fs || g.rows[0].fp
+      const fsUltima  = g.rows[g.rows.length - 1].fs || g.rows[g.rows.length - 1].fp
       let concepto
-      if (clas === 'HOSPEDAJE' && g.rows.length > 1) {
-        // Rango de fechas ordenadas
-        const primera = g.rows[0].fp
-        const ultima = g.rows[g.rows.length - 1].fp
-        concepto = `HOSPEDAJE DEL ${primera.getDate()} AL ${ultima.getDate()} DE ${MESES[primera.getMonth()]}`
+      if (clas === 'HOSPEDAJE') {
+        // Sumar +1 día al último para el checkout
+        const checkout = new Date(fsUltima); checkout.setDate(checkout.getDate() + 1)
+        concepto = `HOSPEDAJE DEL ${fsPrimera.getDate()} AL ${checkout.getDate()} DE ${MESES[fsPrimera.getMonth()]}`
       } else {
-        concepto = `${clas} ${String(fechaPagoGrupo.getDate()).padStart(2,'0')} ${MESES_CORTO[fechaPagoGrupo.getMonth()]}`
+        concepto = `${clas} ${String(fsPrimera.getDate()).padStart(2,'0')} ${MESES_CORTO[fsPrimera.getMonth()]}`
       }
       // Razón social
       const rs = rsIndex[(g.prov_general || '').toUpperCase().trim()] || g.prov_general || ''
