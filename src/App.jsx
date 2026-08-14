@@ -3411,11 +3411,16 @@ function ValidarFlujoModal({ circuits, tarifario, initial, onClose }) {
         if (!ws) return
         const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
         if (rows.length === 0) return
-        // Buscar la fila de header — la que contenga RUBRO
+        // Buscar la fila de header — la que contenga RUBRO y SEGMENTO juntos (o al menos EGRESOS+MONEDA)
+        // En algunos Excel el header está muy abajo (ej. fila 59) porque arriba hay saldos iniciales.
+        // Se busca en TODA la hoja porque puede haber múltiples secciones.
         let headerRow = -1
-        for (let i = 0; i < Math.min(20, rows.length); i++) {
+        for (let i = 0; i < rows.length; i++) {
           const r = rows[i]
-          if (r.some(c => String(c || '').trim().toUpperCase() === 'RUBRO')) {
+          if (!r) continue
+          const upper = r.map(c => String(c || '').trim().toUpperCase())
+          // Header válido: tiene RUBRO Y SEGMENTO Y EGRESOS (todos juntos)
+          if (upper.includes('RUBRO') && upper.includes('SEGMENTO') && upper.includes('EGRESOS')) {
             headerRow = i
             break
           }
@@ -3461,7 +3466,9 @@ function ValidarFlujoModal({ circuits, tarifario, initial, onClose }) {
           const r = rows[i]
           if (!r || r.length === 0) continue
           const rubro = String(r[idxRubro] || '').trim().toUpperCase()
-          if (rubro !== 'CIRCUITOS') continue // Solo lo que exportamos desde la app
+          const segmento = String(r[idxSegmento] || '').trim().toUpperCase()
+          // "Circuitos" puede estar en RUBRO (formato exportado por la app) o en SEGMENTO (formato del Excel maestro real)
+          if (rubro !== 'CIRCUITOS' && segmento !== 'CIRCUITOS') continue
           const egresos = String(r[idxEgresos] || '').trim()
           const nomCom = String(r[idxNomCom] || '').trim()
           const nombre = String(r[idxNombre] || '').trim()
@@ -3548,31 +3555,27 @@ function ValidarFlujoModal({ circuits, tarifario, initial, onClose }) {
       const falta = []
 
       serviciosApp.forEach(s => {
-        // Buscar mejor match en Excel
-        // Nivel 1: circuito + nomCom + moneda + importe + fecha exactos
+        // Buscar mejor match en Excel usando RAZON SOCIAL (EGRESOS), no nombre comercial.
+        // En el Excel maestro real de Flujo de Efectivo, el "nombre comercial" a veces es genérico
+        // (ej: "CENOTES", "LANCHAS") mientras que EGRESOS es la razón social real y consistente.
+        //
+        // Nivel 1: circuito + razón social + moneda + importe + fecha exactos
         let match = filasExcel.findIndex((e,i) => !usadosExcel.has(i) &&
           norm(e.nombre) === norm(s.circuito) &&
-          norm(e.nomCom) === norm(s.prov) &&
+          norm(e.egresos) === norm(s.rs) &&
           e.moneda === s.moneda &&
           Math.abs(e.importe - s.importe) < 0.01 &&
           sameDay(e.fechaPago, s.fechaPago))
         if (match >= 0) {
           usadosExcel.add(match)
-          const e = filasExcel[match]
-          // Verificar razón social
-          if (norm(e.egresos) !== norm(s.rs) && s.rs) {
-            warn.push({ tipo:'rs_diff', app: s, excel: e, mensaje: `Razón social distinta` })
-          } else {
-            ok.push({ app: s, excel: e })
-          }
+          ok.push({ app: s, excel: filasExcel[match] })
           return
         }
 
-        // Nivel 2: match parcial. Intenta encontrar candidatos y elegir el más cercano.
-        // 2a: circuito + nomCom + moneda coinciden — pero importe o fecha distintos
+        // Nivel 2a: circuito + razón social + moneda coinciden — pero importe o fecha distintos
         const candidatos2a = filasExcel
           .map((e,i)=>({e,i}))
-          .filter(({e,i}) => !usadosExcel.has(i) && norm(e.nombre)===norm(s.circuito) && norm(e.nomCom)===norm(s.prov) && e.moneda===s.moneda)
+          .filter(({e,i}) => !usadosExcel.has(i) && norm(e.nombre)===norm(s.circuito) && norm(e.egresos)===norm(s.rs) && e.moneda===s.moneda)
         if (candidatos2a.length > 0) {
           const {e,i} = candidatos2a[0]
           usadosExcel.add(i)
@@ -3583,21 +3586,29 @@ function ValidarFlujoModal({ circuits, tarifario, initial, onClose }) {
           if (!sameDay(e.fechaPago, s.fechaPago)) {
             problemas.push(`Fecha app ${s.fechaPago.toLocaleDateString('es-MX')} vs Excel ${e.fechaPago.toLocaleDateString('es-MX')}`)
           }
-          if (norm(e.egresos) !== norm(s.rs) && s.rs) {
-            problemas.push(`Razón social distinta`)
-          }
           warn.push({ tipo:'partial_match', app: s, excel: e, mensaje: problemas.join(' · ') })
           return
         }
 
-        // 2b: circuito + moneda + importe + fecha coinciden — nombre comercial distinto
+        // Nivel 2b: circuito + moneda + importe + fecha coinciden — razón social distinta
         const candidatos2b = filasExcel
           .map((e,i)=>({e,i}))
           .filter(({e,i}) => !usadosExcel.has(i) && norm(e.nombre)===norm(s.circuito) && e.moneda===s.moneda && Math.abs(e.importe-s.importe)<0.01 && sameDay(e.fechaPago, s.fechaPago))
         if (candidatos2b.length > 0) {
           const {e,i} = candidatos2b[0]
           usadosExcel.add(i)
-          warn.push({ tipo:'nomcom_diff', app: s, excel: e, mensaje: `Nombre comercial distinto: app "${s.prov}" vs Excel "${e.nomCom}"` })
+          warn.push({ tipo:'rs_diff', app: s, excel: e, mensaje: `Razón social distinta: app "${s.rs}" vs Excel "${e.egresos}"` })
+          return
+        }
+
+        // Nivel 2c: intentar con nombre comercial como fallback (por si Excel maestro sí lo tiene)
+        const candidatos2c = filasExcel
+          .map((e,i)=>({e,i}))
+          .filter(({e,i}) => !usadosExcel.has(i) && norm(e.nombre)===norm(s.circuito) && norm(e.nomCom)===norm(s.prov) && e.moneda===s.moneda && Math.abs(e.importe-s.importe)<0.01 && sameDay(e.fechaPago, s.fechaPago))
+        if (candidatos2c.length > 0) {
+          const {e,i} = candidatos2c[0]
+          usadosExcel.add(i)
+          ok.push({ app: s, excel: e })
           return
         }
 
