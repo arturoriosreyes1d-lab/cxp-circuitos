@@ -2187,7 +2187,10 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
 
   const [kpiModal, setKpiModal] = useState(null)
   const [mesExpandido, setMesExpandido] = useState(null) // null | 'pendiente' | 'semana' | 'vencidos' | 'sin_fecha' | 'pagado'
-  const [busqProv, setBusqProv] = useState('')   // búsqueda por proveedor
+  const [busqProv, setBusqProv] = useState('')   // texto que se está escribiendo (todavía no es chip)
+  const [chips, setChips] = useState([])          // array de strings — filtros ya confirmados con Enter
+  const [fechaFiltro, setFechaFiltro] = useState('')  // 'YYYY-MM-DD' — filtra por fecha de pago exacta
+  const [seleccionados, setSeleccionados] = useState(() => new Set())  // Set de row.id seleccionados
   const [exportModal, setExportModal] = useState(null) // null | { desde, hasta }
   const [marcarPagadosModal, setMarcarPagadosModal] = useState(null) // null | { desde, hasta }
   const [validarFlujoModal, setValidarFlujoModal] = useState(null) // null | true
@@ -2350,13 +2353,81 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
     </div>
   )
 
-  // ── Lógica búsqueda por proveedor ──
-  const qProv = busqProv.trim().toLowerCase()
-  const resultadosProv = qProv.length >= 2
-    ? todos.filter(r => (r.prov_general || '').toLowerCase().includes(qProv))
-    : []
+  // ── Lógica búsqueda multi-filtro ──────────────────────────────────
+  // Índice de razón social del tarifario por nombre comercial (upper trim)
+  const rsIndex = {}
+  tarifario.forEach(t => {
+    if (t.proveedor && t.razon_social) {
+      rsIndex[String(t.proveedor).toUpperCase().trim()] = String(t.razon_social).toUpperCase()
+    }
+  })
+
+  // "todos" ya está construido más arriba; le agrego el campo de búsqueda combinado
+  const allFilters = [...chips, ...(busqProv.trim() ? [busqProv.trim()] : [])]
+  const hayFiltro = allFilters.length > 0 || !!fechaFiltro
+
+  const resultadosProv = !hayFiltro ? [] : todos.filter(r => {
+    // Filtro por fecha de pago exacta (si está)
+    if (fechaFiltro) {
+      if (!r.fecha_pago) return false
+      if (r.fecha_pago !== fechaFiltro) return false
+    }
+    // Cada chip debe coincidir en algún campo (AND entre chips)
+    if (allFilters.length === 0) return true
+    const rs = rsIndex[(r.prov_general || '').toUpperCase().trim()] || ''
+    const searchable = [
+      r.prov_general || '',
+      r._circ?.id || '',
+      r.folio_factura || '',
+      r.servicio || '',
+      r.destino || '',
+      rs
+    ].join(' | ').toLowerCase()
+    return allFilters.every(f => searchable.includes(f.toLowerCase()))
+  })
   // Agrupar por proveedor exacto (normalizado) → luego por circuito
   const provNombres = [...new Set(resultadosProv.map(r => r.prov_general || ''))].sort()
+
+  // Cálculo de la suma de los seleccionados (solo lo que aparece en resultados)
+  const resultsIdSet = new Set(resultadosProv.map(r => r.id))
+  const sumaSel = { count:0, mn:0, usd:0 }
+  seleccionados.forEach(rowId => {
+    // Solo sumamos si el row está en los resultados actuales (para que no se acumule "invisible")
+    const r = resultadosProv.find(x => x.id === rowId)
+    if (r) {
+      sumaSel.count++
+      sumaSel.mn += r._mxn || 0
+      sumaSel.usd += r._usd || 0
+    }
+  })
+
+  // Helpers para chips
+  const commitChip = () => {
+    const t = busqProv.trim()
+    if (!t) return
+    // Evitar duplicados
+    if (chips.some(c => c.toLowerCase() === t.toLowerCase())) { setBusqProv(''); return }
+    setChips([...chips, t])
+    setBusqProv('')
+    setSeleccionados(new Set())  // Reset selección al cambiar filtro
+  }
+  const removeChip = (i) => {
+    setChips(chips.filter((_, idx) => idx !== i))
+    setSeleccionados(new Set())
+  }
+  const limpiarTodo = () => {
+    setChips([]); setBusqProv(''); setFechaFiltro(''); setSeleccionados(new Set())
+  }
+  const toggleSel = (rowId) => {
+    setSeleccionados(prev => {
+      const next = new Set(prev)
+      if (next.has(rowId)) next.delete(rowId); else next.add(rowId)
+      return next
+    })
+  }
+  const selectAllResults = () => {
+    setSeleccionados(new Set(resultadosProv.map(r => r.id)))
+  }
 
   return (
     <div>
@@ -2404,38 +2475,104 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
 
       {/* ── BUSCADOR DE PROVEEDOR — siempre visible ── */}
       <div style={{background:'#fff',borderRadius:12,padding:'16px 18px',boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:20}}>
-        <div style={{fontSize:12,fontWeight:700,color:'#12151f',marginBottom:8}}>🔍 Buscar por proveedor</div>
-        <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <div style={{flex:1,display:'flex',alignItems:'center',gap:8,background:'#f5f1eb',border:'1.5px solid #d8d2c8',borderRadius:20,padding:'7px 16px',transition:'border-color .15s'}}
-            onFocus={()=>{}} >
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,gap:8,flexWrap:'wrap'}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#12151f'}}>
+            🔍 Buscar por proveedor, circuito o razón social
+            <span style={{fontSize:10,fontWeight:400,color:'#8a8278',marginLeft:8}}>
+              (escribe y presiona <strong>Enter</strong> para agregar un filtro)
+            </span>
+          </div>
+          {hayFiltro && (
+            <button onClick={limpiarTodo} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'3px 10px',borderRadius:12,fontSize:11,cursor:'pointer',fontFamily:'inherit'}}>
+              Limpiar todo
+            </button>
+          )}
+        </div>
+
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          {/* Input principal con chips */}
+          <div style={{flex:1,minWidth:280,display:'flex',alignItems:'center',flexWrap:'wrap',gap:4,background:'#f5f1eb',border:'1.5px solid #d8d2c8',borderRadius:20,padding:'6px 12px'}}>
             <span style={{fontSize:14,color:'#8a8278'}}>🏢</span>
+            {chips.map((c, i) => (
+              <span key={i} style={{background:'#12151f',color:'#e0c96a',borderRadius:12,padding:'2px 4px 2px 10px',fontSize:11,fontWeight:600,display:'inline-flex',alignItems:'center',gap:4}}>
+                {c}
+                <button onClick={()=>removeChip(i)} style={{background:'rgba(224,201,106,.2)',border:'none',color:'#e0c96a',cursor:'pointer',borderRadius:10,width:16,height:16,fontSize:10,lineHeight:1,padding:0,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Quitar filtro">✕</button>
+              </span>
+            ))}
             <input
-              type="text" value={busqProv} onChange={e=>setBusqProv(e.target.value)}
-              placeholder="Escribe el nombre del hotel o proveedor…"
-              style={{flex:1,border:'none',background:'transparent',fontFamily:'inherit',fontSize:13,outline:'none',color:'#12151f'}}
+              type="text" value={busqProv}
+              onChange={e=>setBusqProv(e.target.value)}
+              onKeyDown={e=>{
+                if (e.key === 'Enter') { e.preventDefault(); commitChip() }
+                if (e.key === 'Backspace' && !busqProv && chips.length > 0) { removeChip(chips.length - 1) }
+              }}
+              placeholder={chips.length === 0 ? "Ej. COCONUTS, AY-20260815, LIBEOR…" : "Agregar otro filtro…"}
+              style={{flex:1,minWidth:120,border:'none',background:'transparent',fontFamily:'inherit',fontSize:13,outline:'none',color:'#12151f',padding:'2px 0'}}
             />
-            {busqProv&&<button onClick={()=>setBusqProv('')} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:16,lineHeight:1}}>✕</button>}
+            {busqProv && <button onClick={()=>setBusqProv('')} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:16,lineHeight:1}}>✕</button>}
+          </div>
+
+          {/* Selector de fecha de pago */}
+          <div style={{display:'flex',alignItems:'center',gap:6,background:'#f5f1eb',border:'1.5px solid #d8d2c8',borderRadius:20,padding:'6px 12px'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.4}}>📅 Fecha Pago:</span>
+            <input type="date" value={fechaFiltro} onChange={e=>{setFechaFiltro(e.target.value);setSeleccionados(new Set())}}
+              style={{border:'none',background:'transparent',fontFamily:'inherit',fontSize:12,outline:'none',color:'#12151f',minWidth:105}}/>
+            {fechaFiltro && <button onClick={()=>setFechaFiltro('')} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14,lineHeight:1}} title="Quitar filtro de fecha">✕</button>}
           </div>
         </div>
-        {busqProv.length>=2&&busqProv.length<2&&<div style={{fontSize:11,color:'#8a8278',marginTop:6}}>Escribe al menos 2 caracteres…</div>}
 
+        {/* Barra flotante de selección */}
+        {sumaSel.count > 0 && (
+          <div style={{marginTop:12,padding:'10px 14px',background:'#12151f',color:'#e0c96a',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+            <div style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+              <span style={{fontSize:13,fontWeight:700}}>
+                ✓ {sumaSel.count} {sumaSel.count===1?'servicio seleccionado':'servicios seleccionados'}
+              </span>
+              {sumaSel.mn>0 && (
+                <span style={{fontSize:13}}>
+                  Total MN: <strong style={{color:'#fff'}}>{fmtMXN(sumaSel.mn)}</strong>
+                </span>
+              )}
+              {sumaSel.usd>0 && (
+                <span style={{fontSize:13}}>
+                  Total USD: <strong style={{color:'#fff'}}>{fmtUSD(sumaSel.usd)}</strong>
+                </span>
+              )}
+            </div>
+            <button onClick={()=>setSeleccionados(new Set())} style={{background:'rgba(224,201,106,.2)',color:'#e0c96a',border:'none',borderRadius:6,padding:'4px 10px',fontSize:11,cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>
+              Deseleccionar todo
+            </button>
+          </div>
+        )}
 
         {/* Resultados de búsqueda — agrupados por mes colapsables */}
-        {qProv.length >= 2 && (
+        {hayFiltro && (
           <div style={{marginTop:14}}>
             {resultadosProv.length === 0
-              ? <div style={{fontSize:12,color:'#8a8278',padding:'8px 0'}}>Sin resultados para "{busqProv}"</div>
-              : <BuscadorResultados
-                  filas={resultadosProv}
-                  provNombres={provNombres}
-                  saveImporte={saveImporte}
-                  saveFactura={saveFactura}
-                  setFechaPago={setFechaPago}
-                  togglePaid={togglePaid}
-                  onGoCircuit={onGoCircuit}
-                  tarifario={tarifario}
-                  isReadOnly={isReadOnly}
-                />
+              ? <div style={{fontSize:12,color:'#8a8278',padding:'8px 0'}}>Sin resultados para los filtros aplicados</div>
+              : <>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,fontSize:11,color:'#8a8278'}}>
+                    <span><strong>{resultadosProv.length}</strong> {resultadosProv.length===1?'servicio encontrado':'servicios encontrados'}</span>
+                    {sumaSel.count === 0 && (
+                      <button onClick={selectAllResults} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'3px 10px',borderRadius:12,fontSize:11,cursor:'pointer',fontFamily:'inherit'}}>
+                        ☐ Seleccionar todos
+                      </button>
+                    )}
+                  </div>
+                  <BuscadorResultados
+                    filas={resultadosProv}
+                    provNombres={provNombres}
+                    saveImporte={saveImporte}
+                    saveFactura={saveFactura}
+                    setFechaPago={setFechaPago}
+                    togglePaid={togglePaid}
+                    onGoCircuit={onGoCircuit}
+                    tarifario={tarifario}
+                    isReadOnly={isReadOnly}
+                    seleccionados={seleccionados}
+                    toggleSel={toggleSel}
+                  />
+                </>
             }
           </div>
         )}
@@ -5128,7 +5265,7 @@ function TimelinePanel({ circ, tarifario }) {
 
 
 // ── BuscadorResultados — agrupa por proveedor → mes colapsable ──
-function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setFechaPago, togglePaid, onGoCircuit, tarifario, isReadOnly }) {
+function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setFechaPago, togglePaid, onGoCircuit, tarifario, isReadOnly, seleccionados, toggleSel }) {
   const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
   const [mesesAbiertos, setMesesAbiertos] = useState({}) // key: "provNombre|YYYY-MM"
   const toggleMes = (key) => setMesesAbiertos(p => ({...p, [key]: !p[key]}))
@@ -5138,8 +5275,14 @@ function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setF
     const fStr = fi ? fi.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—'
     const pax = r._circ.info?.pax || '—'
     const habs = ((parseInt(r._circ.info?.habs_single)||0)+(parseInt(r._circ.info?.habs_doble)||0)) || '—'
+    const isSel = seleccionados && seleccionados.has(r.id)
     return (
-      <tr style={{borderBottom:'1px solid #f0ebe3',background:r.paid?'#f9fef9':'#fff'}}>
+      <tr style={{borderBottom:'1px solid #f0ebe3',background: isSel ? '#fffdf5' : (r.paid?'#f9fef9':'#fff')}}>
+        <td style={{padding:'6px 6px',textAlign:'center',width:30}}>
+          <input type="checkbox" checked={!!isSel} onChange={()=>toggleSel && toggleSel(r.id)}
+            style={{width:15,height:15,cursor:'pointer',accentColor:'#b8952a'}}
+            title="Seleccionar para sumar"/>
+        </td>
         <td style={{padding:'6px 8px',fontWeight:700,fontSize:10,whiteSpace:'nowrap',maxWidth:240}}>
           <div style={{color:'#b8952a',lineHeight:1.3}}>{r._circ.id}</div>
         </td>
@@ -5198,8 +5341,8 @@ function BuscadorResultados({ filas, provNombres, saveImporte, saveFactura, setF
 
   const ColHeaders = () => (
     <tr style={{background:'#f5f1eb'}}>
-      {['Circuito','Fecha svc','Servicio','PAX','HAB','Importe','Fact. Rec.','Folio','Fecha Pago','VB Aud.','VB Pago','Estatus',''].map(h=>(
-        <th key={h} style={{padding:'7px 8px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#8a8278',whiteSpace:'nowrap'}}>{h}</th>
+      {['','Circuito','Fecha svc','Servicio','PAX','HAB','Importe','Fact. Rec.','Folio','Fecha Pago','VB Aud.','VB Pago','Estatus',''].map((h, i)=>(
+        <th key={i} style={{padding:'7px 8px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,color:'#8a8278',whiteSpace:'nowrap',width: i===0 ? 30 : 'auto'}}>{h}</th>
       ))}
     </tr>
   )
