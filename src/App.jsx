@@ -2366,24 +2366,61 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
   const allFilters = [...chips, ...(busqProv.trim() ? [busqProv.trim()] : [])]
   const hayFiltro = allFilters.length > 0 || !!fechaFiltro
 
+  // Detectar la categoría de cada chip para saber contra qué campo comparar:
+  //   'circuito' → contiene guiones tipo "AY-", "IT-", "MEX", o fecha "202" (año)
+  //   'folio'    → alfanumérico corto (< 10) que empieza con letras + números (ej. "LIBEOR", "S/FACT")
+  //   'texto'    → cualquier otro (nombres de proveedor, servicios, destinos, razón social)
+  // Filtros de la misma categoría se combinan con OR (uno u otro),
+  // filtros de categorías distintas con AND (deben cumplirse todas).
+  const categorizarFiltro = (s) => {
+    const t = s.trim().toUpperCase()
+    // Circuito: patrón típico "AY-", "IT-WR-", "MEX-", "MSS-", "RE-", o contiene "202" (año)
+    if (/^(AY|IT|WE|FR|DE|ES)[-\s]/.test(t) || /-AY-/.test(t) || /^20\d{6}/.test(t) || /-\d{8}-/.test(t)) {
+      return 'circuito'
+    }
+    // Folio: hasta 15 chars, tiene números o combinación tipo "A46708", "LIBEOR", "S/FACT"
+    if (t.length <= 15 && /\d/.test(t) && /^[A-Z0-9\/]+$/.test(t)) {
+      return 'folio'
+    }
+    // Todo lo demás: texto (proveedor, razón social, destino, servicio)
+    return 'texto'
+  }
+
   const resultadosProv = !hayFiltro ? [] : todos.filter(r => {
     // Filtro por fecha de pago exacta (si está)
     if (fechaFiltro) {
       if (!r.fecha_pago) return false
       if (r.fecha_pago !== fechaFiltro) return false
     }
-    // Cada chip debe coincidir en algún campo (AND entre chips)
+    // Sin chips: solo por fecha
     if (allFilters.length === 0) return true
+
     const rs = rsIndex[(r.prov_general || '').toUpperCase().trim()] || ''
-    const searchable = [
-      r.prov_general || '',
-      r._circ?.id || '',
-      r.folio_factura || '',
-      r.servicio || '',
-      r.destino || '',
-      rs
-    ].join(' | ').toLowerCase()
-    return allFilters.every(f => searchable.includes(f.toLowerCase()))
+    const campoTexto    = [(r.prov_general || ''), (r.servicio || ''), (r.destino || ''), rs].join(' | ').toLowerCase()
+    const campoCircuito = (r._circ?.id || '').toLowerCase()
+    const campoFolio    = (r.folio_factura || '').toLowerCase()
+
+    // Agrupar chips por categoría
+    const grupos = { texto: [], circuito: [], folio: [] }
+    allFilters.forEach(f => {
+      const cat = categorizarFiltro(f)
+      grupos[cat].push(f.toLowerCase())
+    })
+
+    // Dentro de cada grupo: OR. Entre grupos: AND.
+    if (grupos.texto.length > 0) {
+      const ok = grupos.texto.some(f => campoTexto.includes(f))
+      if (!ok) return false
+    }
+    if (grupos.circuito.length > 0) {
+      const ok = grupos.circuito.some(f => campoCircuito.includes(f))
+      if (!ok) return false
+    }
+    if (grupos.folio.length > 0) {
+      const ok = grupos.folio.some(f => campoFolio.includes(f))
+      if (!ok) return false
+    }
+    return true
   })
   // Agrupar por proveedor exacto (normalizado) → luego por circuito
   const provNombres = [...new Set(resultadosProv.map(r => r.prov_general || ''))].sort()
@@ -2493,12 +2530,18 @@ function PagosView({ circuits, tarifario, TC, isReadOnly, togglePaid, setFechaPa
           {/* Input principal con chips */}
           <div style={{flex:1,minWidth:280,display:'flex',alignItems:'center',flexWrap:'wrap',gap:4,background:'#f5f1eb',border:'1.5px solid #d8d2c8',borderRadius:20,padding:'6px 12px'}}>
             <span style={{fontSize:14,color:'#8a8278'}}>🏢</span>
-            {chips.map((c, i) => (
-              <span key={i} style={{background:'#12151f',color:'#e0c96a',borderRadius:12,padding:'2px 4px 2px 10px',fontSize:11,fontWeight:600,display:'inline-flex',alignItems:'center',gap:4}}>
-                {c}
-                <button onClick={()=>removeChip(i)} style={{background:'rgba(224,201,106,.2)',border:'none',color:'#e0c96a',cursor:'pointer',borderRadius:10,width:16,height:16,fontSize:10,lineHeight:1,padding:0,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Quitar filtro">✕</button>
-              </span>
-            ))}
+            {chips.map((c, i) => {
+              const cat = categorizarFiltro(c)
+              const catIcon = cat === 'circuito' ? '🎫' : cat === 'folio' ? '📄' : '🏢'
+              const catTitle = cat === 'circuito' ? 'Filtro por circuito' : cat === 'folio' ? 'Filtro por folio' : 'Filtro por texto (proveedor/servicio/razón social)'
+              return (
+                <span key={i} title={catTitle} style={{background:'#12151f',color:'#e0c96a',borderRadius:12,padding:'2px 4px 2px 10px',fontSize:11,fontWeight:600,display:'inline-flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:10}}>{catIcon}</span>
+                  {c}
+                  <button onClick={()=>removeChip(i)} style={{background:'rgba(224,201,106,.2)',border:'none',color:'#e0c96a',cursor:'pointer',borderRadius:10,width:16,height:16,fontSize:10,lineHeight:1,padding:0,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Quitar filtro">✕</button>
+                </span>
+              )
+            })}
             <input
               type="text" value={busqProv}
               onChange={e=>setBusqProv(e.target.value)}
