@@ -235,20 +235,32 @@ function Dashboard({ session }) {
       }
       const { data: circs } = await supabase.from('circuits').select('*').order('created_at', { ascending: false })
       if (circs && circs.length > 0) {
-        // Cargar TODAS las filas en páginas de 1000 para evitar el límite de Supabase
+        // Cargar TODAS las filas en páginas de 1000 para evitar el límite de Supabase.
+        // Ordenar por (idx, id) para tener orden determinístico entre páginas
+        // (si dos filas tienen el mismo idx, el orden entre queries podría cambiar y
+        // producir duplicados o rows faltantes en la paginación).
         let allRows = [], page = 0, pageSize = 1000, done = false
         while (!done) {
           const { data: chunk, error } = await supabase
-            .from('circuit_rows').select('*').order('idx')
+            .from('circuit_rows').select('*')
+            .order('idx', { ascending: true })
+            .order('id',  { ascending: true })
             .range(page * pageSize, (page + 1) * pageSize - 1)
           if (error || !chunk || chunk.length === 0) { done = true; break }
           allRows = [...allRows, ...chunk]
           if (chunk.length < pageSize) done = true
           else page++
         }
+        // Red de seguridad: deduplicar por id (por si Supabase devolvió alguna row dos veces)
+        const seenIds = new Set()
+        allRows = allRows.filter(r => {
+          if (seenIds.has(r.id)) return false
+          seenIds.add(r.id)
+          return true
+        })
         const full = circs.map((c) => ({
           ...c,
-          rows: (allRows || []).filter((r) => r.circuit_id === c.id).map((r) => ({ ...r, fecha: parseLocalDate(r.fecha) })),
+          rows: allRows.filter((r) => r.circuit_id === c.id).map((r) => ({ ...r, fecha: parseLocalDate(r.fecha) })),
         }))
         setCircuits(full)
         if (full.length > 0) setView({ type: 'all' })
