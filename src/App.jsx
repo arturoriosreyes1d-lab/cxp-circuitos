@@ -1437,10 +1437,31 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pie
 // ═══════════════════════════════════════════════════════════════════
 function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC, pietroFeeEur, tcEur, gastosOperativosMxn, gastosItems, onClose }) {
   const [generando, setGenerando] = useState(false)
+  const [alcance, setAlcance] = useState('year')  // 'year' | 'month'
+  const [mesSel, setMesSel] = useState('')  // 'YYYY-MM' cuando alcance=='month'
 
-  // Vista previa: cuántos meses, circuitos, servicios
+  const mesLbl = (mk) => {
+    if (!mk || mk === 'Sin mes') return mk
+    const [y, m] = mk.split('-')
+    const NM = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC']
+    return `${NM[parseInt(m)-1]} ${y}`
+  }
+
+  // Al abrir, si no hay mes seleccionado, autoseleccionar el primero disponible
+  useEffect(() => {
+    if (!mesSel && sortedMonths.length > 0) {
+      const primero = sortedMonths.find(m => m && m !== 'Sin mes' && (monthMap[m]?.length || 0) > 0)
+      if (primero) setMesSel(primero)
+    }
+  // eslint-disable-next-line
+  }, [sortedMonths])
+
+  // Vista previa: cuántos meses, circuitos, servicios (según alcance)
   const preview = useMemo(() => {
-    const mesesValidos = sortedMonths.filter(m => m && m !== 'Sin mes' && (monthMap[m]?.length || 0) > 0)
+    const mesesTodos = sortedMonths.filter(m => m && m !== 'Sin mes' && (monthMap[m]?.length || 0) > 0)
+    const mesesValidos = alcance === 'year'
+      ? mesesTodos
+      : (mesSel && mesesTodos.includes(mesSel) ? [mesSel] : [])
     let servicios = 0, serviciosOpc = 0, ingresoTotal = 0, egresoTotal = 0
     mesesValidos.forEach(m => {
       (monthMap[m] || []).forEach(c => {
@@ -1455,8 +1476,8 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
       })
     })
     const circCount = mesesValidos.reduce((s,m)=>s + (monthMap[m]?.length || 0), 0)
-    return { meses: mesesValidos, circCount, servicios, serviciosOpc, ingresoTotal, egresoTotal }
-  }, [circuits, monthMap, sortedMonths, tarifario, TC])
+    return { meses: mesesValidos, mesesTodos, circCount, servicios, serviciosOpc, ingresoTotal, egresoTotal }
+  }, [circuits, monthMap, sortedMonths, tarifario, TC, alcance, mesSel])
 
   const descargar = async () => {
     if (!window.XLSX) { alert('Excel aún cargando, espera unos segundos.'); return }
@@ -1466,13 +1487,6 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
       const wb = XLSX.utils.book_new()
 
       const round2 = n => Math.round((n || 0) * 100) / 100
-      const mesLbl = (mk) => {
-        // mk formato "YYYY-MM"
-        if (!mk || mk === 'Sin mes') return mk
-        const [y, m] = mk.split('-')
-        const NM = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC']
-        return `${NM[parseInt(m)-1]} ${y}`
-      }
 
       // Índice razón social
       const rsIndex = {}
@@ -1486,8 +1500,9 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
       // ═══════════════════════════════════════════════════════════════
       // HOJA 1 — RESUMEN ANUAL
       // ═══════════════════════════════════════════════════════════════
+      const tituloAlcance = alcance === 'month' && mesSel ? mesLbl(mesSel) : 'Anual'
       const resumenAoa = [
-        ['📊 RESUMEN ANUAL — Estado de Resultados de Circuitos'],
+        [`📊 RESUMEN ${tituloAlcance.toUpperCase()} — Estado de Resultados de Circuitos`],
         ['Generado el ' + new Date().toLocaleString('es-MX'), '', '', '', '', '', `TC MXN/USD: ${TC}`, '', `TC MXN/EUR: ${tcEur}`, '', `Fee Pietro: €${pietroFeeEur}/mes`],
         [],
         ['Mes','Circuitos','Pax',
@@ -1559,7 +1574,7 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
           }
         }
       }
-      XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen Anual')
+      XLSX.utils.book_append_sheet(wb, wsResumen, alcance === 'month' ? 'Resumen' : 'Resumen Anual')
 
       // ═══════════════════════════════════════════════════════════════
       // HOJAS 2-N — UNA POR MES CON DETALLE COMPLETO
@@ -1757,7 +1772,7 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
       // HOJA — ADICIONALES ANUAL (todos los OPCIONALES)
       // ═══════════════════════════════════════════════════════════════
       const adAoa = [
-        ['🔷 ADICIONALES (OPCIONALES) — Detalle Anual'],
+        [`🔷 ADICIONALES (OPCIONALES) — ${alcance === 'month' && mesSel ? 'Detalle ' + mesLbl(mesSel) : 'Detalle Anual'}`],
         [],
         ['Mes','Circuito','Servicio','Proveedor','Razón Social','Destino',
           'Fecha SVC','Fecha Pago','Importe MN','Importe USD','Importe Total MN','Pagado','Folio'
@@ -1803,7 +1818,7 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
         })
       })
       const provAoa = [
-        ['🏢 POR PROVEEDOR — Concentrado Anual'],
+        [`🏢 POR PROVEEDOR — ${alcance === 'month' && mesSel ? 'Concentrado ' + mesLbl(mesSel) : 'Concentrado Anual'}`],
         [],
         ['Proveedor','Razón Social','# Servicios','Pagado MN','Pagado USD','Pendiente MN','Pendiente USD','Total MN','Total USD']
       ]
@@ -1874,8 +1889,14 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
       XLSX.utils.book_append_sheet(wb, wsVer, 'Verificación')
 
       // Descargar
+      // Nombre del archivo según el alcance
       const now = new Date()
-      const nombreArchivo = `auditoria_circuitos_${now.getFullYear()}.xlsx`
+      let nombreArchivo
+      if (alcance === 'month' && mesSel) {
+        nombreArchivo = `auditoria_circuitos_${mesSel}.xlsx`
+      } else {
+        nombreArchivo = `auditoria_circuitos_${now.getFullYear()}.xlsx`
+      }
       XLSX.writeFile(wb, nombreArchivo)
       onClose()
     } catch (err) {
@@ -1887,31 +1908,74 @@ function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC,
   }
 
   return (
-    <Modal title="📊 Exportar auditoría anual" onClose={onClose}>
+    <Modal title="📊 Exportar auditoría" onClose={onClose}>
       <p style={{color:'#8a8278',fontSize:13,marginBottom:16,lineHeight:1.5}}>
-        Genera un Excel con <strong>todos los circuitos del año</strong>, con detalle de ingresos, egresos, adicionales y verificación cruzada. Los números deben reproducir <strong>exactamente</strong> los del Estado de Resultados.
+        Genera un Excel con detalle de ingresos, egresos, adicionales y verificación cruzada. Los números reproducen <strong>exactamente</strong> los del Estado de Resultados.
       </p>
+
+      {/* Selector de alcance */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.5,marginBottom:8}}>
+          🎯 Alcance del reporte
+        </div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[['month','📅 Un mes específico'],['year','📆 Todo el año']].map(([id,lbl])=>(
+            <button key={id} onClick={()=>setAlcance(id)}
+              style={{
+                padding:'8px 16px',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,
+                fontWeight: alcance===id?700:500, fontFamily:'inherit',
+                background: alcance===id?'#12151f':'#f5f1eb',
+                color: alcance===id?'#e0c96a':'#8a8278',transition:'all .15s'
+              }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Selector de mes (solo si alcance = month) */}
+      {alcance === 'month' && (
+        <div style={{marginBottom:14}}>
+          <label style={{display:'block',fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.5,marginBottom:6}}>
+            Mes a exportar
+          </label>
+          <select value={mesSel} onChange={e=>setMesSel(e.target.value)}
+            style={{width:'100%',border:'1.5px solid #d8d2c8',borderRadius:8,padding:'8px 12px',fontFamily:'inherit',fontSize:14,background:'#fff',outline:'none',cursor:'pointer'}}>
+            {preview.mesesTodos.length === 0 && <option value="">Sin meses con datos</option>}
+            {preview.mesesTodos.map(m => (
+              <option key={m} value={m}>{mesLbl(m)} — {(monthMap[m]||[]).length} circuitos</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div style={{background:'#f5f1eb',border:'1px solid #ece7df',borderRadius:8,padding:'12px 14px',marginBottom:16}}>
         <div style={{fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.5,marginBottom:8}}>
           📋 El archivo incluirá
         </div>
-        <div style={{fontSize:12,color:'#12151f',lineHeight:1.8}}>
-          <strong>{preview.meses.length}</strong> {preview.meses.length===1?'mes':'meses'} con datos<br/>
-          <strong>{preview.circCount}</strong> circuitos<br/>
-          <strong>{preview.servicios}</strong> servicios LIBERO + <strong>{preview.serviciosOpc}</strong> OPCIONALES<br/>
-          Ingreso total: <strong>{fmtMXN(preview.ingresoTotal)} MN</strong><br/>
-          Egreso total: <strong>{fmtMXN(preview.egresoTotal)} MN</strong>
-        </div>
+        {preview.meses.length === 0 ? (
+          <div style={{fontSize:12,color:'#b83232',fontStyle:'italic'}}>Selecciona un mes válido</div>
+        ) : (
+          <div style={{fontSize:12,color:'#12151f',lineHeight:1.8}}>
+            {alcance === 'month'
+              ? <>Mes: <strong>{mesLbl(mesSel)}</strong><br/></>
+              : <><strong>{preview.meses.length}</strong> {preview.meses.length===1?'mes':'meses'} con datos<br/></>
+            }
+            <strong>{preview.circCount}</strong> circuitos<br/>
+            <strong>{preview.servicios}</strong> servicios LIBERO + <strong>{preview.serviciosOpc}</strong> OPCIONALES<br/>
+            Ingreso total: <strong>{fmtMXN(preview.ingresoTotal)} MN</strong><br/>
+            Egreso total: <strong>{fmtMXN(preview.egresoTotal)} MN</strong>
+          </div>
+        )}
       </div>
 
       <div style={{background:'#fef8e6',border:'1px solid #e0c96a',borderRadius:8,padding:'10px 14px',marginBottom:16}}>
         <div style={{fontSize:11,color:'#7d5a00',lineHeight:1.5}}>
           ✎ <strong>Estructura del Excel:</strong><br/>
-          1. <strong>Resumen Anual</strong>: una fila por mes con totales<br/>
+          1. <strong>Resumen</strong>: fila(s) por mes con totales<br/>
           2. <strong>Una hoja por mes</strong> con 4 secciones (Resumen, Circuitos, Egresos Detalle, Ingresos)<br/>
-          3. <strong>Adicionales</strong>: todos los servicios OPCIONALES del año<br/>
-          4. <strong>Por Proveedor</strong>: concentrado anual con totales<br/>
+          3. <strong>Adicionales</strong>: todos los servicios OPCIONALES<br/>
+          4. <strong>Por Proveedor</strong>: concentrado con totales<br/>
           5. <strong>Verificación</strong>: chequeo cruzado que valida que los números coincidan
         </div>
       </div>
