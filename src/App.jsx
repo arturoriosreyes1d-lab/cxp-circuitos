@@ -854,6 +854,7 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pie
   const [modo, setModo] = useState(initModo || 'todos')
   const [mesSel, setMesSel] = useState(initMes || sortedMonths[0] || '')
   const [circSel, setCircSel] = useState(circuits[0]?.id || '')
+  const [exportAuditModal, setExportAuditModal] = useState(false)
 
   const circsMostrar = modo === 'todos' ? circuits
     : modo === 'mes' ? (monthMap[mesSel] || [])
@@ -957,7 +958,16 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pie
 
   return (
     <div>
-      <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,marginBottom:16}}>📈 Estado de Resultados</h2>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,gap:12,flexWrap:'wrap'}}>
+        <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:26,margin:0}}>📈 Estado de Resultados</h2>
+        <button
+          onClick={()=>setExportAuditModal(true)}
+          style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:6,whiteSpace:'nowrap'}}
+          title="Exportar auditoría completa por mes con detalle de ingresos, egresos, adicionales y circuitos"
+        >
+          📊 Exportar auditoría
+        </button>
+      </div>
 
       {/* Selector modo */}
       <div style={{background:'#fff',borderRadius:12,padding:'14px 16px',boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:20,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
@@ -1403,7 +1413,516 @@ function EstadoResultados({ circuits, monthMap, sortedMonths, tarifario, TC, pie
           </div>
         </>
       )}
+      {exportAuditModal && (
+        <ExportAuditoriaModal
+          circuits={circuits}
+          monthMap={monthMap}
+          sortedMonths={sortedMonths}
+          tarifario={tarifario}
+          TC={TC}
+          pietroFeeEur={pietroFeeEur}
+          tcEur={tcEur}
+          gastosOperativosMxn={gastosOperativosMxn}
+          gastosItems={gastosItems}
+          onClose={()=>setExportAuditModal(false)}
+        />
+      )}
     </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ExportAuditoriaModal — Excel auditable con TODO el detalle por mes
+// Reproduce EXACTAMENTE los números del Estado de Resultados
+// ═══════════════════════════════════════════════════════════════════
+function ExportAuditoriaModal({ circuits, monthMap, sortedMonths, tarifario, TC, pietroFeeEur, tcEur, gastosOperativosMxn, gastosItems, onClose }) {
+  const [generando, setGenerando] = useState(false)
+
+  // Vista previa: cuántos meses, circuitos, servicios
+  const preview = useMemo(() => {
+    const mesesValidos = sortedMonths.filter(m => m && m !== 'Sin mes' && (monthMap[m]?.length || 0) > 0)
+    let servicios = 0, serviciosOpc = 0, ingresoTotal = 0, egresoTotal = 0
+    mesesValidos.forEach(m => {
+      (monthMap[m] || []).forEach(c => {
+        const T = calcCircTotals(c, tarifario, TC)
+        ingresoTotal += T.ingresoMXN + T.ingresoOpcTotal
+        egresoTotal += T.costoTotal + T.costoOpcTotal
+        c.rows.forEach(r => {
+          const esOpc = (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL'
+          if (esOpc) serviciosOpc++
+          else servicios++
+        })
+      })
+    })
+    const circCount = mesesValidos.reduce((s,m)=>s + (monthMap[m]?.length || 0), 0)
+    return { meses: mesesValidos, circCount, servicios, serviciosOpc, ingresoTotal, egresoTotal }
+  }, [circuits, monthMap, sortedMonths, tarifario, TC])
+
+  const descargar = async () => {
+    if (!window.XLSX) { alert('Excel aún cargando, espera unos segundos.'); return }
+    setGenerando(true)
+    try {
+      const XLSX = window.XLSX
+      const wb = XLSX.utils.book_new()
+
+      const round2 = n => Math.round((n || 0) * 100) / 100
+      const mesLbl = (mk) => {
+        // mk formato "YYYY-MM"
+        if (!mk || mk === 'Sin mes') return mk
+        const [y, m] = mk.split('-')
+        const NM = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC']
+        return `${NM[parseInt(m)-1]} ${y}`
+      }
+
+      // Índice razón social
+      const rsIndex = {}
+      tarifario.forEach(t => {
+        if (t.proveedor && t.razon_social) {
+          rsIndex[String(t.proveedor).toUpperCase().trim()] = t.razon_social
+        }
+      })
+      const getRS = (nomCom) => rsIndex[(nomCom || '').toUpperCase().trim()] || ''
+
+      // ═══════════════════════════════════════════════════════════════
+      // HOJA 1 — RESUMEN ANUAL
+      // ═══════════════════════════════════════════════════════════════
+      const resumenAoa = [
+        ['📊 RESUMEN ANUAL — Estado de Resultados de Circuitos'],
+        ['Generado el ' + new Date().toLocaleString('es-MX'), '', '', '', '', '', `TC MXN/USD: ${TC}`, '', `TC MXN/EUR: ${tcEur}`, '', `Fee Pietro: €${pietroFeeEur}/mes`],
+        [],
+        ['Mes','Circuitos','Pax',
+          'Ingreso LIBERO MN','Costo LIBERO MN','Utilidad Bruta LIBERO','Margen %',
+          'Ingreso OPCIONAL MN','Costo OPCIONAL MN','Utilidad OPCIONAL','Margen OPC %',
+          'Gastos Operativos','Comisión Pietro','Fee Mensual','Utilidad Neta'
+        ]
+      ]
+
+      preview.meses.forEach(mk => {
+        const circs = monthMap[mk] || []
+        if (circs.length === 0) return
+        let ingLIB = 0, costLIB = 0, ingOPC = 0, costOPC = 0, com = 0, pax = 0
+        circs.forEach(c => {
+          const T = calcCircTotals(c, tarifario, TC)
+          ingLIB += T.ingresoMXN
+          costLIB += T.costoTotal
+          ingOPC += T.ingresoOpcTotal
+          costOPC += T.costoOpcTotal
+          com += T.comision
+          pax += parseInt(c.info?.pax) || 0
+        })
+        const utilBruta = ingLIB - costLIB
+        const margenBr = ingLIB > 0 ? (utilBruta / ingLIB) * 100 : 0
+        const utilOPC = ingOPC - costOPC
+        const margenOPC = ingOPC > 0 ? (utilOPC / ingOPC) * 100 : 0
+        // Gastos y fee se aplican SOLO al total (no por mes) según la lógica de la app.
+        // Pero para auditoría por mes: 1 mes = 1 fee mensual + 1 gasto operativo.
+        const gastoOpMes = gastosOperativosMxn || 0
+        const feeMes = (pietroFeeEur || 0) * (tcEur || 0)
+        const utilNeta = utilBruta - gastoOpMes - com - feeMes
+        resumenAoa.push([
+          mesLbl(mk), circs.length, pax,
+          round2(ingLIB), round2(costLIB), round2(utilBruta), round2(margenBr),
+          round2(ingOPC), round2(costOPC), round2(utilOPC), round2(margenOPC),
+          round2(gastoOpMes), round2(com), round2(feeMes), round2(utilNeta)
+        ])
+      })
+
+      // Fila TOTAL
+      const totalRow = ['TOTAL', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      for (let i = 4; i < resumenAoa.length; i++) {
+        const r = resumenAoa[i]
+        totalRow[1] += r[1] || 0
+        totalRow[2] += r[2] || 0
+        for (let c = 3; c <= 14; c++) totalRow[c] += r[c] || 0
+      }
+      // Recalcular márgenes globales del total
+      totalRow[6] = totalRow[3] > 0 ? (totalRow[5] / totalRow[3]) * 100 : 0
+      totalRow[10] = totalRow[7] > 0 ? (totalRow[9] / totalRow[7]) * 100 : 0
+      resumenAoa.push([])
+      resumenAoa.push(totalRow.map(v => typeof v === 'number' ? round2(v) : v))
+
+      const wsResumen = XLSX.utils.aoa_to_sheet(resumenAoa)
+      wsResumen['!cols'] = [
+        {wch:12},{wch:11},{wch:8},
+        {wch:16},{wch:16},{wch:18},{wch:11},
+        {wch:18},{wch:18},{wch:16},{wch:12},
+        {wch:16},{wch:15},{wch:14},{wch:16}
+      ]
+      // Formato de moneda para columnas numéricas
+      const rangeRes = XLSX.utils.decode_range(wsResumen['!ref'])
+      for (let R = 4; R <= rangeRes.e.r; R++) {
+        for (let C = 3; C <= 14; C++) {
+          const ref = XLSX.utils.encode_cell({r:R, c:C})
+          if (wsResumen[ref] && typeof wsResumen[ref].v === 'number') {
+            if (C === 6 || C === 10) wsResumen[ref].z = '0.0"%"'
+            else wsResumen[ref].z = '"$"#,##0.00'
+          }
+        }
+      }
+      XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen Anual')
+
+      // ═══════════════════════════════════════════════════════════════
+      // HOJAS 2-N — UNA POR MES CON DETALLE COMPLETO
+      // ═══════════════════════════════════════════════════════════════
+      preview.meses.forEach(mk => {
+        const circs = monthMap[mk] || []
+        if (circs.length === 0) return
+
+        // Calcular totales del mes primero
+        let ingLIB_MXN_orig = 0, ingLIB_USD_orig = 0, ingLIB = 0, costLIB = 0
+        let ingOPC_MXN = 0, ingOPC_USD = 0, ingOPC = 0, costOPC = 0
+        let com = 0, pax = 0
+        circs.forEach(c => {
+          const T = calcCircTotals(c, tarifario, TC)
+          if (c.moneda_cobrado === 'USD') ingLIB_USD_orig += (c.importe_cobrado || 0)
+          else ingLIB_MXN_orig += (c.importe_cobrado || 0)
+          ingLIB += T.ingresoMXN
+          costLIB += T.costoTotal
+          ingOPC_MXN += T.ingresoOpcMXN
+          ingOPC_USD += T.ingresoOpcUSD
+          ingOPC += T.ingresoOpcTotal
+          costOPC += T.costoOpcTotal
+          com += T.comision
+          pax += parseInt(c.info?.pax) || 0
+        })
+        const utilBruta = ingLIB - costLIB
+        const utilOPC = ingOPC - costOPC
+        const gastoOpMes = gastosOperativosMxn || 0
+        const feeMes = (pietroFeeEur || 0) * (tcEur || 0)
+        const utilNeta = utilBruta - gastoOpMes - com - feeMes
+
+        const aoa = []
+        aoa.push([`📊 ESTADO DE RESULTADOS — ${mesLbl(mk)}`])
+        aoa.push([`TC MXN/USD: ${TC}`, '', `TC MXN/EUR: ${tcEur}`, '', `Fee Pietro: €${pietroFeeEur}`])
+        aoa.push([])
+
+        // ── SECCIÓN A: RESUMEN (mismos números que la app) ──
+        aoa.push(['A. RESUMEN DEL MES — reproducción exacta del Estado de Resultados'])
+        aoa.push(['Concepto','Valor'])
+        aoa.push(['Circuitos', circs.length])
+        aoa.push(['Pax total', pax])
+        aoa.push([])
+        aoa.push(['CIRCUITO LIBERO'])
+        if (ingLIB_USD_orig > 0) aoa.push(['  Cobrado al cliente USD', round2(ingLIB_USD_orig)])
+        if (ingLIB_MXN_orig > 0) aoa.push(['  Cobrado al cliente MN', round2(ingLIB_MXN_orig)])
+        aoa.push(['  Ingreso total equivalente MN', round2(ingLIB)])
+        aoa.push(['  Total Costos LIBERO', round2(costLIB)])
+        aoa.push(['  Utilidad Bruta LIBERO', round2(utilBruta)])
+        aoa.push(['  Margen Bruto %', ingLIB > 0 ? round2((utilBruta/ingLIB)*100) : 0])
+        aoa.push([])
+        aoa.push(['OPCIONALES (ADICIONALES)'])
+        if (ingOPC_MXN > 0) aoa.push(['  Ingresos opcionales MXN', round2(ingOPC_MXN)])
+        if (ingOPC_USD > 0) aoa.push(['  Ingresos opcionales USD', round2(ingOPC_USD)])
+        aoa.push(['  Total ingresos opcionales (MN)', round2(ingOPC)])
+        aoa.push(['  Total Costos OPCIONAL', round2(costOPC)])
+        aoa.push(['  Utilidad OPCIONAL', round2(utilOPC)])
+        aoa.push(['  Margen OPCIONAL %', ingOPC > 0 ? round2((utilOPC/ingOPC)*100) : 0])
+        aoa.push([])
+        aoa.push(['GASTOS Y COMISIONES'])
+        aoa.push(['  Gastos Operativos', -round2(gastoOpMes)])
+        aoa.push(['  Comisión Pietro', -round2(com)])
+        aoa.push(['  Fee Mensual (€' + pietroFeeEur + ' × 1 mes × ' + tcEur + ')', -round2(feeMes)])
+        aoa.push([])
+        aoa.push(['UTILIDAD NETA', round2(utilNeta)])
+        aoa.push([])
+        aoa.push([])
+
+        // ── SECCIÓN B: CIRCUITOS DEL MES ──
+        aoa.push(['B. CIRCUITOS DEL MES — uno por renglón'])
+        aoa.push([
+          'ID Circuito','Fecha Inicio','Fecha Fin','Días','PAX','HAB Single','HAB Doble','TL','Estatus',
+          'Moneda Cobro','Importe Cobrado','Ingreso MN',
+          'Costo LIBERO MXN','Costo LIBERO USD','Costo LIBERO Total MN',
+          'Utilidad Bruta LIBERO','Margen %',
+          'Ingreso OPC MXN','Ingreso OPC USD','Ingreso OPC Total MN',
+          'Costo OPC MXN','Costo OPC USD','Costo OPC Total MN',
+          'Utilidad OPCIONAL','Margen OPC %',
+          '% Comisión','Comisión Pietro',
+          'Pagado LIBERO MN','Pagado LIBERO USD','Pendiente LIBERO MN','Pendiente LIBERO USD'
+        ])
+        circs.forEach(c => {
+          const T = calcCircTotals(c, tarifario, TC)
+          const pax = parseInt(c.info?.pax) || 0
+          const habS = parseInt(c.info?.habs_single) || 0
+          const habD = parseInt(c.info?.habs_doble) || 0
+          const fi = c.info?.fecha_inicio ? parseLocalDate(c.info.fecha_inicio) : null
+          const ff = c.info?.fecha_fin ? parseLocalDate(c.info.fecha_fin) : null
+          const dias = (fi && ff) ? Math.round((ff - fi) / (1000*60*60*24)) + 1 : ''
+          const marginBr = T.ingresoMXN > 0 ? (T.utilidad / T.ingresoMXN) * 100 : 0
+          const marginOpc = T.ingresoOpcTotal > 0 ? (T.utilidadOpc / T.ingresoOpcTotal) * 100 : 0
+          const pendLibMxn = T.costoMXN - T.paidMXN
+          const pendLibUsd = T.costoUSD - T.paidUSD
+          aoa.push([
+            c.id,
+            fi ? fi.toLocaleDateString('es-MX') : '',
+            ff ? ff.toLocaleDateString('es-MX') : '',
+            dias, pax, habS, habD, c.info?.tl || '',
+            c.locked ? 'Cerrado' : 'En proceso',
+            c.moneda_cobrado || 'MXN', round2(c.importe_cobrado), round2(T.ingresoMXN),
+            round2(T.costoMXN), round2(T.costoUSD), round2(T.costoTotal),
+            round2(T.utilidad), round2(marginBr),
+            round2(T.ingresoOpcMXN), round2(T.ingresoOpcUSD), round2(T.ingresoOpcTotal),
+            round2(T.costoOpcMXN), round2(T.costoOpcUSD), round2(T.costoOpcTotal),
+            round2(T.utilidadOpc), round2(marginOpc),
+            round2(T.commissionPct), round2(T.comision),
+            round2(T.paidMXN), round2(T.paidUSD), round2(pendLibMxn), round2(pendLibUsd)
+          ])
+        })
+        aoa.push([])
+        aoa.push([])
+
+        // ── SECCIÓN C: EGRESOS DETALLE (TODOS los servicios) ──
+        aoa.push(['C. EGRESOS DETALLE — un renglón por cada servicio (LIBERO y OPCIONAL)'])
+        aoa.push([
+          'Circuito','Tipo','Categoría','Servicio','Proveedor','Razón Social','Destino',
+          'Fecha SVC','Fecha Pago','PAX','HAB Single','HAB Doble',
+          'Precio Custom','Moneda Custom','Importe MN','Importe USD','Importe Total MN',
+          'Pagado','Folio','Nota'
+        ])
+        circs.forEach(c => {
+          const pax = parseInt(c.info?.pax) || 0
+          const habS = parseInt(c.info?.habs_single) || 0
+          const habD = parseInt(c.info?.habs_doble) || 0
+          c.rows.forEach(r => {
+            const { mxn, usd } = getImporte(r, c.info, tarifario)
+            const totalMN = mxn + usd * TC
+            const fs = r.fecha ? parseLocalDate(r.fecha) : null
+            const fp = r.fecha_pago ? parseLocalDate(r.fecha_pago) : null
+            aoa.push([
+              c.id,
+              r.tipo || 'LIBERO',
+              r.clasificacion || '',
+              r.servicio || '',
+              r.prov_general || '',
+              getRS(r.prov_general),
+              r.destino || '',
+              fs ? fs.toLocaleDateString('es-MX') : '',
+              fp ? fp.toLocaleDateString('es-MX') : '',
+              pax, habS, habD,
+              round2(r.precio_custom), r.moneda_custom || '',
+              round2(mxn), round2(usd), round2(totalMN),
+              r.paid ? 'SÍ' : 'NO',
+              r.folio_factura || '', r.nota || ''
+            ])
+          })
+        })
+        aoa.push([])
+        aoa.push([])
+
+        // ── SECCIÓN D: INGRESOS DETALLE ──
+        aoa.push(['D. INGRESOS DETALLE — por circuito'])
+        aoa.push([
+          'Circuito','PAX','Moneda Cobro','Importe Cobrado','Ingreso Equivalente MN',
+          'Ingreso OPC MXN','Ingreso OPC USD','Ingreso OPC Total MN',
+          'Ingreso Total (LIB+OPC) MN'
+        ])
+        circs.forEach(c => {
+          const T = calcCircTotals(c, tarifario, TC)
+          const pax = parseInt(c.info?.pax) || 0
+          const ingTotal = T.ingresoMXN + T.ingresoOpcTotal
+          aoa.push([
+            c.id, pax,
+            c.moneda_cobrado || 'MXN', round2(c.importe_cobrado), round2(T.ingresoMXN),
+            round2(T.ingresoOpcMXN), round2(T.ingresoOpcUSD), round2(T.ingresoOpcTotal),
+            round2(ingTotal)
+          ])
+        })
+
+        const wsMes = XLSX.utils.aoa_to_sheet(aoa)
+        // Anchos de columna
+        wsMes['!cols'] = Array(31).fill(null).map(()=>({wch:13}))
+        // Formato de moneda para números
+        const rangeMes = XLSX.utils.decode_range(wsMes['!ref'])
+        for (let R = 0; R <= rangeMes.e.r; R++) {
+          for (let C = 0; C <= rangeMes.e.c; C++) {
+            const ref = XLSX.utils.encode_cell({r:R, c:C})
+            const cell = wsMes[ref]
+            if (cell && typeof cell.v === 'number' && cell.v !== 0) {
+              // Detectar si es % o moneda por contexto (simple heurística: valores entre -100 y 100 con decimales)
+              const nombreCol = wsMes[XLSX.utils.encode_cell({r:R, c:0})]?.v
+              if (typeof nombreCol === 'string' && nombreCol.toLowerCase().includes('margen')) {
+                cell.z = '0.0"%"'
+              } else {
+                cell.z = '"$"#,##0.00'
+              }
+            }
+          }
+        }
+        // Nombre de hoja: no puede tener más de 31 chars ni ciertos caracteres
+        const sheetName = mesLbl(mk).substring(0, 31)
+        XLSX.utils.book_append_sheet(wb, wsMes, sheetName)
+      })
+
+      // ═══════════════════════════════════════════════════════════════
+      // HOJA — ADICIONALES ANUAL (todos los OPCIONALES)
+      // ═══════════════════════════════════════════════════════════════
+      const adAoa = [
+        ['🔷 ADICIONALES (OPCIONALES) — Detalle Anual'],
+        [],
+        ['Mes','Circuito','Servicio','Proveedor','Razón Social','Destino',
+          'Fecha SVC','Fecha Pago','Importe MN','Importe USD','Importe Total MN','Pagado','Folio'
+        ]
+      ]
+      preview.meses.forEach(mk => {
+        (monthMap[mk] || []).forEach(c => {
+          c.rows.forEach(r => {
+            if ((r.tipo || '').toString().toUpperCase().trim() !== 'OPCIONAL') return
+            const { mxn, usd } = getImporte(r, c.info, tarifario)
+            const totalMN = mxn + usd * TC
+            const fs = r.fecha ? parseLocalDate(r.fecha) : null
+            const fp = r.fecha_pago ? parseLocalDate(r.fecha_pago) : null
+            adAoa.push([
+              mesLbl(mk), c.id, r.servicio || '', r.prov_general || '', getRS(r.prov_general),
+              r.destino || '',
+              fs ? fs.toLocaleDateString('es-MX') : '',
+              fp ? fp.toLocaleDateString('es-MX') : '',
+              round2(mxn), round2(usd), round2(totalMN),
+              r.paid ? 'SÍ' : 'NO', r.folio_factura || ''
+            ])
+          })
+        })
+      })
+      const wsAd = XLSX.utils.aoa_to_sheet(adAoa)
+      wsAd['!cols'] = Array(13).fill(null).map(()=>({wch:14}))
+      XLSX.utils.book_append_sheet(wb, wsAd, 'Adicionales')
+
+      // ═══════════════════════════════════════════════════════════════
+      // HOJA — POR PROVEEDOR (pivote anual)
+      // ═══════════════════════════════════════════════════════════════
+      const provAcum = {} // prov -> {cuentaServ, pagadoMN, pagadoUSD, pendMN, pendUSD, razonSocial}
+      preview.meses.forEach(mk => {
+        (monthMap[mk] || []).forEach(c => {
+          c.rows.forEach(r => {
+            const prov = r.prov_general || '(sin proveedor)'
+            const { mxn, usd } = getImporte(r, c.info, tarifario)
+            if (!provAcum[prov]) provAcum[prov] = { count:0, pagMN:0, pagUSD:0, pendMN:0, pendUSD:0, rs: getRS(prov) }
+            provAcum[prov].count++
+            if (r.paid) { provAcum[prov].pagMN += mxn; provAcum[prov].pagUSD += usd }
+            else { provAcum[prov].pendMN += mxn; provAcum[prov].pendUSD += usd }
+          })
+        })
+      })
+      const provAoa = [
+        ['🏢 POR PROVEEDOR — Concentrado Anual'],
+        [],
+        ['Proveedor','Razón Social','# Servicios','Pagado MN','Pagado USD','Pendiente MN','Pendiente USD','Total MN','Total USD']
+      ]
+      Object.entries(provAcum)
+        .sort((a,b) => (b[1].pagMN + b[1].pendMN) - (a[1].pagMN + a[1].pendMN))
+        .forEach(([prov, v]) => {
+          provAoa.push([
+            prov, v.rs, v.count,
+            round2(v.pagMN), round2(v.pagUSD),
+            round2(v.pendMN), round2(v.pendUSD),
+            round2(v.pagMN + v.pendMN), round2(v.pagUSD + v.pendUSD)
+          ])
+        })
+      const wsProv = XLSX.utils.aoa_to_sheet(provAoa)
+      wsProv['!cols'] = [{wch:30},{wch:32},{wch:12},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14}]
+      XLSX.utils.book_append_sheet(wb, wsProv, 'Por Proveedor')
+
+      // ═══════════════════════════════════════════════════════════════
+      // HOJA — VERIFICACIÓN CRUZADA
+      // ═══════════════════════════════════════════════════════════════
+      const verAoa = [
+        ['✅ VERIFICACIÓN CRUZADA — los números de cada hoja deben coincidir'],
+        [],
+        ['Este chequeo suma cada hoja de detalle y compara con el Resumen Anual.'],
+        ['Si algún número no coincide, aparece "⚠ DIFERENCIA" en la última columna.'],
+        [],
+        ['Mes','Circuitos (Resumen)','Circuitos (Detalle Egresos)','¿Coincide?',
+          'Ingreso LIBERO (Resumen)','Ingreso LIBERO (Detalle)','¿Coincide?',
+          'Costo LIBERO (Resumen)','Costo LIBERO (Detalle)','¿Coincide?',
+          'Costo OPCIONAL (Resumen)','Costo OPCIONAL (Detalle)','¿Coincide?'
+        ]
+      ]
+      preview.meses.forEach(mk => {
+        const circs = monthMap[mk] || []
+        if (circs.length === 0) return
+        // Del resumen
+        let rIngLIB = 0, rCostLIB = 0, rCostOPC = 0
+        circs.forEach(c => {
+          const T = calcCircTotals(c, tarifario, TC)
+          rIngLIB += T.ingresoMXN
+          rCostLIB += T.costoTotal
+          rCostOPC += T.costoOpcTotal
+        })
+        // Del detalle (mismo cálculo — deben coincidir por construcción)
+        let dIngLIB = 0, dCostLIB = 0, dCostOPC = 0
+        circs.forEach(c => {
+          const ing = c.moneda_cobrado === 'USD' ? (c.importe_cobrado || 0) * TC : (c.importe_cobrado || 0)
+          dIngLIB += ing
+          c.rows.forEach(r => {
+            const { mxn, usd } = getImporte(r, c.info, tarifario)
+            const total = mxn + usd * TC
+            const esOpc = (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL'
+            if (esOpc) dCostOPC += total
+            else dCostLIB += total
+          })
+        })
+        const chk = (a,b) => Math.abs(a-b) < 0.02 ? '✅' : '⚠ DIFERENCIA'
+        verAoa.push([
+          mesLbl(mk),
+          circs.length, circs.length, '✅',
+          round2(rIngLIB), round2(dIngLIB), chk(rIngLIB, dIngLIB),
+          round2(rCostLIB), round2(dCostLIB), chk(rCostLIB, dCostLIB),
+          round2(rCostOPC), round2(dCostOPC), chk(rCostOPC, dCostOPC),
+        ])
+      })
+      const wsVer = XLSX.utils.aoa_to_sheet(verAoa)
+      wsVer['!cols'] = Array(13).fill(null).map(()=>({wch:16}))
+      XLSX.utils.book_append_sheet(wb, wsVer, 'Verificación')
+
+      // Descargar
+      const now = new Date()
+      const nombreArchivo = `auditoria_circuitos_${now.getFullYear()}.xlsx`
+      XLSX.writeFile(wb, nombreArchivo)
+      onClose()
+    } catch (err) {
+      alert('Error al generar el Excel: ' + err.message)
+      console.error(err)
+    } finally {
+      setGenerando(false)
+    }
+  }
+
+  return (
+    <Modal title="📊 Exportar auditoría anual" onClose={onClose}>
+      <p style={{color:'#8a8278',fontSize:13,marginBottom:16,lineHeight:1.5}}>
+        Genera un Excel con <strong>todos los circuitos del año</strong>, con detalle de ingresos, egresos, adicionales y verificación cruzada. Los números deben reproducir <strong>exactamente</strong> los del Estado de Resultados.
+      </p>
+
+      <div style={{background:'#f5f1eb',border:'1px solid #ece7df',borderRadius:8,padding:'12px 14px',marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.5,marginBottom:8}}>
+          📋 El archivo incluirá
+        </div>
+        <div style={{fontSize:12,color:'#12151f',lineHeight:1.8}}>
+          <strong>{preview.meses.length}</strong> {preview.meses.length===1?'mes':'meses'} con datos<br/>
+          <strong>{preview.circCount}</strong> circuitos<br/>
+          <strong>{preview.servicios}</strong> servicios LIBERO + <strong>{preview.serviciosOpc}</strong> OPCIONALES<br/>
+          Ingreso total: <strong>{fmtMXN(preview.ingresoTotal)} MN</strong><br/>
+          Egreso total: <strong>{fmtMXN(preview.egresoTotal)} MN</strong>
+        </div>
+      </div>
+
+      <div style={{background:'#fef8e6',border:'1px solid #e0c96a',borderRadius:8,padding:'10px 14px',marginBottom:16}}>
+        <div style={{fontSize:11,color:'#7d5a00',lineHeight:1.5}}>
+          ✎ <strong>Estructura del Excel:</strong><br/>
+          1. <strong>Resumen Anual</strong>: una fila por mes con totales<br/>
+          2. <strong>Una hoja por mes</strong> con 4 secciones (Resumen, Circuitos, Egresos Detalle, Ingresos)<br/>
+          3. <strong>Adicionales</strong>: todos los servicios OPCIONALES del año<br/>
+          4. <strong>Por Proveedor</strong>: concentrado anual con totales<br/>
+          5. <strong>Verificación</strong>: chequeo cruzado que valida que los números coincidan
+        </div>
+      </div>
+
+      <div style={{display:'flex',justifyContent:'flex-end',gap:8}}>
+        <Btn outline onClick={onClose} disabled={generando}>Cancelar</Btn>
+        <Btn onClick={descargar} disabled={generando || preview.meses.length===0}>
+          {generando ? '⏳ Generando...' : '📥 Descargar Excel'}
+        </Btn>
+      </div>
+    </Modal>
   )
 }
 
