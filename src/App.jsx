@@ -996,22 +996,34 @@ function Dashboard({ session }) {
           {view.type === 'resultados_all' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} />}
           {view.type === 'resultados_mes' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} initModo="mes" initMes={view.monthKey} />}
           {view.type === 'pagos' && <PagosView circuits={socioMode ? visibleCircuits : circuits} tarifario={tarifario} TC={TC} isReadOnly={isReadOnly} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
-          {view.type === 'circuit' && activeCircuit && getCliente(activeCircuit) === 'IMPRONTA' && (
-            <ImprontaCircuitDetail circ={activeCircuit} isReadOnly={isReadOnly}
-              saveCircInfo={saveCircInfo}
-              addIngreso={addIngreso} deleteIngreso={deleteIngreso}
-              addPrefactura={addPrefactura} deletePrefactura={deletePrefactura}
-              openLockModal={openLockModal}
-              onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
-          )}
-          {view.type === 'circuit' && activeCircuit && getCliente(activeCircuit) !== 'IMPRONTA' && (
-            <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
-              F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode} isReadOnly={isReadOnly}
-              togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
-              saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveCommission={saveCommission} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional} saveCircInfo={saveCircInfo}
-              openLockModal={openLockModal}
-              onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
-          )}
+          {view.type === 'circuit' && activeCircuit && (() => {
+            const esImpronta = getCliente(activeCircuit) === 'IMPRONTA'
+            const detalle = (
+              <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
+                F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode} isReadOnly={isReadOnly}
+                togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
+                saveProv={saveProv} saveImporte={saveImporte} saveImporteCobrado={saveImporteCobrado} saveCommission={saveCommission} saveFactura={saveFactura} saveRowField={saveRowField} addRow={addRow} deleteRow={deleteRow} saveOpcional={saveOpcional} saveCircInfo={saveCircInfo}
+                openLockModal={openLockModal}
+                addIngreso={addIngreso} deleteIngreso={deleteIngreso}
+                onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
+            )
+            if (!esImpronta) return detalle
+            // Wrapper temático Día de Muertos: define variables CSS + fondo oscuro + papel picado
+            return (
+              <div className="imp-skin" style={{ ...IMP_THEME, background: 'var(--imp-page)', color: 'var(--imp-ink)', margin: '-24px', minHeight: 'calc(100vh - 60px)' }}>
+                <style>{`
+                  .imp-skin input, .imp-skin select, .imp-skin textarea { color: var(--imp-ink); }
+                  .imp-skin input::placeholder, .imp-skin textarea::placeholder { color: var(--imp-muted); opacity: 1; }
+                  .imp-skin select option { color: #12151f; }
+                  .imp-skin table tr { border-color: var(--imp-border) !important; }
+                `}</style>
+                <div style={{ height: 14, background: 'repeating-linear-gradient(90deg, #d4537e 0 18px, transparent 18px 20px, #ef9f27 20px 38px, transparent 38px 40px, #1d9e75 40px 58px, transparent 58px 60px, #378add 60px 78px, transparent 78px 80px)' }} />
+                <div style={{ padding: 24 }}>
+                  {detalle}
+                </div>
+              </div>
+            )
+          })()}
         </main>
       </div>
 
@@ -5857,179 +5869,105 @@ function EditableInfoField({ label, value, type, onSave, isReadOnly }) {
 
 // ── Circuit Detail ──
 // ═══════════════════════════════════════════════════════════════════
-// ImprontaCircuitDetail — Vista de detalle propia para circuitos IMPRONTA
-// Tema Día de Muertos, con captura de cobros y pre-factura
+// IMP_THEME — paleta Día de Muertos (variables CSS para el wrapper)
 // ═══════════════════════════════════════════════════════════════════
-function ImprontaCircuitDetail({ circ, isReadOnly, saveCircInfo, addIngreso, deleteIngreso, addPrefactura, deletePrefactura, openLockModal, onDelete }) {
-  const [cobroModal, setCobroModal] = useState(false)
-  const [prefactModal, setPrefactModal] = useState(false)
+const IMP_THEME = {
+  '--imp-page': '#1a1420',
+  '--imp-surface': '#2a1d30',
+  '--imp-surface2': '#241528',
+  '--imp-ink': '#f3e9ec',
+  '--imp-muted': '#b79aa4',
+  '--imp-border': 'rgba(255,255,255,.14)',
+  '--imp-accent': '#ef9f27',
+  '--imp-blue': '#6bb4f0',
+  '--imp-green': '#5dcaa5',
+  '--imp-red': '#e8788f',
+  '--imp-green-bg': '#16241d',
+  '--imp-red-bg': '#2a1820',
+  '--imp-accent-bg': '#2a2210',
+}
 
+// ═══════════════════════════════════════════════════════════════════
+// ImprontaCobrosPanel — ingreso total + cobros recibidos (sin pre-factura)
+// ═══════════════════════════════════════════════════════════════════
+function ImprontaCobrosPanel({ circ, isReadOnly, addIngreso, deleteIngreso }) {
+  const [cobroModal, setCobroModal] = useState(false)
   const ingresos = circ.ingresos || []
-  const prefactura = circ.prefactura || []
   const totalEsperado = parseFloat(circ.importe_cobrado) || 0
   const moneda = circ.moneda_cobrado || 'USD'
   const totalCobrado = ingresos.reduce((s, i) => s + (parseFloat(i.monto) || 0), 0)
   const saldoPend = totalEsperado - totalCobrado
   const pctCobrado = totalEsperado > 0 ? Math.round((totalCobrado / totalEsperado) * 100) : 0
   const completo = totalEsperado > 0 && totalCobrado >= totalEsperado - 0.01
-  const totalPrefact = prefactura.reduce((s, p) => s + (parseFloat(p.importe) || 0), 0)
-
-  const nombre = circ.info?.nombre || circ.info?.tl || circ.id
-  const fi = circ.info?.fecha_inicio
-  const ff = circ.info?.fecha_fin
-  const fmtF = (f) => f ? (f instanceof Date ? f : parseLocalDate(f)).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
   const fmtFecha = (f) => {
     if (!f) return '—'
     const d = parseLocalDate(f)
     return d ? d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
   }
-
   return (
-    <div style={{ background: '#1a1420', borderRadius: 14, overflow: 'hidden', margin: '-24px', minHeight: 'calc(100vh - 60px)' }}>
-      <div style={{ height: 14, background: 'repeating-linear-gradient(90deg, #d4537e 0 18px, transparent 18px 20px, #ef9f27 20px 38px, transparent 38px 40px, #1d9e75 40px 58px, transparent 58px 60px, #378add 60px 78px, transparent 78px 80px)' }} />
-
-      <div style={{ padding: '24px 28px' }}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-              <span style={{ fontSize: 20 }}>💀</span>
-              <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, color: '#fff', margin: 0 }}>{circ.id}</h2>
-              {circ.grupo && <span style={{ fontSize: 11, color: '#ef9f27', background: '#ef9f2722', padding: '3px 10px', borderRadius: 12 }}>{circ.grupo}</span>}
-            </div>
-            <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18, color: '#c99', marginBottom: 10 }}>{nombre}</div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 12, color: '#c99', background: '#ffffff10', padding: '4px 10px', borderRadius: 7 }}>📅 {fmtF(fi)} – {fmtF(ff)}</span>
-              <span style={{ fontSize: 12, color: '#c99', background: '#ffffff10', padding: '4px 10px', borderRadius: 7 }}>👤 {circ.info?.pax || '—'} pax</span>
-              {circ.info?.tl && <span style={{ fontSize: 12, color: '#c99', background: '#ffffff10', padding: '4px 10px', borderRadius: 7 }}>🧑‍💼 {circ.info.tl}</span>}
-            </div>
+    <div style={{ marginBottom: 16, borderRadius: 14, overflow: 'hidden', background: '#241528', border: '1px solid #d4537e55' }}>
+      <div style={{ height: 8, background: 'repeating-linear-gradient(90deg, #d4537e 0 14px, transparent 14px 16px, #ef9f27 16px 30px, transparent 30px 32px, #1d9e75 32px 46px, transparent 46px 48px, #378add 48px 62px, transparent 62px 64px)' }} />
+      <div style={{ padding: '16px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 16 }}>💀</span>
+            <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 17, color: '#ef9f27', fontWeight: 700 }}>Cobranza IMPRONTA</span>
           </div>
           {!isReadOnly && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <button onClick={() => openLockModal(circ.id, circ.locked ? 'unlock' : 'lock')}
-                style={{ background: '#2a1d30', border: '1px solid #ffffff22', color: circ.locked ? '#ef9f27' : '#c99', borderRadius: 8, padding: '7px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
-                {circ.locked ? '🔓 Abrir' : '🔒 Cerrar'}
-              </button>
-              <button onClick={() => onDelete(circ.id)}
-                style={{ background: '#2a1d30', border: '1px solid #d4537e44', color: '#d4537e', borderRadius: 8, padding: '7px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
-                🗑 Eliminar
-              </button>
-            </div>
+            <button onClick={() => setCobroModal(true)}
+              style={{ background: '#1d9e7522', border: '1px solid #5dcaa555', color: '#5dcaa5', borderRadius: 7, padding: '6px 13px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+              + Registrar cobro
+            </button>
           )}
         </div>
 
-        {/* KPIs de cobranza */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 18 }}>
-          <div style={{ background: '#2a1d30', border: '1px solid #5dcaa533', borderRadius: 12, padding: '14px 18px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
             <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Ingreso total</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: '#5dcaa5' }}>{fmtUSD(totalEsperado)} <span style={{ fontSize: 12, color: '#789' }}>{moneda}</span></div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#5dcaa5' }}>{fmtUSD(totalEsperado)} <span style={{ fontSize: 11, color: '#789' }}>{moneda}</span></div>
           </div>
-          <div style={{ background: '#2a1d30', border: '1px solid #ef9f2733', borderRadius: 12, padding: '14px 18px' }}>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
             <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Cobrado</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: '#ef9f27' }}>{fmtUSD(totalCobrado)}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#ef9f27' }}>{fmtUSD(totalCobrado)}</div>
           </div>
-          <div style={{ background: '#2a1d30', border: `1px solid ${completo ? '#5dcaa533' : '#d4537e33'}`, borderRadius: 12, padding: '14px 18px' }}>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
             <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Saldo pendiente</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: completo ? '#5dcaa5' : '#d4537e' }}>{fmtUSD(Math.abs(saldoPend))}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: completo ? '#5dcaa5' : '#d4537e' }}>{fmtUSD(Math.abs(saldoPend))}</div>
           </div>
         </div>
 
-        {/* Barra de cobranza */}
-        <div style={{ height: 6, background: '#ffffff12', borderRadius: 3, overflow: 'hidden', marginBottom: 6 }}>
+        <div style={{ height: 6, background: '#ffffff12', borderRadius: 3, overflow: 'hidden', marginBottom: 8 }}>
           <div style={{ height: '100%', width: Math.min(pctCobrado, 100) + '%', background: completo ? '#5dcaa5' : '#ef9f27', borderRadius: 3 }} />
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <span style={{ fontSize: 11, color: '#a88' }}>Cobrado {pctCobrado}% del total</span>
           <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 10, background: completo ? '#1d9e7533' : '#ef9f2733', color: completo ? '#5dcaa5' : '#ef9f27' }}>
             {completo ? '✅ Cobrado completo' : '⏳ Cobranza parcial'}
           </span>
         </div>
 
-        {/* Dos columnas: pre-factura + cobros */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20 }}>
-          {/* Pre-factura */}
-          <div style={{ background: '#241528', borderRadius: 12, padding: 18 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: '#ef9f27', textTransform: 'uppercase', letterSpacing: .5 }}>📄 Pre-factura (c/IVA)</span>
-              {!isReadOnly && (
-                <button onClick={() => setPrefactModal(true)}
-                  style={{ background: '#ef9f2722', border: '1px solid #ef9f2755', color: '#ef9f27', borderRadius: 7, padding: '5px 11px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
-                  + Agregar línea
-                </button>
-              )}
-            </div>
-            {prefactura.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic', padding: '8px 0' }}>Sin líneas de pre-factura.</div>
-            ) : (
-              <div>
-                {prefactura.map((p, i) => (
-                  <div key={p.id || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #ffffff0a' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 12, color: '#fff' }}>{p.concepto}</div>
-                      <div style={{ fontSize: 10, color: '#a88' }}>{p.cantidad} × {fmtUSD(p.precio_unit)}</div>
-                    </div>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: '#fff', fontFamily: "'IBM Plex Mono',monospace", marginRight: 10 }}>{fmtUSD(p.importe)}</span>
-                    {!isReadOnly && (
-                      <button onClick={() => deletePrefactura(circ.id, p.id)}
-                        style={{ background: 'none', border: 'none', color: '#d4537e', cursor: 'pointer', fontSize: 14, padding: 0 }}>×</button>
-                    )}
-                  </div>
-                ))}
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', marginTop: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#ef9f27' }}>Total pre-factura</span>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(totalPrefact)}</span>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#c99', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>🏦 Cobros recibidos</div>
+        {ingresos.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic', padding: '4px 0' }}>Sin cobros registrados aún.</div>
+        ) : (
+          <div style={{ background: '#ffffff06', borderRadius: 10, padding: '4px 0' }}>
+            {ingresos.map((ing, i) => (
+              <div key={ing.id || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderBottom: i < ingresos.length - 1 ? '1px solid #ffffff0a' : 'none' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, color: '#fff', fontWeight: 600 }}>{ing.concepto || 'Cobro'}</div>
+                  <div style={{ fontSize: 10, color: '#a88' }}>{fmtFecha(ing.fecha)}{ing.referencia ? ' · ' + ing.referencia : ''}</div>
                 </div>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace", marginRight: 10 }}>{fmtUSD(ing.monto)}</span>
+                {!isReadOnly && (
+                  <button onClick={() => deleteIngreso(circ.id, ing.id)}
+                    style={{ background: 'none', border: 'none', color: '#d4537e', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
+                )}
               </div>
-            )}
+            ))}
           </div>
-
-          {/* Cobros */}
-          <div style={{ background: '#241528', borderRadius: 12, padding: 18 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: '#5dcaa5', textTransform: 'uppercase', letterSpacing: .5 }}>🏦 Cobros recibidos</span>
-              {!isReadOnly && (
-                <button onClick={() => setCobroModal(true)}
-                  style={{ background: '#1d9e7522', border: '1px solid #5dcaa555', color: '#5dcaa5', borderRadius: 7, padding: '5px 11px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
-                  + Registrar cobro
-                </button>
-              )}
-            </div>
-            {ingresos.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic', padding: '8px 0' }}>Sin cobros registrados aún.</div>
-            ) : (
-              <div>
-                {ingresos.map((ing, i) => (
-                  <div key={ing.id || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #ffffff0a' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 12, color: '#fff', fontWeight: 600 }}>{ing.concepto || 'Cobro'}</div>
-                      <div style={{ fontSize: 10, color: '#a88' }}>{fmtFecha(ing.fecha)}{ing.referencia ? ' · ' + ing.referencia : ''}</div>
-                    </div>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace", marginRight: 10 }}>{fmtUSD(ing.monto)}</span>
-                    {!isReadOnly && (
-                      <button onClick={() => deleteIngreso(circ.id, ing.id)}
-                        style={{ background: 'none', border: 'none', color: '#d4537e', cursor: 'pointer', fontSize: 14, padding: 0 }}>×</button>
-                    )}
-                  </div>
-                ))}
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', marginTop: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#5dcaa5' }}>Total cobrado</span>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(totalCobrado)}</span>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Nota sobre costos/itinerario */}
-        <div style={{ marginTop: 24, padding: '14px 18px', background: '#ffffff06', borderRadius: 10, border: '1px dashed #ffffff22' }}>
-          <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic' }}>
-            💡 Los costos e itinerario de este circuito se cargarán en el siguiente paso.
-          </div>
-        </div>
+        )}
       </div>
-
       {cobroModal && <RegistrarCobroModal circ={circ} onSave={(data)=>{ addIngreso(circ.id, data); setCobroModal(false) }} onClose={()=>setCobroModal(false)} />}
-      {prefactModal && <AgregarPrefacturaModal circ={circ} onSave={(data)=>{ addPrefactura(circ.id, data); setPrefactModal(false) }} onClose={()=>setPrefactModal(false)} />}
     </div>
   )
 }
@@ -6042,7 +5980,6 @@ function RegistrarCobroModal({ circ, onSave, onClose }) {
   const [referencia, setReferencia] = useState('')
   const [moneda, setMoneda] = useState(circ.moneda_cobrado || 'USD')
   const valido = fecha && parseFloat(monto) > 0
-
   return (
     <Modal title="🏦 Registrar cobro" onClose={onClose}>
       <div style={{ display: 'grid', gap: 12 }}>
@@ -6086,152 +6023,7 @@ function RegistrarCobroModal({ circ, onSave, onClose }) {
   )
 }
 
-// Modal: agregar línea de pre-factura
-function AgregarPrefacturaModal({ circ, onSave, onClose }) {
-  const [concepto, setConcepto] = useState('')
-  const [cantidad, setCantidad] = useState('')
-  const [precio, setPrecio] = useState('')
-  const [moneda, setMoneda] = useState(circ.moneda_cobrado || 'USD')
-  const importe = (parseFloat(cantidad) || 0) * (parseFloat(precio) || 0)
-  const valido = concepto.trim() && parseFloat(cantidad) > 0 && parseFloat(precio) > 0
-
-  return (
-    <Modal title="📄 Agregar línea de pre-factura" onClose={onClose}>
-      <div style={{ display: 'grid', gap: 12 }}>
-        <div>
-          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Concepto *</label>
-          <input type="text" value={concepto} onChange={e=>setConcepto(e.target.value)} placeholder="20 pax en DBL"
-            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Cantidad *</label>
-            <input type="number" step="0.01" value={cantidad} onChange={e=>setCantidad(e.target.value)} placeholder="20"
-              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Precio c/IVA *</label>
-            <input type="number" step="0.01" value={precio} onChange={e=>setPrecio(e.target.value)} placeholder="1090"
-              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Moneda</label>
-            <select value={moneda} onChange={e=>setMoneda(e.target.value)}
-              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', boxSizing: 'border-box' }}>
-              <option value="USD">USD</option>
-              <option value="MXN">MXN</option>
-              <option value="EUR">EUR</option>
-            </select>
-          </div>
-        </div>
-        <div style={{ background: '#f5f1eb', borderRadius: 8, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: '#8a8278' }}>Importe (cantidad × precio)</span>
-          <span style={{ fontSize: 16, fontWeight: 700, color: '#12151f' }}>{fmtUSD(importe)} {moneda}</span>
-        </div>
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-        <Btn outline onClick={onClose}>Cancelar</Btn>
-        <Btn disabled={!valido} onClick={()=>onSave({ concepto, cantidad, precio_unit: precio, moneda })}>Agregar línea ✓</Btn>
-      </div>
-    </Modal>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ImprontaCobranzaPanel — muestra pre-factura + cobros de un circuito IMPRONTA
-// ═══════════════════════════════════════════════════════════════════
-function ImprontaCobranzaPanel({ circ }) {
-  const ingresos = circ.ingresos || []
-  const prefactura = circ.prefactura || []
-  const totalEsperado = parseFloat(circ.importe_cobrado) || 0
-  const moneda = circ.moneda_cobrado || 'USD'
-  const totalCobrado = ingresos.reduce((s, i) => s + (parseFloat(i.monto) || 0), 0)
-  const saldoPend = totalEsperado - totalCobrado
-  const pctCobrado = totalEsperado > 0 ? Math.round((totalCobrado / totalEsperado) * 100) : 0
-  const completo = totalEsperado > 0 && totalCobrado >= totalEsperado - 0.01
-  const totalPrefact = prefactura.reduce((s, p) => s + (parseFloat(p.importe) || 0), 0)
-
-  const fmtFecha = (f) => {
-    if (!f) return '—'
-    const d = parseLocalDate(f)
-    return d ? d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
-  }
-
-  return (
-    <div style={{ marginBottom: 16, borderRadius: 14, overflow: 'hidden', background: '#241528', border: '1px solid #d4537e55' }}>
-      <div style={{ height: 8, background: 'repeating-linear-gradient(90deg, #d4537e 0 14px, transparent 14px 16px, #ef9f27 16px 30px, transparent 30px 32px, #1d9e75 32px 46px, transparent 46px 48px, #378add 48px 62px, transparent 62px 64px)' }} />
-      <div style={{ padding: '16px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <span style={{ fontSize: 16 }}>💀</span>
-          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 17, color: '#ef9f27', fontWeight: 700 }}>Cobranza IMPRONTA</span>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 18 }}>
-          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
-            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Ingreso total</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: '#5dcaa5' }}>{fmtUSD(totalEsperado)} <span style={{ fontSize: 11, color: '#789' }}>{moneda}</span></div>
-          </div>
-          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
-            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Cobrado</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: '#ef9f27' }}>{fmtUSD(totalCobrado)}</div>
-          </div>
-          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
-            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Saldo pendiente</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: completo ? '#5dcaa5' : '#d4537e' }}>{fmtUSD(Math.abs(saldoPend))}</div>
-          </div>
-        </div>
-
-        {/* Barra */}
-        <div style={{ height: 6, background: '#ffffff12', borderRadius: 3, overflow: 'hidden', marginBottom: 18 }}>
-          <div style={{ height: '100%', width: Math.min(pctCobrado, 100) + '%', background: completo ? '#5dcaa5' : '#ef9f27', borderRadius: 3 }} />
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 18 }}>
-          {/* Pre-factura */}
-          {prefactura.length > 0 && (
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#c99', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>📄 Pre-factura (c/IVA)</div>
-              <div style={{ background: '#ffffff06', borderRadius: 10, padding: '4px 0' }}>
-                {prefactura.map((p, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 14px', borderBottom: i < prefactura.length - 1 ? '1px solid #ffffff0a' : 'none' }}>
-                    <span style={{ fontSize: 12, color: '#d9cccc' }}>{p.concepto}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#fff', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(p.importe)}</span>
-                  </div>
-                ))}
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderTop: '1px solid #ffffff15', marginTop: 2 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#ef9f27' }}>Total</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(totalPrefact)}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Cobros */}
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#c99', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>🏦 Cobros recibidos</div>
-            {ingresos.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic', padding: '8px 0' }}>Sin cobros registrados aún.</div>
-            ) : (
-              <div style={{ background: '#ffffff06', borderRadius: 10, padding: '4px 0' }}>
-                {ingresos.map((ing, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 14px', borderBottom: i < ingresos.length - 1 ? '1px solid #ffffff0a' : 'none' }}>
-                    <div>
-                      <div style={{ fontSize: 12, color: '#fff', fontWeight: 600 }}>{ing.concepto || 'Cobro'}</div>
-                      <div style={{ fontSize: 10, color: '#a88' }}>{fmtFecha(ing.fecha)}{ing.referencia ? ' · ' + ing.referencia : ''}</div>
-                    </div>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(ing.monto)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, socioMode, isReadOnly, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveCommission, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, openLockModal, onDelete }) {
+function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, socioMode, isReadOnly, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveCommission, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, openLockModal, onDelete, addIngreso, deleteIngreso }) {
   const [editIC, setEditIC] = useState(false)
   const [icVal, setIcVal] = useState(circ.importe_cobrado || '')
   const [editOpc, setEditOpc] = useState(false)
@@ -6260,13 +6052,13 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
   const confirmOpc = () => { saveOpcional(circ.id,'ingreso_opcional_mxn', opcMXN); saveOpcional(circ.id,'ingreso_opcional_usd', opcUSD); setEditOpc(false) }
 
   const BannerBtn = ({onClick,children}) => (
-    <button onClick={onClick} style={{background:'none',border:'none',color:'#b8952a',cursor:'pointer',fontSize:11,fontWeight:700,padding:'2px 6px',borderRadius:4,textDecoration:'underline dotted'}}>
+    <button onClick={onClick} style={{background:'none',border:'none',color:'var(--imp-accent,#b8952a)',cursor:'pointer',fontSize:11,fontWeight:700,padding:'2px 6px',borderRadius:4,textDecoration:'underline dotted'}}>
       {children}
     </button>
   )
   const UtilBadge = ({util}) => util >= 0
-    ? <span className="num" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:'#1e5c3a'}}>{fmtMXN(util)} MN</span>
-    : <span className="num" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:'#b83232'}}>{fmtMXN(Math.abs(util))} MN</span>
+    ? <span className="num" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:'var(--imp-green,#1e5c3a)'}}>{fmtMXN(util)} MN</span>
+    : <span className="num" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:700,color:'var(--imp-red,#b83232)'}}>{fmtMXN(Math.abs(util))} MN</span>
 
   return (
     <div>
@@ -6276,44 +6068,44 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
           <h2 style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:22,marginBottom:6}}>{circ.id}</h2>
           <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-start'}}>
             {/* Fecha (solo lectura) */}
-            <div><div style={{fontSize:11,color:'#8a8278'}}>Fecha</div><div style={{fontSize:13,fontWeight:600}}>{fStr}</div></div>
+            <div><div style={{fontSize:11,color:'var(--imp-muted,#8a8278)'}}>Fecha</div><div style={{fontSize:13,fontWeight:600}}>{fStr}</div></div>
             {/* TL, PAX, Operador — editables inline */}
             {[['tl','Tour Leader','text'],['pax','PAX','number'],['operador','Operador','text']].map(([field,label,type]) => (
               <EditableInfoField key={field} label={label} value={circ.info?.[field]} type={type} isReadOnly={isReadOnly}
                 onSave={v => saveCircInfo(circ.id, {[field]: type==='number'?parseInt(v)||0:v})}/>
             ))}
             {/* Habitaciones Single + Doble */}
-            <div style={{borderLeft:'1px solid #d8d2c8',paddingLeft:16}}>
-              <div style={{fontSize:11,color:'#8a8278',marginBottom:4}}>Número de habitaciones</div>
+            <div style={{borderLeft:'1px solid var(--imp-border,#d8d2c8)',paddingLeft:16}}>
+              <div style={{fontSize:11,color:'var(--imp-muted,#8a8278)',marginBottom:4}}>Número de habitaciones</div>
               {editHabs ? (
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
                   <div>
-                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278',marginBottom:2}}>SINGLE</div>
+                    <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)',marginBottom:2}}>SINGLE</div>
                     <input type="number" min="0" value={habSingle} onChange={e=>setHabSingle(e.target.value)} autoFocus
-                      style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:56}}/>
+                      style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:56}}/>
                   </div>
                   <div>
-                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278',marginBottom:2}}>DOBLE</div>
+                    <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)',marginBottom:2}}>DOBLE</div>
                     <input type="number" min="0" value={habDoble} onChange={e=>setHabDoble(e.target.value)}
-                      style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:56}}/>
+                      style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:56}}/>
                   </div>
                   <div style={{display:'flex',gap:4,marginTop:14}}>
                     <button onClick={()=>{saveCircInfo(circ.id,{habs_single:parseInt(habSingle)||0,habs_doble:parseInt(habDoble)||0});setEditHabs(false)}}
-                      style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:5,padding:'3px 9px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
-                    <button onClick={()=>setEditHabs(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                      style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:5,padding:'3px 9px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                    <button onClick={()=>setEditHabs(false)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button>
                   </div>
                 </div>
               ) : (
                 <div onClick={()=>setEditHabs(true)} style={{cursor:'pointer',display:'flex',gap:10}}>
                   <div style={{textAlign:'center'}}>
-                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278'}}>SINGLE</div>
-                    <div style={{fontSize:15,fontWeight:700,borderBottom:'1px dotted #b8952a',minWidth:28,textAlign:'center'}}>{circ.info?.habs_single||'—'}</div>
+                    <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)'}}>SINGLE</div>
+                    <div style={{fontSize:15,fontWeight:700,borderBottom:'1px dotted var(--imp-accent,#b8952a)',minWidth:28,textAlign:'center'}}>{circ.info?.habs_single||'—'}</div>
                   </div>
                   <div style={{textAlign:'center'}}>
-                    <div style={{fontSize:9,fontWeight:700,color:'#8a8278'}}>DOBLE</div>
-                    <div style={{fontSize:15,fontWeight:700,borderBottom:'1px dotted #b8952a',minWidth:28,textAlign:'center'}}>{circ.info?.habs_doble||'—'}</div>
+                    <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)'}}>DOBLE</div>
+                    <div style={{fontSize:15,fontWeight:700,borderBottom:'1px dotted var(--imp-accent,#b8952a)',minWidth:28,textAlign:'center'}}>{circ.info?.habs_doble||'—'}</div>
                   </div>
-                  <span style={{fontSize:10,color:'#b8952a',marginTop:14}}>✎</span>
+                  <span style={{fontSize:10,color:'var(--imp-accent,#b8952a)',marginTop:14}}>✎</span>
                 </div>
               )}
             </div>
@@ -6322,18 +6114,18 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
         {!isReadOnly && (
           <div style={{display:'flex',gap:8,flexDirection:'column',alignItems:'flex-end'}}>
             {circ.locked ? (
-              <button onClick={() => openLockModal(circ.id, 'unlock')} style={{background:'#fef8e6',border:'1px solid #e0c96a',color:'#7d5a00',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>🔓 Abrir circuito</button>
+              <button onClick={() => openLockModal(circ.id, 'unlock')} style={{background:'var(--imp-accent-bg,#fef8e6)',border:'1px solid var(--imp-accent,#e0c96a)',color:'#7d5a00',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>🔓 Abrir circuito</button>
             ) : (
-              <button onClick={() => openLockModal(circ.id, 'lock')} style={{background:'none',border:'1px solid #d8d2c8',color:'#8a8278',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12,whiteSpace:'nowrap'}}>🔒 Cerrar circuito</button>
+              <button onClick={() => openLockModal(circ.id, 'lock')} style={{background:'none',border:'1px solid var(--imp-border,#d8d2c8)',color:'var(--imp-muted,#8a8278)',padding:'6px 13px',borderRadius:7,cursor:'pointer',fontSize:12,whiteSpace:'nowrap'}}>🔒 Cerrar circuito</button>
             )}
-            <button onClick={() => onDelete(circ.id)} disabled={circ.locked} style={{background:'none',border:'1px solid #d8d2c8',color: circ.locked?'#ccc':'#8a8278',padding:'6px 13px',borderRadius:7,cursor: circ.locked?'not-allowed':'pointer',fontSize:12,whiteSpace:'nowrap'}}>🗑 Eliminar</button>
+            <button onClick={() => onDelete(circ.id)} disabled={circ.locked} style={{background:'none',border:'1px solid var(--imp-border,#d8d2c8)',color: circ.locked?'var(--imp-border,#ccc)':'var(--imp-muted,#8a8278)',padding:'6px 13px',borderRadius:7,cursor: circ.locked?'not-allowed':'pointer',fontSize:12,whiteSpace:'nowrap'}}>🗑 Eliminar</button>
           </div>
         )}
       </div>
 
       {/* Banner de circuito bloqueado */}
       {circ.locked && (
-        <div style={{ background: '#fef8e6', border: '1px solid #e0c96a', borderRadius: 10, padding: '10px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ background: 'var(--imp-accent-bg,#fef8e6)', border: '1px solid var(--imp-accent,#e0c96a)', borderRadius: 10, padding: '10px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 18 }}>🔒</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: '#7d5a00' }}>Circuito cerrado</div>
@@ -6343,70 +6135,70 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
       )}
 
       {/* ── PANEL DE COBRANZA IMPRONTA ── */}
-      {getCliente(circ) === 'IMPRONTA' && <ImprontaCobranzaPanel circ={circ} />}
+      {getCliente(circ) === 'IMPRONTA' && <ImprontaCobrosPanel circ={circ} isReadOnly={isReadOnly} addIngreso={addIngreso} deleteIngreso={deleteIngreso} />}
 
       {/* ── BANNERS DE UTILIDAD — DOS COLUMNAS (UNA EN VISTA SOCIO) ── */}
       <div style={{display:'grid',gridTemplateColumns: socioMode ? '1fr' : '1fr 1fr',gap:12,marginBottom:16}}>
 
         {/* LIBERO */}
-        <div style={{background: hayIngLib ? (T.utilidadNeta>=0?'#f0faf4':'#fff5f5') : '#fafafa', border:`1px solid ${hayIngLib?(T.utilidadNeta>=0?'#95d5b2':'#fca5a5'):'#d8d2c8'}`, borderRadius:12, padding:'14px 18px'}}>
+        <div style={{background: hayIngLib ? (T.utilidadNeta>=0?'var(--imp-green-bg,#f0faf4)':'var(--imp-red-bg,#fff5f5)') : 'var(--imp-surface,#fafafa)', border:`1px solid ${hayIngLib?(T.utilidadNeta>=0?'#95d5b2':'#fca5a5'):'var(--imp-border,#d8d2c8)'}`, borderRadius:12, padding:'14px 18px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
             <div>
-              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'#1e5c3a',marginBottom:2}}>🔵 Circuito {socioMode ? '' : 'LIBERO'}</div>
-              <div style={{fontSize:10,color:'#8a8278'}}>{lib} servicios incluidos</div>
+              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'var(--imp-green,#1e5c3a)',marginBottom:2}}>🔵 Circuito {socioMode ? '' : 'LIBERO'}</div>
+              <div style={{fontSize:10,color:'var(--imp-muted,#8a8278)'}}>{lib} servicios incluidos</div>
             </div>
             <div style={{textAlign:'right'}}>
               {hayIngLib ? <>
-                {T.utilidadNeta>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD{T.commissionPct>0?' BRUTA':''}</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA{T.commissionPct>0?' BRUTA':''}</span>}
+                {T.utilidadNeta>=0?<span style={{fontSize:9,fontWeight:700,color:'var(--imp-green,#1e5c3a)',textTransform:'uppercase'}}>✅ UTILIDAD{T.commissionPct>0?' BRUTA':''}</span>:<span style={{fontSize:9,fontWeight:700,color:'var(--imp-red,#b83232)',textTransform:'uppercase'}}>❌ PÉRDIDA{T.commissionPct>0?' BRUTA':''}</span>}
                 <br/><UtilBadge util={T.utilidadNeta}/>
-                {T.ingresoMXN>0&&<div style={{fontSize:10,color:'#8a8278'}}>Margen: {((T.utilidadNeta/T.ingresoMXN)*100).toFixed(1)}%</div>}
-              </> : <span style={{fontSize:11,color:'#8a8278'}}>Sin ingreso</span>}
+                {T.ingresoMXN>0&&<div style={{fontSize:10,color:'var(--imp-muted,#8a8278)'}}>Margen: {((T.utilidadNeta/T.ingresoMXN)*100).toFixed(1)}%</div>}
+              </> : <span style={{fontSize:11,color:'var(--imp-muted,#8a8278)'}}>Sin ingreso</span>}
             </div>
           </div>
           <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
             <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Cobrado al cliente</div>
+              <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',marginBottom:2}}>Cobrado al cliente</div>
               {editIC ? (
                 <div style={{display:'flex',gap:5,alignItems:'center'}}>
-                  <input type="number" value={icVal} onChange={e=>setIcVal(e.target.value)} placeholder="0.00" autoFocus style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:110}}/>
-                  <span style={{fontSize:11,fontWeight:700,color:'#1565a0'}}>USD</span>
-                  <button onClick={confirmIC} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
-                  <button onClick={()=>setEditIC(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                  <input type="number" value={icVal} onChange={e=>setIcVal(e.target.value)} placeholder="0.00" autoFocus style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:110}}/>
+                  <span style={{fontSize:11,fontWeight:700,color:'var(--imp-blue,#1565a0)'}}>USD</span>
+                  <button onClick={confirmIC} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                  <button onClick={()=>setEditIC(false)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button>
                 </div>
               ) : (
                 <div onClick={()=>{if(isReadOnly)return;setEditIC(true)}} style={{cursor:isReadOnly?'default':'pointer'}}>
-                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:hayIngLib?'#1565a0':'#8a8278',borderBottom:isReadOnly?'none':'1px dotted #b8952a'}}>
-                    {hayIngLib?fmtUSD(circ.importe_cobrado):(isReadOnly?'—':'Clic para capturar')} {!isReadOnly && <span style={{fontSize:10,color:'#b8952a'}}>✎</span>}
+                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:hayIngLib?'var(--imp-blue,#1565a0)':'var(--imp-muted,#8a8278)',borderBottom:isReadOnly?'none':'1px dotted var(--imp-accent,#b8952a)'}}>
+                    {hayIngLib?fmtUSD(circ.importe_cobrado):(isReadOnly?'—':'Clic para capturar')} {!isReadOnly && <span style={{fontSize:10,color:'var(--imp-accent,#b8952a)'}}>✎</span>}
                   </span>
-                  {hayIngLib&&<div style={{fontSize:10,color:'#8a8278'}}>{fmtMXN(circ.importe_cobrado*TC)} MN</div>}
+                  {hayIngLib&&<div style={{fontSize:10,color:'var(--imp-muted,#8a8278)'}}>{fmtMXN(circ.importe_cobrado*TC)} MN</div>}
                 </div>
               )}
             </div>
-            <div style={{width:1,background:'#d8d2c8'}}/>
+            <div style={{width:1,background:'var(--imp-border,#d8d2c8)'}}/>
             <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Costo {socioMode ? '' : 'LIBERO'}</div>
-              <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'#b83232'}}>{fmtMXN(T.costoTotal)} MN</span>
-              {T.costoUSD>0&&<div style={{fontSize:10,color:'#1565a0'}}>{fmtUSD(T.costoUSD)}</div>}
+              <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',marginBottom:2}}>Costo {socioMode ? '' : 'LIBERO'}</div>
+              <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'var(--imp-red,#b83232)'}}>{fmtMXN(T.costoTotal)} MN</span>
+              {T.costoUSD>0&&<div style={{fontSize:10,color:'var(--imp-blue,#1565a0)'}}>{fmtUSD(T.costoUSD)}</div>}
             </div>
-            <div style={{width:1,background:'#d8d2c8'}}/>
+            <div style={{width:1,background:'var(--imp-border,#d8d2c8)'}}/>
             {/* Comisión a Socio (Pietro Lamprati) */}
             <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>👥 Comisión Pietro</div>
+              <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',marginBottom:2}}>👥 Comisión Pietro</div>
               {editCom ? (
                 <div style={{display:'flex',gap:5,alignItems:'center'}}>
                   <input type="number" step="0.01" min="0" value={comVal} onChange={e=>setComVal(e.target.value)} placeholder="0" autoFocus
-                    style={{border:'1px solid #b8952a',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:60}}/>
-                  <span style={{fontSize:11,fontWeight:700,color:'#8a8278'}}>%</span>
-                  <button onClick={()=>{ saveCommission(circ.id, comVal); setEditCom(false) }} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
-                  <button onClick={()=>{ setComVal(circ.commission_pct ?? ''); setEditCom(false) }} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                    style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:5,padding:'3px 7px',fontSize:12,fontFamily:'inherit',width:60}}/>
+                  <span style={{fontSize:11,fontWeight:700,color:'var(--imp-muted,#8a8278)'}}>%</span>
+                  <button onClick={()=>{ saveCommission(circ.id, comVal); setEditCom(false) }} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                  <button onClick={()=>{ setComVal(circ.commission_pct ?? ''); setEditCom(false) }} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button>
                 </div>
               ) : (
                 <div onClick={()=>{if(isReadOnly)return;setEditCom(true)}} style={{cursor:isReadOnly?'default':'pointer'}}>
-                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:T.commissionPct>0?'#a05a00':'#8a8278',borderBottom:isReadOnly?'none':'1px dotted #b8952a'}}>
-                    {T.commissionPct>0 ? `${T.commissionPct}%` : '0%'} {!isReadOnly && <span style={{fontSize:10,color:'#b8952a'}}>✎</span>}
+                  <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:T.commissionPct>0?'#a05a00':'var(--imp-muted,#8a8278)',borderBottom:isReadOnly?'none':'1px dotted var(--imp-accent,#b8952a)'}}>
+                    {T.commissionPct>0 ? `${T.commissionPct}%` : '0%'} {!isReadOnly && <span style={{fontSize:10,color:'var(--imp-accent,#b8952a)'}}>✎</span>}
                   </span>
                   {T.commissionPct>0 && hayIngLib && <div style={{fontSize:10,color:'#a05a00'}}>−{fmtMXN(T.comision)} MN</div>}
-                  {!T.commissionPct && !isReadOnly && <div style={{fontSize:10,color:'#8a8278',fontStyle:'italic'}}>Clic para capturar</div>}
+                  {!T.commissionPct && !isReadOnly && <div style={{fontSize:10,color:'var(--imp-muted,#8a8278)',fontStyle:'italic'}}>Clic para capturar</div>}
                 </div>
               )}
             </div>
@@ -6415,49 +6207,49 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
 
         {/* OPCIONAL — oculto en Vista Socio */}
         {!socioMode && (
-        <div style={{background: hayIngOpc?(T.utilidadOpc>=0?'#f0f4ff':'#fff5f5'):'#fafafa', border:`1px solid ${hayIngOpc?(T.utilidadOpc>=0?'#93c5fd':'#fca5a5'):'#d8d2c8'}`, borderRadius:12, padding:'14px 18px'}}>
+        <div style={{background: hayIngOpc?(T.utilidadOpc>=0?'var(--imp-surface2,#f0f4ff)':'var(--imp-red-bg,#fff5f5)'):'var(--imp-surface,#fafafa)', border:`1px solid ${hayIngOpc?(T.utilidadOpc>=0?'#93c5fd':'#fca5a5'):'var(--imp-border,#d8d2c8)'}`, borderRadius:12, padding:'14px 18px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
             <div>
-              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'#1565a0',marginBottom:2}}>🔷 Opcionales</div>
-              <div style={{fontSize:10,color:'#8a8278'}}>{opc} servicios opcionales</div>
+              <div style={{fontSize:10,fontWeight:800,textTransform:'uppercase',letterSpacing:.8,color:'var(--imp-blue,#1565a0)',marginBottom:2}}>🔷 Opcionales</div>
+              <div style={{fontSize:10,color:'var(--imp-muted,#8a8278)'}}>{opc} servicios opcionales</div>
             </div>
             <div style={{textAlign:'right'}}>
-              {hayIngOpc ? <>{T.utilidadOpc>=0?<span style={{fontSize:9,fontWeight:700,color:'#1e5c3a',textTransform:'uppercase'}}>✅ UTILIDAD</span>:<span style={{fontSize:9,fontWeight:700,color:'#b83232',textTransform:'uppercase'}}>❌ PÉRDIDA</span>}<br/><UtilBadge util={T.utilidadOpc}/>{T.ingresoOpcTotal>0&&<div style={{fontSize:10,color:'#8a8278'}}>Margen: {((T.utilidadOpc/T.ingresoOpcTotal)*100).toFixed(1)}%</div>}</> : <span style={{fontSize:11,color:'#8a8278'}}>Sin ingreso</span>}
+              {hayIngOpc ? <>{T.utilidadOpc>=0?<span style={{fontSize:9,fontWeight:700,color:'var(--imp-green,#1e5c3a)',textTransform:'uppercase'}}>✅ UTILIDAD</span>:<span style={{fontSize:9,fontWeight:700,color:'var(--imp-red,#b83232)',textTransform:'uppercase'}}>❌ PÉRDIDA</span>}<br/><UtilBadge util={T.utilidadOpc}/>{T.ingresoOpcTotal>0&&<div style={{fontSize:10,color:'var(--imp-muted,#8a8278)'}}>Margen: {((T.utilidadOpc/T.ingresoOpcTotal)*100).toFixed(1)}%</div>}</> : <span style={{fontSize:11,color:'var(--imp-muted,#8a8278)'}}>Sin ingreso</span>}
             </div>
           </div>
           <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
             <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Ingresos opcionales</div>
+              <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',marginBottom:2}}>Ingresos opcionales</div>
               {editOpc ? (
                 <div>
                   <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
-                    <input type="number" value={opcMXN} onChange={e=>setOpcMXN(e.target.value)} placeholder="0.00" style={{border:'1px solid #1565a0',borderRadius:5,padding:'3px 7px',fontSize:11,fontFamily:'inherit',width:90}}/>
-                    <span style={{fontSize:10,fontWeight:700,color:'#8a8278'}}>MXN</span>
+                    <input type="number" value={opcMXN} onChange={e=>setOpcMXN(e.target.value)} placeholder="0.00" style={{border:'1px solid var(--imp-blue,#1565a0)',borderRadius:5,padding:'3px 7px',fontSize:11,fontFamily:'inherit',width:90}}/>
+                    <span style={{fontSize:10,fontWeight:700,color:'var(--imp-muted,#8a8278)'}}>MXN</span>
                   </div>
                   <div style={{display:'flex',gap:5,alignItems:'center'}}>
-                    <input type="number" value={opcUSD} onChange={e=>setOpcUSD(e.target.value)} placeholder="0.00" style={{border:'1px solid #1565a0',borderRadius:5,padding:'3px 7px',fontSize:11,fontFamily:'inherit',width:90}}/>
-                    <span style={{fontSize:10,fontWeight:700,color:'#1565a0'}}>USD</span>
-                    <button onClick={confirmOpc} style={{background:'#1565a0',color:'#fff',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
-                    <button onClick={()=>setEditOpc(false)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button>
+                    <input type="number" value={opcUSD} onChange={e=>setOpcUSD(e.target.value)} placeholder="0.00" style={{border:'1px solid var(--imp-blue,#1565a0)',borderRadius:5,padding:'3px 7px',fontSize:11,fontFamily:'inherit',width:90}}/>
+                    <span style={{fontSize:10,fontWeight:700,color:'var(--imp-blue,#1565a0)'}}>USD</span>
+                    <button onClick={confirmOpc} style={{background:'var(--imp-blue,#1565a0)',color:'#fff',border:'none',borderRadius:5,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button>
+                    <button onClick={()=>setEditOpc(false)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button>
                   </div>
                 </div>
               ) : (
                 <div onClick={()=>{if(isReadOnly)return;setEditOpc(true)}} style={{cursor:isReadOnly?'default':'pointer'}}>
                   {hayIngOpc ? (
                     <div>
-                      {T.ingresoOpcMXN>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>{fmtMXN(T.ingresoOpcMXN)} <span style={{fontSize:10,color:'#8a8278'}}>MXN</span></div>}
-                      {T.ingresoOpcUSD>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700,color:'#1565a0'}}>{fmtUSD(T.ingresoOpcUSD)} <span style={{fontSize:10}}>USD</span></div>}
-                      {!isReadOnly && <span style={{fontSize:10,color:'#b8952a'}}>✎ editar</span>}
+                      {T.ingresoOpcMXN>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700}}>{fmtMXN(T.ingresoOpcMXN)} <span style={{fontSize:10,color:'var(--imp-muted,#8a8278)'}}>MXN</span></div>}
+                      {T.ingresoOpcUSD>0&&<div style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:15,fontWeight:700,color:'var(--imp-blue,#1565a0)'}}>{fmtUSD(T.ingresoOpcUSD)} <span style={{fontSize:10}}>USD</span></div>}
+                      {!isReadOnly && <span style={{fontSize:10,color:'var(--imp-accent,#b8952a)'}}>✎ editar</span>}
                     </div>
-                  ) : <span style={{fontSize:13,color:'#8a8278',borderBottom:'1px dotted #1565a0'}}>Clic para capturar <span style={{color:'#b8952a'}}>✎</span></span>}
+                  ) : <span style={{fontSize:13,color:'var(--imp-muted,#8a8278)',borderBottom:'1px dotted var(--imp-blue,#1565a0)'}}>Clic para capturar <span style={{color:'var(--imp-accent,#b8952a)'}}>✎</span></span>}
                 </div>
               )}
             </div>
-            <div style={{width:1,background:'#d8d2c8'}}/>
+            <div style={{width:1,background:'var(--imp-border,#d8d2c8)'}}/>
             <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#8a8278',textTransform:'uppercase',marginBottom:2}}>Costo Opcionales</div>
-              <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'#b83232'}}>{fmtMXN(T.costoOpcTotal)} MN</span>
-              {T.costoOpcUSD>0&&<div style={{fontSize:10,color:'#1565a0'}}>{fmtUSD(T.costoOpcUSD)}</div>}
+              <div style={{fontSize:9,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',marginBottom:2}}>Costo Opcionales</div>
+              <span style={{fontFamily:'Cormorant Garamond,Georgia,serif',fontSize:18,fontWeight:700,color:'var(--imp-red,#b83232)'}}>{fmtMXN(T.costoOpcTotal)} MN</span>
+              {T.costoOpcUSD>0&&<div style={{fontSize:10,color:'var(--imp-blue,#1565a0)'}}>{fmtUSD(T.costoOpcUSD)}</div>}
             </div>
           </div>
         </div>
@@ -6477,9 +6269,9 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
       ]} />
 
       {/* Tabs */}
-      <div style={{display:'flex',gap:3,background:'#ece7df',borderRadius:10,padding:3,marginBottom:18,width:'fit-content',flexWrap:'wrap'}}>
+      <div style={{display:'flex',gap:3,background:'var(--imp-border,#ece7df)',borderRadius:10,padding:3,marginBottom:18,width:'fit-content',flexWrap:'wrap'}}>
         {[['cxp','💳 CxP'],['proveedores','🏢 Proveedores'],['timeline','📅 Timeline']].map(([id,label]) => (
-          <button key={id} onClick={()=>setActiveTab(id)} style={{padding:'7px 15px',border:'none',background:activeTab===id?'#fff':'transparent',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:activeTab===id?700:500,color:activeTab===id?'#12151f':'#8a8278',fontFamily:'inherit'}}>{label}</button>
+          <button key={id} onClick={()=>setActiveTab(id)} style={{padding:'7px 15px',border:'none',background:activeTab===id?'#fff':'transparent',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:activeTab===id?700:500,color:activeTab===id?'#12151f':'var(--imp-muted,#8a8278)',fontFamily:'inherit'}}>{label}</button>
         ))}
       </div>
 
@@ -6562,72 +6354,72 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
   const FBtn = ({fkey,val,label,activeColor}) => {
     const isActive=F[fkey]===val
     return <button onClick={()=>setFilters(p=>({...p,[fkey]:val}))}
-      style={{padding:'4px 11px',borderRadius:14,border:`1.5px solid ${isActive?'transparent':'#d8d2c8'}`,background:isActive?(activeColor||'#12151f'):'#f5f1eb',color:isActive?(activeColor==='#b8952a'?'#12151f':'#fff'):'#8a8278',cursor:'pointer',fontSize:11,fontWeight:500,fontFamily:'inherit'}}>{label}</button>
+      style={{padding:'4px 11px',borderRadius:14,border:`1.5px solid ${isActive?'transparent':'var(--imp-border,#d8d2c8)'}`,background:isActive?(activeColor||'#12151f'):'var(--imp-surface2,#f5f1eb)',color:isActive?(activeColor==='var(--imp-accent,#b8952a)'?'#12151f':'#fff'):'var(--imp-muted,#8a8278)',cursor:'pointer',fontSize:11,fontWeight:500,fontFamily:'inherit'}}>{label}</button>
   }
 
   const hayFiltros = F.tipo!=='ALL'||F.cat!=='ALL'||F.pago!=='ALL'||F.fecha||F.proveedor!=='ALL'||busqueda.trim()
   const EditTD = ({children,onClick,style}) => <td onClick={onClick} style={{padding:'8px 10px',cursor:'pointer',...style}} title="Clic para editar">{children}</td>
   const YesNo = ({val,onClick,small}) => (
-    <button onClick={isReadOnly ? undefined : onClick} disabled={isReadOnly} style={{padding:small?'2px 8px':'3px 10px',borderRadius:12,border:'none',cursor:isReadOnly?'default':'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',background:val?'#d8f3dc':'#ffe0e0',color:val?'#1b4332':'#7f1d1d',whiteSpace:'nowrap',opacity:isReadOnly?0.85:1}}>
+    <button onClick={isReadOnly ? undefined : onClick} disabled={isReadOnly} style={{padding:small?'2px 8px':'3px 10px',borderRadius:12,border:'none',cursor:isReadOnly?'default':'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',background:val?'#d8f3dc':'#ffe0e0',color:val?'var(--imp-green,#1b4332)':'#7f1d1d',whiteSpace:'nowrap',opacity:isReadOnly?0.85:1}}>
       {val?'✅ Sí':'❌ No'}
     </button>
   )
 
   return (
     <div>
-      <div style={{background:'#fff',borderRadius:12,padding:'12px 14px',boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:14}}>
-        <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10,paddingBottom:10,borderBottom:'1px solid #f0ebe3'}}>
+      <div style={{background:'var(--imp-surface,#fff)',borderRadius:12,padding:'12px 14px',boxShadow:'0 2px 16px rgba(18,21,31,.07)',marginBottom:14}}>
+        <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10,paddingBottom:10,borderBottom:'1px solid var(--imp-surface2,#f0ebe3)'}}>
           <span style={{fontSize:15}}>🔍</span>
           <input type="text" value={busqueda} onChange={e=>setBusqueda(e.target.value)}
             placeholder="Buscar por proveedor, folio, servicio, tipo, importe…"
-            style={{flex:1,border:'1.5px solid #d8d2c8',borderRadius:20,padding:'6px 14px',fontFamily:'inherit',fontSize:12,outline:'none',background:busqueda?'#fffdf5':'#f5f1eb'}}
-            onFocus={e=>e.target.style.borderColor='#b8952a'} onBlur={e=>e.target.style.borderColor='#d8d2c8'}/>
-          {busqueda&&<button onClick={()=>setBusqueda('')} style={{background:'none',border:'none',color:'#8a8278',cursor:'pointer',fontSize:16}}>✕</button>}
+            style={{flex:1,border:'1.5px solid var(--imp-border,#d8d2c8)',borderRadius:20,padding:'6px 14px',fontFamily:'inherit',fontSize:12,outline:'none',background:busqueda?'var(--imp-surface,#fffdf5)':'var(--imp-surface2,#f5f1eb)'}}
+            onFocus={e=>e.target.style.borderColor='var(--imp-accent,#b8952a)'} onBlur={e=>e.target.style.borderColor='var(--imp-border,#d8d2c8)'}/>
+          {busqueda&&<button onClick={()=>setBusqueda('')} style={{background:'none',border:'none',color:'var(--imp-muted,#8a8278)',cursor:'pointer',fontSize:16}}>✕</button>}
         </div>
         {[
           {key:'tipo',label:'Tipo',opts: socioMode
-            ? [['ALL','#12151f','Todos'],['LIBERO','#1e5c3a','🔵 LIBERO']]
-            : [['ALL','#12151f','Todos'],['LIBERO','#1e5c3a','🔵 LIBERO'],['OPCIONAL','#1565a0','🔷 OPCIONAL']]},
-          {key:'cat',label:'Categoría',opts:[['ALL','#b8952a','Todas'],['HOSPEDAJE','#b8952a','🏨 Hospedaje'],['TRANSPORTE','#b8952a','🚌 Transporte'],['ACTIVIDADES','#b8952a','🎯 Actividades'],['ALIMENTOS','#b8952a','🍽 Alimentos'],['GUIA','#b8952a','🧭 Guía']]},
-          {key:'pago',label:'Estatus',opts:[['ALL','#12151f','Todos'],['PAID','#1e5c3a','✅ Pagado'],['UNPAID','#b83232','⏳ Pendiente']]},
+            ? [['ALL','#12151f','Todos'],['LIBERO','var(--imp-green,#1e5c3a)','🔵 LIBERO']]
+            : [['ALL','#12151f','Todos'],['LIBERO','var(--imp-green,#1e5c3a)','🔵 LIBERO'],['OPCIONAL','var(--imp-blue,#1565a0)','🔷 OPCIONAL']]},
+          {key:'cat',label:'Categoría',opts:[['ALL','var(--imp-accent,#b8952a)','Todas'],['HOSPEDAJE','var(--imp-accent,#b8952a)','🏨 Hospedaje'],['TRANSPORTE','var(--imp-accent,#b8952a)','🚌 Transporte'],['ACTIVIDADES','var(--imp-accent,#b8952a)','🎯 Actividades'],['ALIMENTOS','var(--imp-accent,#b8952a)','🍽 Alimentos'],['GUIA','var(--imp-accent,#b8952a)','🧭 Guía']]},
+          {key:'pago',label:'Estatus',opts:[['ALL','#12151f','Todos'],['PAID','var(--imp-green,#1e5c3a)','✅ Pagado'],['UNPAID','var(--imp-red,#b83232)','⏳ Pendiente']]},
         ].map(({key,label,opts})=>(
           <div key={key} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:7}}>
-            <span style={{fontSize:10,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>{label}</span>
+            <span style={{fontSize:10,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>{label}</span>
             {opts.map(([val,color,lbl])=><FBtn key={val} fkey={key} val={val} label={lbl} activeColor={color}/>)}
           </div>
         ))}
         <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:7}}>
-          <span style={{fontSize:10,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>Proveedor</span>
+          <span style={{fontSize:10,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>Proveedor</span>
           <select value={F.proveedor} onChange={e=>setFilters(p=>({...p,proveedor:e.target.value}))}
-            style={{border:`1.5px solid ${F.proveedor!=='ALL'?'#b8952a':'#d8d2c8'}`,borderRadius:14,padding:'4px 10px',fontFamily:'inherit',fontSize:11,background:F.proveedor!=='ALL'?'#fffdf5':'#f5f1eb',color:'#12151f',cursor:'pointer',outline:'none',minWidth:160}}>
+            style={{border:`1.5px solid ${F.proveedor!=='ALL'?'var(--imp-accent,#b8952a)':'var(--imp-border,#d8d2c8)'}`,borderRadius:14,padding:'4px 10px',fontFamily:'inherit',fontSize:11,background:F.proveedor!=='ALL'?'var(--imp-surface,#fffdf5)':'var(--imp-surface2,#f5f1eb)',color:'var(--imp-ink,#12151f)',cursor:'pointer',outline:'none',minWidth:160}}>
             <option value="ALL">Todos los proveedores</option>
             {proveedoresCircuito.map(p=><option key={p} value={p}>{p}</option>)}
           </select>
-          {F.proveedor!=='ALL'&&<button onClick={()=>setFilters(p=>({...p,proveedor:'ALL'}))} style={{fontSize:11,background:'none',border:'none',color:'#8a8278',cursor:'pointer'}}>✕</button>}
+          {F.proveedor!=='ALL'&&<button onClick={()=>setFilters(p=>({...p,proveedor:'ALL'}))} style={{fontSize:11,background:'none',border:'none',color:'var(--imp-muted,#8a8278)',cursor:'pointer'}}>✕</button>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <span style={{fontSize:10,fontWeight:700,color:'#8a8278',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>Fecha Pago</span>
-          <input type="date" value={F.fecha} onChange={e=>setFilters(p=>({...p,fecha:e.target.value}))} style={{border:'1.5px solid #d8d2c8',borderRadius:14,padding:'4px 10px',fontFamily:'inherit',fontSize:11,background:'#f5f1eb'}}/>
-          {F.fecha&&<button onClick={()=>setFilters(p=>({...p,fecha:''}))} style={{fontSize:11,background:'none',border:'none',color:'#8a8278',cursor:'pointer'}}>✕</button>}
+          <span style={{fontSize:10,fontWeight:700,color:'var(--imp-muted,#8a8278)',textTransform:'uppercase',letterSpacing:.6,minWidth:64}}>Fecha Pago</span>
+          <input type="date" value={F.fecha} onChange={e=>setFilters(p=>({...p,fecha:e.target.value}))} style={{border:'1.5px solid var(--imp-border,#d8d2c8)',borderRadius:14,padding:'4px 10px',fontFamily:'inherit',fontSize:11,background:'var(--imp-surface2,#f5f1eb)'}}/>
+          {F.fecha&&<button onClick={()=>setFilters(p=>({...p,fecha:''}))} style={{fontSize:11,background:'none',border:'none',color:'var(--imp-muted,#8a8278)',cursor:'pointer'}}>✕</button>}
         </div>
       </div>
 
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-        <div style={{fontSize:12,color:'#8a8278',display:'flex',alignItems:'center',gap:10}}>
-          {hayFiltros&&<><span>Mostrando <strong>{rows.length}</strong> de {circ.rows.length} servicios</span><button onClick={()=>{setFilters({tipo:'ALL',cat:'ALL',pago:'ALL',fecha:'',proveedor:'ALL'});setBusqueda('')}} style={{fontSize:11,background:'none',border:'1px solid #d8d2c8',borderRadius:10,padding:'2px 8px',color:'#8a8278',cursor:'pointer'}}>Limpiar filtros</button></>}
+        <div style={{fontSize:12,color:'var(--imp-muted,#8a8278)',display:'flex',alignItems:'center',gap:10}}>
+          {hayFiltros&&<><span>Mostrando <strong>{rows.length}</strong> de {circ.rows.length} servicios</span><button onClick={()=>{setFilters({tipo:'ALL',cat:'ALL',pago:'ALL',fecha:'',proveedor:'ALL'});setBusqueda('')}} style={{fontSize:11,background:'none',border:'1px solid var(--imp-border,#d8d2c8)',borderRadius:10,padding:'2px 8px',color:'var(--imp-muted,#8a8278)',cursor:'pointer'}}>Limpiar filtros</button></>}
         </div>
-        {!isReadOnly && <button onClick={()=>addRow(circ.id)} style={{background:'#12151f',color:'#e0c96a',border:'none',borderRadius:8,padding:'7px 14px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>＋ Agregar servicio</button>}
+        {!isReadOnly && <button onClick={()=>addRow(circ.id)} style={{background:'#12151f',color:'var(--imp-accent,#e0c96a)',border:'none',borderRadius:8,padding:'7px 14px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>＋ Agregar servicio</button>}
       </div>
 
       {rows.length===0
-        ? <div style={{textAlign:'center',padding:'40px 20px',color:'#8a8278',fontSize:13}}>🔍 Sin resultados</div>
+        ? <div style={{textAlign:'center',padding:'40px 20px',color:'var(--imp-muted,#8a8278)',fontSize:13}}>🔍 Sin resultados</div>
         : (
           <div style={{borderRadius:12,boxShadow:'0 2px 16px rgba(18,21,31,.07)',overflow:'hidden'}}>
             {/* Scroll superior — usa scrollWidth exacto */}
-            <div ref={topScrollRef} style={{overflowX:'scroll',overflowY:'hidden',height:16,background:'#f0ebe3',borderBottom:'1px solid #e0d9d0'}}>
+            <div ref={topScrollRef} style={{overflowX:'scroll',overflowY:'hidden',height:16,background:'var(--imp-surface2,#f0ebe3)',borderBottom:'1px solid #e0d9d0'}}>
               <div style={{width:tableInnerW?tableInnerW+'px':'200%',height:1,minWidth:'100%'}}/>
             </div>
-            <div ref={tableRef} style={{background:'#fff',overflowX:'auto'}}>
+            <div ref={tableRef} style={{background:'var(--imp-surface,#fff)',overflowX:'auto'}}>
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:1700}}>
                 <thead>
                   <tr style={{background:'#070a12',color:'#fff'}}>
@@ -6645,58 +6437,58 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
                     if (r.fecha){const d=parseLocalDate(r.fecha);dStr=d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}
                     const InlineBtn = ({f,display}) => eC(f)
                       ? null
-                      : <span onClick={()=>startEdit(r.id,f,r)} style={{cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{display}</span>
+                      : <span onClick={()=>startEdit(r.id,f,r)} style={{cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':'1px dotted var(--imp-border,#d8d2c8)'}}>{display}</span>
 
                     return (
-                      <tr key={r.id} style={{borderBottom:'1px solid #ece7df',background:r.paid?'#f0faf4':'transparent'}}>
+                      <tr key={r.id} style={{borderBottom:'1px solid var(--imp-border,#ece7df)',background:r.paid?'var(--imp-green-bg,#f0faf4)':'transparent'}}>
 
                         {/* Fecha */}
                         <td style={{padding:'8px 8px',whiteSpace:'nowrap',minWidth:90}}>
                           {eC('fecha')
-                            ? <div style={{display:'flex',gap:3}}><input type="date" autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:110}}/><button onClick={()=>confirmEdit(circ.id,r.id,'fecha')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'fecha',r)} style={{cursor:isReadOnly?'default':'pointer',fontSize:11,borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{dStr}</span>}
+                            ? <div style={{display:'flex',gap:3}}><input type="date" autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:110}}/><button onClick={()=>confirmEdit(circ.id,r.id,'fecha')} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'fecha',r)} style={{cursor:isReadOnly?'default':'pointer',fontSize:11,borderBottom:isReadOnly?'none':'1px dotted var(--imp-border,#d8d2c8)'}}>{dStr}</span>}
                         </td>
 
                         {/* Destino */}
                         <td style={{padding:'8px 8px',minWidth:90}}>
                           {eC('destino')
-                            ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:90}}/><button onClick={()=>confirmEdit(circ.id,r.id,'destino')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'destino',r)} style={{cursor:isReadOnly?'default':'pointer',fontSize:11,borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{r.destino||'—'}</span>}
+                            ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:90}}/><button onClick={()=>confirmEdit(circ.id,r.id,'destino')} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'destino',r)} style={{cursor:isReadOnly?'default':'pointer',fontSize:11,borderBottom:isReadOnly?'none':'1px dotted var(--imp-border,#d8d2c8)'}}>{r.destino||'—'}</span>}
                         </td>
 
                         {/* Categoría */}
                         <td style={{padding:'8px 8px',minWidth:110}}>
                           {eC('clasificacion')
-                            ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'#fff'}}>
+                            ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'var(--imp-surface,#fff)'}}>
                                 {['HOSPEDAJE','TRANSPORTE','ACTIVIDADES','ALIMENTOS','GUIA','OTRO'].map(o=><option key={o}>{o}</option>)}
-                              </select><button onClick={()=>confirmEdit(circ.id,r.id,'clasificacion')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                              </select><button onClick={()=>confirmEdit(circ.id,r.id,'clasificacion')} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button></div>
                             : <span onClick={()=>startEdit(r.id,'clasificacion',r)} style={{cursor:isReadOnly?'default':'pointer'}}><Badge text={r.clasificacion}/></span>}
                         </td>
 
                         {/* Servicio */}
                         <td style={{padding:'8px 8px',minWidth:130}}>
                           {eC('servicio')
-                            ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:120}}/><button onClick={()=>confirmEdit(circ.id,r.id,'servicio')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
-                            : <span onClick={()=>startEdit(r.id,'servicio',r)} style={{cursor:isReadOnly?'default':'pointer',fontWeight:500,fontSize:11,borderBottom:isReadOnly?'none':'1px dotted #d8d2c8'}}>{r.servicio||'—'}</span>}
+                            ? <div style={{display:'flex',gap:3}}><input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',width:120}}/><button onClick={()=>confirmEdit(circ.id,r.id,'servicio')} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            : <span onClick={()=>startEdit(r.id,'servicio',r)} style={{cursor:isReadOnly?'default':'pointer',fontWeight:500,fontSize:11,borderBottom:isReadOnly?'none':'1px dotted var(--imp-border,#d8d2c8)'}}>{r.servicio||'—'}</span>}
                         </td>
 
                         {/* Tipo */}
                         <td style={{padding:'8px 8px',minWidth:90}}>
                           {eC('tipo')
-                            ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'#fff'}}>
+                            ? <div style={{display:'flex',gap:3}}><select autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'2px 5px',fontSize:11,fontFamily:'inherit',background:'var(--imp-surface,#fff)'}}>
                                 <option>LIBERO</option><option>OPCIONAL</option>
-                              </select><button onClick={()=>confirmEdit(circ.id,r.id,'tipo')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                              </select><button onClick={()=>confirmEdit(circ.id,r.id,'tipo')} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button></div>
                             : <span onClick={()=>startEdit(r.id,'tipo',r)} style={{cursor:isReadOnly?'default':'pointer'}}><TipoBadge tipo={r.tipo}/></span>}
                         </td>
 
                         {/* Proveedor */}
                         <td style={{padding:'8px 8px',minWidth:155}}>
                           {eC('prov')
-                            ? <div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'3px 6px',fontSize:11,fontFamily:'inherit',background:'#fff',maxWidth:150}}><option value="">— Sin proveedor —</option>{tarifario.map(t=><option key={t.id||t.proveedor} value={t.proveedor}>{t.proveedor}{(t.tipo_tarifa||'precio_fijo')==='precio_pax'?' 👥 x PAX':''}</option>)}</select><button onClick={()=>confirmEdit(circ.id,r.id,'prov')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div>
+                            ? <div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'3px 6px',fontSize:11,fontFamily:'inherit',background:'var(--imp-surface,#fff)',maxWidth:150}}><option value="">— Sin proveedor —</option>{tarifario.map(t=><option key={t.id||t.proveedor} value={t.proveedor}>{t.proveedor}{(t.tipo_tarifa||'precio_fijo')==='precio_pax'?' 👥 x PAX':''}</option>)}</select><button onClick={()=>confirmEdit(circ.id,r.id,'prov')} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button></div>
                             : <div>
-                                <span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':'1px dotted #b8952a'}}>{r.prov_general||<span style={{color:'#ccc'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'#b83232',fontSize:10}}> ⚠</span>}</span>
-                                {dc>0&&!r.paid&&<div style={{fontSize:9,color:'#8a8278'}}>{dc}d crédito</div>}
-                                {(()=>{ const t=tarifario.find(x=>(x.tipo_tarifa||'precio_fijo')==='precio_pax'&&x.proveedor===r.prov_general); if(!t) return null; const pax=parseInt(circ.info?.pax)||0; const tl=t.incluye_tl?1:0; return <div style={{fontSize:9,color:'#1565a0',fontWeight:600,marginTop:1}}>👥 {pax+tl} PAX{t.incluye_tl?' (c/TL)':''} × {t.moneda==='USD'?'$'+t.precio_pax+' USD':'$'+t.precio_pax+' MN'}</div> })()}
+                                <span onClick={()=>startEdit(r.id,'prov',r)} style={{fontWeight:600,fontSize:11,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':'1px dotted var(--imp-accent,#b8952a)'}}>{r.prov_general||<span style={{color:'var(--imp-border,#ccc)'}}>Sin proveedor</span>}{!found&&tarifario.length>0&&<span style={{color:'var(--imp-red,#b83232)',fontSize:10}}> ⚠</span>}</span>
+                                {dc>0&&!r.paid&&<div style={{fontSize:9,color:'var(--imp-muted,#8a8278)'}}>{dc}d crédito</div>}
+                                {(()=>{ const t=tarifario.find(x=>(x.tipo_tarifa||'precio_fijo')==='precio_pax'&&x.proveedor===r.prov_general); if(!t) return null; const pax=parseInt(circ.info?.pax)||0; const tl=t.incluye_tl?1:0; return <div style={{fontSize:9,color:'var(--imp-blue,#1565a0)',fontWeight:600,marginTop:1}}>👥 {pax+tl} PAX{t.incluye_tl?' (c/TL)':''} × {t.moneda==='USD'?'$'+t.precio_pax+' USD':'$'+t.precio_pax+' MN'}</div> })()}
                                 {/* Temporada detectada automáticamente por fecha */}
                                 {(r.clasificacion||'').toUpperCase()==='HOSPEDAJE'&&(()=>{
                                   const svcDate = r.fecha ? (parseLocalDate(r.fecha)) : null
@@ -6712,7 +6504,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
                                     return start<=end ? svcMD>=start&&svcMD<=end : svcMD>=start||svcMD<=end
                                   })
                                   if(!matched || (matched.temporada||'General')==='General') return null
-                                  return <div style={{fontSize:9,color:'#1565a0',fontWeight:600,marginTop:2}}>📅 {matched.temporada} ({matched.temp_inicio}→{matched.temp_fin})</div>
+                                  return <div style={{fontSize:9,color:'var(--imp-blue,#1565a0)',fontWeight:600,marginTop:2}}>📅 {matched.temporada} ({matched.temp_inicio}→{matched.temp_fin})</div>
                                 })()}
                               </div>}
                         </td>
@@ -6720,13 +6512,13 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
                         {/* MXN */}
                         <td style={{padding:'8px 8px',minWidth:105}}>
                           {eC('importe')
-                            ? <div style={{display:'flex',flexDirection:'column',gap:3}}><input type="number" value={editVal} onChange={e=>setEditVal(e.target.value)} placeholder="Importe" autoFocus style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 6px',fontSize:11,fontFamily:'inherit',width:90}}/><div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editMoneda} onChange={e=>setEditMoneda(e.target.value)} style={{border:'1px solid #b8952a',borderRadius:4,padding:'2px 4px',fontSize:11,fontFamily:'inherit',background:'#fff'}}><option>MXN</option><option>USD</option></select><button onClick={()=>confirmEdit(circ.id,r.id,'importe')} style={{background:'#b8952a',color:'#12151f',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'#aaa',cursor:'pointer',fontSize:14}}>✕</button></div></div>
-                            : <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':`1px dotted ${custom?'#b8952a':'#ddd'}`,color:custom?'#b8952a':'#12151f'}}>{mxn>0?fmtMXN(mxn):<span style={{color:'#ccc'}}>—</span>}{custom&&mxn>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>}
+                            ? <div style={{display:'flex',flexDirection:'column',gap:3}}><input type="number" value={editVal} onChange={e=>setEditVal(e.target.value)} placeholder="Importe" autoFocus style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'2px 6px',fontSize:11,fontFamily:'inherit',width:90}}/><div style={{display:'flex',gap:3,alignItems:'center'}}><select value={editMoneda} onChange={e=>setEditMoneda(e.target.value)} style={{border:'1px solid var(--imp-accent,#b8952a)',borderRadius:4,padding:'2px 4px',fontSize:11,fontFamily:'inherit',background:'var(--imp-surface,#fff)'}}><option>MXN</option><option>USD</option></select><button onClick={()=>confirmEdit(circ.id,r.id,'importe')} style={{background:'var(--imp-accent,#b8952a)',color:'var(--imp-ink,#12151f)',border:'none',borderRadius:4,padding:'2px 7px',fontSize:11,cursor:'pointer',fontWeight:700}}>✓</button><button onClick={()=>setEditCell(null)} style={{background:'none',border:'none',color:'var(--imp-muted,#aaa)',cursor:'pointer',fontSize:14}}>✕</button></div></div>
+                            : <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':`1px dotted ${custom?'var(--imp-accent,#b8952a)':'var(--imp-border,#ddd)'}`,color:custom?'var(--imp-accent,#b8952a)':'#12151f'}}>{mxn>0?fmtMXN(mxn):<span style={{color:'var(--imp-border,#ccc)'}}>—</span>}{custom&&mxn>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>}
                         </td>
 
                         {/* USD */}
                         <td style={{padding:'8px 8px',minWidth:85}}>
-                          <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':`1px dotted ${custom?'#b8952a':'#ddd'}`,color:usd>0?(custom?'#b8952a':'#1565a0'):'#ccc'}}>{usd>0?fmtUSD(usd):'—'}{custom&&usd>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>
+                          <span onClick={()=>startEdit(r.id,'importe',r)} style={{fontWeight:700,cursor:isReadOnly?'default':'pointer',borderBottom:isReadOnly?'none':`1px dotted ${custom?'var(--imp-accent,#b8952a)':'var(--imp-border,#ddd)'}`,color:usd>0?(custom?'var(--imp-accent,#b8952a)':'var(--imp-blue,#1565a0)'):'var(--imp-border,#ccc)'}}>{usd>0?fmtUSD(usd):'—'}{custom&&usd>0&&<span style={{fontSize:9,marginLeft:2}}>✎</span>}</span>
                         </td>
 
                         {/* VB Auditoria */}
@@ -6743,8 +6535,8 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
                         <td style={{padding:'8px 8px',minWidth:115}}>
                           <input type="text" defaultValue={r.folio_factura||''} placeholder="Folio…" disabled={isReadOnly}
                             onBlur={e=>{if(e.target.value!==(r.folio_factura||''))saveFactura(circ.id,r.id,'folio_factura',e.target.value)}}
-                            style={{width:'100%',fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 6px',fontFamily:'inherit',background:r.folio_factura?'#fffdf5':'transparent',color:'#12151f',outline:'none',cursor:isReadOnly?'default':'text'}}
-                            onFocus={e=>{if(isReadOnly)return;e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+                            style={{width:'100%',fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 6px',fontFamily:'inherit',background:r.folio_factura?'var(--imp-surface,#fffdf5)':'transparent',color:'var(--imp-ink,#12151f)',outline:'none',cursor:isReadOnly?'default':'text'}}
+                            onFocus={e=>{if(isReadOnly)return;e.target.style.borderColor='var(--imp-accent,#b8952a)';e.target.style.background='var(--imp-surface,#fffdf5)'}}
                             onBlurCapture={e=>{e.target.style.borderColor='transparent';if(!r.folio_factura)e.target.style.background='transparent'}}/>
                         </td>
 
@@ -6755,16 +6547,16 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
 
                         {/* Fecha Pago */}
                         <td style={{padding:'8px 8px',minWidth:118}}>
-                          <input type="date" value={r.fecha_pago||''} disabled={isReadOnly} onChange={e=>setFechaPago(circ.id,r.id,e.target.value)} style={{border:'1px solid #d8d2c8',borderRadius:5,padding:'3px 6px',fontSize:11,fontFamily:'inherit',width:115,cursor:isReadOnly?'default':'text',opacity:isReadOnly?0.7:1}}/>
+                          <input type="date" value={r.fecha_pago||''} disabled={isReadOnly} onChange={e=>setFechaPago(circ.id,r.id,e.target.value)} style={{border:'1px solid var(--imp-border,#d8d2c8)',borderRadius:5,padding:'3px 6px',fontSize:11,fontFamily:'inherit',width:115,cursor:isReadOnly?'default':'text',opacity:isReadOnly?0.7:1}}/>
                         </td>
 
                         {/* Estatus */}
                         <td style={{padding:'8px 8px'}}>
                           <div style={{display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
-                            <button onClick={isReadOnly?undefined:()=>togglePaid(circ.id,r.id,r.paid)} disabled={isReadOnly} style={{width:32,height:17,borderRadius:9,border:'none',background:r.paid?'#52b788':'#ccc',cursor:isReadOnly?'default':'pointer',position:'relative',flexShrink:0,opacity:isReadOnly?0.85:1}}>
-                              <div style={{position:'absolute',top:2,left:r.paid?15:2,width:13,height:13,borderRadius:'50%',background:'#fff',transition:'left .2s',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}/>
+                            <button onClick={isReadOnly?undefined:()=>togglePaid(circ.id,r.id,r.paid)} disabled={isReadOnly} style={{width:32,height:17,borderRadius:9,border:'none',background:r.paid?'#52b788':'var(--imp-border,#ccc)',cursor:isReadOnly?'default':'pointer',position:'relative',flexShrink:0,opacity:isReadOnly?0.85:1}}>
+                              <div style={{position:'absolute',top:2,left:r.paid?15:2,width:13,height:13,borderRadius:'50%',background:'var(--imp-surface,#fff)',transition:'left .2s',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}/>
                             </button>
-                            <span style={{fontSize:10,fontWeight:700,color:r.paid?'#1e5c3a':'#b83232'}}>{r.paid?'PAGADO':'PENDIENTE'}</span>
+                            <span style={{fontSize:10,fontWeight:700,color:r.paid?'var(--imp-green,#1e5c3a)':'var(--imp-red,#b83232)'}}>{r.paid?'PAGADO':'PENDIENTE'}</span>
                           </div>
                         </td>
 
@@ -6772,7 +6564,7 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
                         <td style={{padding:'8px 8px'}}>
                           <textarea defaultValue={r.nota||''} placeholder="Nota…" rows={1} disabled={isReadOnly} onBlur={e=>setNota(circ.id,r.id,e.target.value)}
                             style={{width:110,fontSize:11,border:'1px solid transparent',borderRadius:5,padding:'3px 5px',fontFamily:'inherit',resize:'none',background:'transparent',lineHeight:1.4,cursor:isReadOnly?'default':'text',opacity:isReadOnly?0.85:1}}
-                            onFocus={e=>{if(isReadOnly)return;e.target.style.borderColor='#b8952a';e.target.style.background='#fffdf5'}}
+                            onFocus={e=>{if(isReadOnly)return;e.target.style.borderColor='var(--imp-accent,#b8952a)';e.target.style.background='var(--imp-surface,#fffdf5)'}}
                             onBlurCapture={e=>{e.target.style.borderColor='transparent';e.target.style.background='transparent'}}/>
                         </td>
 
@@ -6785,10 +6577,10 @@ function CxPPanel({ circ, tarifario, F, setFilters, filteredRows, socioMode, isR
                   })}
                 </tbody>
                 <tfoot>
-                  <tr style={{background:'#ece7df'}}>
-                    <td colSpan={6} style={{padding:'8px 10px',fontSize:11,color:'#8a8278'}}>{rows.length} servicio{rows.length!==1?'s':''}</td>
+                  <tr style={{background:'var(--imp-border,#ece7df)'}}>
+                    <td colSpan={6} style={{padding:'8px 10px',fontSize:11,color:'var(--imp-muted,#8a8278)'}}>{rows.length} servicio{rows.length!==1?'s':''}</td>
                     <td style={{padding:'8px 10px',fontWeight:700}}>{tMXN>0?fmtMXN(tMXN):'—'}</td>
-                    <td style={{padding:'8px 10px',fontWeight:700,color:'#1565a0'}}>{tUSD>0?fmtUSD(tUSD):'—'}</td>
+                    <td style={{padding:'8px 10px',fontWeight:700,color:'var(--imp-blue,#1565a0)'}}>{tUSD>0?fmtUSD(tUSD):'—'}</td>
                     <td colSpan={8}/>
                   </tr>
                 </tfoot>
@@ -6816,18 +6608,18 @@ function ProvPanel({ circ, tarifario, TC }) {
   return (
     <div>
       <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 17, fontWeight: 700, marginBottom: 14 }}>
-        Proveedores <span style={{ background: '#b8952a', color: '#12151f', borderRadius: 10, padding: '1px 8px', fontSize: 12, fontFamily: 'inherit' }}>{provs.length}</span>
+        Proveedores <span style={{ background: 'var(--imp-accent,#b8952a)', color: '#12151f', borderRadius: 10, padding: '1px 8px', fontSize: 12, fontFamily: 'inherit' }}>{provs.length}</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(270px,1fr))', gap: 12 }}>
         {provs.map(([name, d]) => {
           const tar = tarifario.find((t) => norm(t.proveedor) === name)
           return (
-            <div key={name} style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderTop: `3px solid ${d.unpaid === 0 ? '#52b788' : '#b83232'}` }}>
+            <div key={name} style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderTop: `3px solid ${d.unpaid === 0 ? '#52b788' : 'var(--imp-red,#b83232)'}` }}>
               <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 15, fontWeight: 700, marginBottom: 3 }}>{name}</div>
-              <div style={{ fontSize: 11, color: '#8a8278', marginBottom: 10 }}>{d.s.length} svc · ✅ {d.paid} · ⏳ {d.unpaid} {tar ? `· ${tar.dias_credito}d crédito` : ''}</div>
+              <div style={{ fontSize: 11, color: 'var(--imp-muted,#8a8278)', marginBottom: 10 }}>{d.s.length} svc · ✅ {d.paid} · ⏳ {d.unpaid} {tar ? `· ${tar.dias_credito}d crédito` : ''}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
-                <div style={{ background: '#ece7df', borderRadius: 7, padding: '7px 10px' }}><div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: '#8a8278' }}>MXN</div><div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 16, fontWeight: 700 }}>{d.mxn > 0 ? fmtMXN(d.mxn) : '—'}</div></div>
-                <div style={{ background: '#e3f2fd', borderRadius: 7, padding: '7px 10px' }}><div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: '#1565a0' }}>USD</div><div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 16, fontWeight: 700, color: '#1565a0' }}>{d.usd > 0 ? fmtUSD(d.usd) : '—'}</div></div>
+                <div style={{ background: 'var(--imp-border,#ece7df)', borderRadius: 7, padding: '7px 10px' }}><div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--imp-muted,#8a8278)' }}>MXN</div><div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 16, fontWeight: 700 }}>{d.mxn > 0 ? fmtMXN(d.mxn) : '—'}</div></div>
+                <div style={{ background: 'var(--imp-surface2,#e3f2fd)', borderRadius: 7, padding: '7px 10px' }}><div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--imp-blue,#1565a0)' }}>USD</div><div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 16, fontWeight: 700, color: 'var(--imp-blue,#1565a0)' }}>{d.usd > 0 ? fmtUSD(d.usd) : '—'}</div></div>
               </div>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{[...d.cats].filter(Boolean).map((c) => <Badge key={c} text={c} />)}</div>
             </div>
@@ -6853,21 +6645,21 @@ function TimelinePanel({ circ, tarifario }) {
         <div key={date} style={{ display: 'grid', gridTemplateColumns: '96px 1fr', gap: 12, marginBottom: 8 }}>
           <div style={{ textAlign: 'right', paddingTop: 12 }}>
             <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 13, fontWeight: 700 }}>{date}</div>
-            <div style={{ fontSize: 10, color: '#8a8278' }}>{d.dl}</div>
+            <div style={{ fontSize: 10, color: 'var(--imp-muted,#8a8278)' }}>{d.dl}</div>
           </div>
-          <div style={{ borderLeft: '2px solid #d8d2c8', paddingLeft: 16, paddingBottom: 12 }}>
+          <div style={{ borderLeft: '2px solid var(--imp-border,#d8d2c8)', paddingLeft: 16, paddingBottom: 12 }}>
             {d.items.map((r) => {
               const { mxn, usd } = getImporte(r, circ.info, tarifario)
               const amt = mxn > 0 ? fmtMXN(mxn) : usd > 0 ? fmtUSD(usd) + ' USD' : '—'
               return (
                 <div key={r.id} style={{ background: '#fff', borderRadius: 9, padding: '10px 13px', marginBottom: 7, boxShadow: '0 1px 6px rgba(0,0,0,.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{r.servicio || '—'} <span style={{ fontWeight: 400, color: '#8a8278' }}>· {r.destino || ''}</span></div>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}><Badge text={r.clasificacion} /><TipoBadge tipo={r.tipo} /><span style={{ fontSize: 11, color: '#8a8278' }}>{r.prov_general || ''}</span></div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{r.servicio || '—'} <span style={{ fontWeight: 400, color: 'var(--imp-muted,#8a8278)' }}>· {r.destino || ''}</span></div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}><Badge text={r.clasificacion} /><TipoBadge tipo={r.tipo} /><span style={{ fontSize: 11, color: 'var(--imp-muted,#8a8278)' }}>{r.prov_general || ''}</span></div>
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 13 }}>{amt}</div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: r.paid ? '#1e5c3a' : '#b83232' }}>{r.paid ? '✅ PAGADO' : '⏳ PENDIENTE'}</div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: r.paid ? 'var(--imp-green,#1e5c3a)' : 'var(--imp-red,#b83232)' }}>{r.paid ? '✅ PAGADO' : '⏳ PENDIENTE'}</div>
                   </div>
                 </div>
               )

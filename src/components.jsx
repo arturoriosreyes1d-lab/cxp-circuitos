@@ -36,10 +36,10 @@ export function KPIGrid({ items }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginBottom: 22 }}>
       {items.map((kpi, i) => (
-        <div key={i} style={{ background: '#fff', borderRadius: 12, padding: '14px 16px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderLeft: `3px solid ${colors[kpi.cls] || '#d8d2c8'}` }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: .8, color: '#8a8278', fontWeight: 600, marginBottom: 5 }}>{kpi.label}</div>
-          <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, lineHeight: 1.2 }}>{kpi.val}</div>
-          {kpi.sub && <div style={{ fontSize: 11, color: '#8a8278', marginTop: 3 }}>{kpi.sub}</div>}
+        <div key={i} style={{ background: 'var(--imp-surface,#fff)', borderRadius: 12, padding: '14px 16px', boxShadow: '0 2px 16px rgba(18,21,31,.07)', borderLeft: `3px solid ${colors[kpi.cls] || 'var(--imp-border,#d8d2c8)'}` }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: .8, color: 'var(--imp-muted,#8a8278)', fontWeight: 600, marginBottom: 5 }}>{kpi.label}</div>
+          <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, fontWeight: 700, lineHeight: 1.2, color: 'var(--imp-ink,#12151f)' }}>{kpi.val}</div>
+          {kpi.sub && <div style={{ fontSize: 11, color: 'var(--imp-muted,#8a8278)', marginTop: 3 }}>{kpi.sub}</div>}
         </div>
       ))}
     </div>
