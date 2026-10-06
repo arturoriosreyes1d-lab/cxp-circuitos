@@ -5906,7 +5906,6 @@ function ImprontaCobrosPanel({ circ, isReadOnly, addIngreso, deleteIngreso }) {
   }
   return (
     <div style={{ marginBottom: 16, borderRadius: 14, overflow: 'hidden', background: '#241528', border: '1px solid #d4537e55' }}>
-      <div style={{ height: 8, background: 'repeating-linear-gradient(90deg, #d4537e 0 14px, transparent 14px 16px, #ef9f27 16px 30px, transparent 30px 32px, #1d9e75 32px 46px, transparent 46px 48px, #378add 48px 62px, transparent 62px 64px)' }} />
       <div style={{ padding: '16px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
