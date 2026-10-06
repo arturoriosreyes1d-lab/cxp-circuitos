@@ -579,6 +579,40 @@ function Dashboard({ session }) {
     await supabase.from('circuits').update({ commission_pct: safe }).eq('id', cid)
     setCircuits((prev) => prev.map((c) => c.id !== cid ? c : { ...c, commission_pct: safe }))
   }
+
+  // ── Cobros (circuit_ingresos) ──────────────────────────────────────
+  const addIngreso = async (cid, { fecha, monto, moneda, concepto, referencia }) => {
+    if (checkLocked(cid)) return
+    const { data, error } = await supabase.from('circuit_ingresos')
+      .insert({ circuit_id: cid, fecha, monto: parseFloat(monto) || 0, moneda: moneda || 'USD', concepto: concepto || null, referencia: referencia || null })
+      .select().single()
+    if (error) { console.error(error); alert('Error al guardar el cobro: ' + error.message); return }
+    setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, ingresos: [...(c.ingresos || []), data].sort((a,b)=> (a.fecha||'').localeCompare(b.fecha||'')) }))
+  }
+  const deleteIngreso = async (cid, ingId) => {
+    if (checkLocked(cid)) return
+    await supabase.from('circuit_ingresos').delete().eq('id', ingId)
+    setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, ingresos: (c.ingresos || []).filter(i => i.id !== ingId) }))
+  }
+
+  // ── Pre-factura (circuit_prefactura) ───────────────────────────────
+  const addPrefactura = async (cid, { concepto, cantidad, precio_unit, moneda }) => {
+    if (checkLocked(cid)) return
+    const cant = parseFloat(cantidad) || 0
+    const precio = parseFloat(precio_unit) || 0
+    const importe = cant * precio
+    const orden = 1 + (circuits.find(c=>c.id===cid)?.prefactura || []).reduce((m,p)=>Math.max(m, p.orden||0), 0)
+    const { data, error } = await supabase.from('circuit_prefactura')
+      .insert({ circuit_id: cid, concepto, cantidad: cant, precio_unit: precio, importe, moneda: moneda || 'USD', orden })
+      .select().single()
+    if (error) { console.error(error); alert('Error al guardar la línea: ' + error.message); return }
+    setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, prefactura: [...(c.prefactura || []), data].sort((a,b)=>(a.orden||0)-(b.orden||0)) }))
+  }
+  const deletePrefactura = async (cid, pfId) => {
+    if (checkLocked(cid)) return
+    await supabase.from('circuit_prefactura').delete().eq('id', pfId)
+    setCircuits(prev => prev.map(c => c.id !== cid ? c : { ...c, prefactura: (c.prefactura || []).filter(p => p.id !== pfId) }))
+  }
   // ── Bloqueo / cierre de circuito ─────────────────────────────────────
   // Contraseña global desde env var (con fallback). Configurar VITE_LOCK_PASSWORD en Vercel.
   const LOCK_PASSWORD = import.meta.env.VITE_LOCK_PASSWORD || 'abrir2026'
@@ -962,7 +996,15 @@ function Dashboard({ session }) {
           {view.type === 'resultados_all' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} />}
           {view.type === 'resultados_mes' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} initModo="mes" initMes={view.monthKey} />}
           {view.type === 'pagos' && <PagosView circuits={socioMode ? visibleCircuits : circuits} tarifario={tarifario} TC={TC} isReadOnly={isReadOnly} togglePaid={togglePaid} setFechaPago={setFechaPago} saveImporte={saveImporte} saveFactura={saveFactura} saveRowField={saveRowField} onGoCircuit={(id)=>{setView({type:'circuit',circuitId:id});setActiveTab('cxp')}} />}
-          {view.type === 'circuit' && activeCircuit && (
+          {view.type === 'circuit' && activeCircuit && getCliente(activeCircuit) === 'IMPRONTA' && (
+            <ImprontaCircuitDetail circ={activeCircuit} isReadOnly={isReadOnly}
+              saveCircInfo={saveCircInfo}
+              addIngreso={addIngreso} deleteIngreso={deleteIngreso}
+              addPrefactura={addPrefactura} deletePrefactura={deletePrefactura}
+              openLockModal={openLockModal}
+              onDelete={(id) => { setDeleteId(id); setModal('delete') }} />
+          )}
+          {view.type === 'circuit' && activeCircuit && getCliente(activeCircuit) !== 'IMPRONTA' && (
             <CircuitDetail circ={activeCircuit} tarifario={tarifario} TC={TC} activeTab={activeTab} setActiveTab={setActiveTab}
               F={F} setFilters={setFilters} filteredRows={filteredRows} socioMode={socioMode} isReadOnly={isReadOnly}
               togglePaid={togglePaid} setFechaPago={setFechaPago} setNota={setNota}
@@ -5814,6 +5856,287 @@ function EditableInfoField({ label, value, type, onSave, isReadOnly }) {
 }
 
 // ── Circuit Detail ──
+// ═══════════════════════════════════════════════════════════════════
+// ImprontaCircuitDetail — Vista de detalle propia para circuitos IMPRONTA
+// Tema Día de Muertos, con captura de cobros y pre-factura
+// ═══════════════════════════════════════════════════════════════════
+function ImprontaCircuitDetail({ circ, isReadOnly, saveCircInfo, addIngreso, deleteIngreso, addPrefactura, deletePrefactura, openLockModal, onDelete }) {
+  const [cobroModal, setCobroModal] = useState(false)
+  const [prefactModal, setPrefactModal] = useState(false)
+
+  const ingresos = circ.ingresos || []
+  const prefactura = circ.prefactura || []
+  const totalEsperado = parseFloat(circ.importe_cobrado) || 0
+  const moneda = circ.moneda_cobrado || 'USD'
+  const totalCobrado = ingresos.reduce((s, i) => s + (parseFloat(i.monto) || 0), 0)
+  const saldoPend = totalEsperado - totalCobrado
+  const pctCobrado = totalEsperado > 0 ? Math.round((totalCobrado / totalEsperado) * 100) : 0
+  const completo = totalEsperado > 0 && totalCobrado >= totalEsperado - 0.01
+  const totalPrefact = prefactura.reduce((s, p) => s + (parseFloat(p.importe) || 0), 0)
+
+  const nombre = circ.info?.nombre || circ.info?.tl || circ.id
+  const fi = circ.info?.fecha_inicio
+  const ff = circ.info?.fecha_fin
+  const fmtF = (f) => f ? (f instanceof Date ? f : parseLocalDate(f)).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+  const fmtFecha = (f) => {
+    if (!f) return '—'
+    const d = parseLocalDate(f)
+    return d ? d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+  }
+
+  return (
+    <div style={{ background: '#1a1420', borderRadius: 14, overflow: 'hidden', margin: '-24px', minHeight: 'calc(100vh - 60px)' }}>
+      <div style={{ height: 14, background: 'repeating-linear-gradient(90deg, #d4537e 0 18px, transparent 18px 20px, #ef9f27 20px 38px, transparent 38px 40px, #1d9e75 40px 58px, transparent 58px 60px, #378add 60px 78px, transparent 78px 80px)' }} />
+
+      <div style={{ padding: '24px 28px' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 20 }}>💀</span>
+              <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, color: '#fff', margin: 0 }}>{circ.id}</h2>
+              {circ.grupo && <span style={{ fontSize: 11, color: '#ef9f27', background: '#ef9f2722', padding: '3px 10px', borderRadius: 12 }}>{circ.grupo}</span>}
+            </div>
+            <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18, color: '#c99', marginBottom: 10 }}>{nombre}</div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: '#c99', background: '#ffffff10', padding: '4px 10px', borderRadius: 7 }}>📅 {fmtF(fi)} – {fmtF(ff)}</span>
+              <span style={{ fontSize: 12, color: '#c99', background: '#ffffff10', padding: '4px 10px', borderRadius: 7 }}>👤 {circ.info?.pax || '—'} pax</span>
+              {circ.info?.tl && <span style={{ fontSize: 12, color: '#c99', background: '#ffffff10', padding: '4px 10px', borderRadius: 7 }}>🧑‍💼 {circ.info.tl}</span>}
+            </div>
+          </div>
+          {!isReadOnly && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <button onClick={() => openLockModal(circ.id, circ.locked ? 'unlock' : 'lock')}
+                style={{ background: '#2a1d30', border: '1px solid #ffffff22', color: circ.locked ? '#ef9f27' : '#c99', borderRadius: 8, padding: '7px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
+                {circ.locked ? '🔓 Abrir' : '🔒 Cerrar'}
+              </button>
+              <button onClick={() => onDelete(circ.id)}
+                style={{ background: '#2a1d30', border: '1px solid #d4537e44', color: '#d4537e', borderRadius: 8, padding: '7px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
+                🗑 Eliminar
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* KPIs de cobranza */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 18 }}>
+          <div style={{ background: '#2a1d30', border: '1px solid #5dcaa533', borderRadius: 12, padding: '14px 18px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Ingreso total</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: '#5dcaa5' }}>{fmtUSD(totalEsperado)} <span style={{ fontSize: 12, color: '#789' }}>{moneda}</span></div>
+          </div>
+          <div style={{ background: '#2a1d30', border: '1px solid #ef9f2733', borderRadius: 12, padding: '14px 18px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Cobrado</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: '#ef9f27' }}>{fmtUSD(totalCobrado)}</div>
+          </div>
+          <div style={{ background: '#2a1d30', border: `1px solid ${completo ? '#5dcaa533' : '#d4537e33'}`, borderRadius: 12, padding: '14px 18px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Saldo pendiente</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: completo ? '#5dcaa5' : '#d4537e' }}>{fmtUSD(Math.abs(saldoPend))}</div>
+          </div>
+        </div>
+
+        {/* Barra de cobranza */}
+        <div style={{ height: 6, background: '#ffffff12', borderRadius: 3, overflow: 'hidden', marginBottom: 6 }}>
+          <div style={{ height: '100%', width: Math.min(pctCobrado, 100) + '%', background: completo ? '#5dcaa5' : '#ef9f27', borderRadius: 3 }} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+          <span style={{ fontSize: 11, color: '#a88' }}>Cobrado {pctCobrado}% del total</span>
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 10, background: completo ? '#1d9e7533' : '#ef9f2733', color: completo ? '#5dcaa5' : '#ef9f27' }}>
+            {completo ? '✅ Cobrado completo' : '⏳ Cobranza parcial'}
+          </span>
+        </div>
+
+        {/* Dos columnas: pre-factura + cobros */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20 }}>
+          {/* Pre-factura */}
+          <div style={{ background: '#241528', borderRadius: 12, padding: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#ef9f27', textTransform: 'uppercase', letterSpacing: .5 }}>📄 Pre-factura (c/IVA)</span>
+              {!isReadOnly && (
+                <button onClick={() => setPrefactModal(true)}
+                  style={{ background: '#ef9f2722', border: '1px solid #ef9f2755', color: '#ef9f27', borderRadius: 7, padding: '5px 11px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+                  + Agregar línea
+                </button>
+              )}
+            </div>
+            {prefactura.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic', padding: '8px 0' }}>Sin líneas de pre-factura.</div>
+            ) : (
+              <div>
+                {prefactura.map((p, i) => (
+                  <div key={p.id || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #ffffff0a' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, color: '#fff' }}>{p.concepto}</div>
+                      <div style={{ fontSize: 10, color: '#a88' }}>{p.cantidad} × {fmtUSD(p.precio_unit)}</div>
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#fff', fontFamily: "'IBM Plex Mono',monospace", marginRight: 10 }}>{fmtUSD(p.importe)}</span>
+                    {!isReadOnly && (
+                      <button onClick={() => deletePrefactura(circ.id, p.id)}
+                        style={{ background: 'none', border: 'none', color: '#d4537e', cursor: 'pointer', fontSize: 14, padding: 0 }}>×</button>
+                    )}
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', marginTop: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#ef9f27' }}>Total pre-factura</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(totalPrefact)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Cobros */}
+          <div style={{ background: '#241528', borderRadius: 12, padding: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#5dcaa5', textTransform: 'uppercase', letterSpacing: .5 }}>🏦 Cobros recibidos</span>
+              {!isReadOnly && (
+                <button onClick={() => setCobroModal(true)}
+                  style={{ background: '#1d9e7522', border: '1px solid #5dcaa555', color: '#5dcaa5', borderRadius: 7, padding: '5px 11px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+                  + Registrar cobro
+                </button>
+              )}
+            </div>
+            {ingresos.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic', padding: '8px 0' }}>Sin cobros registrados aún.</div>
+            ) : (
+              <div>
+                {ingresos.map((ing, i) => (
+                  <div key={ing.id || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #ffffff0a' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, color: '#fff', fontWeight: 600 }}>{ing.concepto || 'Cobro'}</div>
+                      <div style={{ fontSize: 10, color: '#a88' }}>{fmtFecha(ing.fecha)}{ing.referencia ? ' · ' + ing.referencia : ''}</div>
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace", marginRight: 10 }}>{fmtUSD(ing.monto)}</span>
+                    {!isReadOnly && (
+                      <button onClick={() => deleteIngreso(circ.id, ing.id)}
+                        style={{ background: 'none', border: 'none', color: '#d4537e', cursor: 'pointer', fontSize: 14, padding: 0 }}>×</button>
+                    )}
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', marginTop: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#5dcaa5' }}>Total cobrado</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(totalCobrado)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Nota sobre costos/itinerario */}
+        <div style={{ marginTop: 24, padding: '14px 18px', background: '#ffffff06', borderRadius: 10, border: '1px dashed #ffffff22' }}>
+          <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic' }}>
+            💡 Los costos e itinerario de este circuito se cargarán en el siguiente paso.
+          </div>
+        </div>
+      </div>
+
+      {cobroModal && <RegistrarCobroModal circ={circ} onSave={(data)=>{ addIngreso(circ.id, data); setCobroModal(false) }} onClose={()=>setCobroModal(false)} />}
+      {prefactModal && <AgregarPrefacturaModal circ={circ} onSave={(data)=>{ addPrefactura(circ.id, data); setPrefactModal(false) }} onClose={()=>setPrefactModal(false)} />}
+    </div>
+  )
+}
+
+// Modal: registrar un cobro
+function RegistrarCobroModal({ circ, onSave, onClose }) {
+  const [fecha, setFecha] = useState('')
+  const [monto, setMonto] = useState('')
+  const [concepto, setConcepto] = useState('')
+  const [referencia, setReferencia] = useState('')
+  const [moneda, setMoneda] = useState(circ.moneda_cobrado || 'USD')
+  const valido = fecha && parseFloat(monto) > 0
+
+  return (
+    <Modal title="🏦 Registrar cobro" onClose={onClose}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Fecha del cobro *</label>
+          <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)}
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Monto *</label>
+            <input type="number" step="0.01" value={monto} onChange={e=>setMonto(e.target.value)} placeholder="0.00"
+              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Moneda</label>
+            <select value={moneda} onChange={e=>setMoneda(e.target.value)}
+              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', boxSizing: 'border-box' }}>
+              <option value="USD">USD</option>
+              <option value="MXN">MXN</option>
+              <option value="EUR">EUR</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Concepto</label>
+          <input type="text" value={concepto} onChange={e=>setConcepto(e.target.value)} placeholder="Anticipo, Saldo, etc."
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Referencia</label>
+          <input type="text" value={referencia} onChange={e=>setReferencia(e.target.value)} placeholder="Referencia bancaria / SWIFT"
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
+        </div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+        <Btn outline onClick={onClose}>Cancelar</Btn>
+        <Btn disabled={!valido} onClick={()=>onSave({ fecha, monto, moneda, concepto, referencia })}>Guardar cobro ✓</Btn>
+      </div>
+    </Modal>
+  )
+}
+
+// Modal: agregar línea de pre-factura
+function AgregarPrefacturaModal({ circ, onSave, onClose }) {
+  const [concepto, setConcepto] = useState('')
+  const [cantidad, setCantidad] = useState('')
+  const [precio, setPrecio] = useState('')
+  const [moneda, setMoneda] = useState(circ.moneda_cobrado || 'USD')
+  const importe = (parseFloat(cantidad) || 0) * (parseFloat(precio) || 0)
+  const valido = concepto.trim() && parseFloat(cantidad) > 0 && parseFloat(precio) > 0
+
+  return (
+    <Modal title="📄 Agregar línea de pre-factura" onClose={onClose}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Concepto *</label>
+          <input type="text" value={concepto} onChange={e=>setConcepto(e.target.value)} placeholder="20 pax en DBL"
+            style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Cantidad *</label>
+            <input type="number" step="0.01" value={cantidad} onChange={e=>setCantidad(e.target.value)} placeholder="20"
+              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Precio c/IVA *</label>
+            <input type="number" step="0.01" value={precio} onChange={e=>setPrecio(e.target.value)} placeholder="1090"
+              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>Moneda</label>
+            <select value={moneda} onChange={e=>setMoneda(e.target.value)}
+              style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', boxSizing: 'border-box' }}>
+              <option value="USD">USD</option>
+              <option value="MXN">MXN</option>
+              <option value="EUR">EUR</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ background: '#f5f1eb', borderRadius: 8, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: '#8a8278' }}>Importe (cantidad × precio)</span>
+          <span style={{ fontSize: 16, fontWeight: 700, color: '#12151f' }}>{fmtUSD(importe)} {moneda}</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+        <Btn outline onClick={onClose}>Cancelar</Btn>
+        <Btn disabled={!valido} onClick={()=>onSave({ concepto, cantidad, precio_unit: precio, moneda })}>Agregar línea ✓</Btn>
+      </div>
+    </Modal>
+  )
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // ImprontaCobranzaPanel — muestra pre-factura + cobros de un circuito IMPRONTA
 // ═══════════════════════════════════════════════════════════════════
