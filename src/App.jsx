@@ -85,6 +85,18 @@ function getImporte(row, circInfo, tarifario) {
 }
 
 // Calcular totales LIBERO y OPCIONAL por separado
+// ─────────────────────────────────────────────────────────────────
+// Clientes (bandas en el sidebar). Si en el futuro se agregan más,
+// esta es la única lista que hay que extender.
+// ─────────────────────────────────────────────────────────────────
+const CLIENTES = [
+  { id: 'WE_ROAD',  label: 'WE ROAD',  color: '#b8952a' },
+  { id: 'IMPRONTA', label: 'IMPRONTA', color: '#7a9eb5' },
+]
+const CLIENTE_LABEL = Object.fromEntries(CLIENTES.map(c => [c.id, c.label]))
+const CLIENTE_IDS = CLIENTES.map(c => c.id)
+const getCliente = (c) => CLIENTE_IDS.includes(c?.cliente) ? c.cliente : 'WE_ROAD'
+
 function calcCircTotals(circ, tarifario, TC) {
   let costoMXN = 0, costoUSD = 0, paidMXN = 0, paidUSD = 0
   let costoOpcMXN = 0, costoOpcUSD = 0, paidOpcMXN = 0, paidOpcUSD = 0
@@ -184,8 +196,24 @@ function Dashboard({ session }) {
     if (prev.has(mk)) return prev
     const next = new Set(prev); next.add(mk); return next
   })
+  // Bandas de cliente colapsables (WE ROAD / IMPRONTA)
+  const [expandedClients, setExpandedClients] = useState(() => {
+    try {
+      const raw = localStorage.getItem('cxp_expandedClients')
+      return new Set(raw ? JSON.parse(raw) : ['WE_ROAD'])
+    } catch { return new Set(['WE_ROAD']) }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('cxp_expandedClients', JSON.stringify([...expandedClients])) } catch {}
+  }, [expandedClients])
+  const toggleClient = (cl) => setExpandedClients(prev => {
+    const next = new Set(prev)
+    if (next.has(cl)) next.delete(cl); else next.add(cl)
+    return next
+  })
   const [modal, setModal] = useState(null)
   const [pendingCircuit, setPendingCircuit] = useState(null)
+  const [pendingCliente, setPendingCliente] = useState('WE_ROAD')
   const [deleteId, setDeleteId] = useState(null)
   const [activeTab, setActiveTab] = useState('cxp')
   const [saving, setSaving] = useState(false)
@@ -284,7 +312,7 @@ function Dashboard({ session }) {
     if (checkReadOnly()) return
     setSaving(true)
     try {
-      await supabase.from('circuits').upsert({ id: pendingCircuit.id, month_key: pendingCircuit.monthKey, info: pendingCircuit.info })
+      await supabase.from('circuits').upsert({ id: pendingCircuit.id, month_key: pendingCircuit.monthKey, info: pendingCircuit.info, cliente: pendingCliente })
       await supabase.from('circuit_rows').delete().eq('circuit_id', pendingCircuit.id)
       await supabase.from('circuit_rows').insert(pendingCircuit.rows.map((r) => ({
         circuit_id: pendingCircuit.id, idx: r.idx, fecha: dateToLocalStr(r.fecha),
@@ -296,7 +324,7 @@ function Dashboard({ session }) {
       await loadAll()
       setView({ type: 'circuit', circuitId: pendingCircuit.id })
       setActiveTab('cxp')
-      setModal(null); setPendingCircuit(null)
+      setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD')
     } catch (e) { console.error(e) }
     setSaving(false)
   }
@@ -598,6 +626,42 @@ function Dashboard({ session }) {
   // Lista de TODOS los meses (sin filtrar) — para el selector del modal de configuración
   const allMonthsSorted = [...new Set(circuits.map(c => c.month_key || 'Sin mes'))].sort((a, b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
 
+  // ── Agrupación por CLIENTE ──────────────────────────────────────
+  const monthMapByClient = {}
+  CLIENTE_IDS.forEach(cl => { monthMapByClient[cl] = {} })
+  visibleCircuits.forEach(c => {
+    const cl = getCliente(c)
+    const mk = c.month_key || 'Sin mes'
+    if (!monthMapByClient[cl][mk]) monthMapByClient[cl][mk] = []
+    monthMapByClient[cl][mk].push(c)
+  })
+  CLIENTE_IDS.forEach(cl => {
+    Object.keys(monthMapByClient[cl]).forEach(mk => {
+      monthMapByClient[cl][mk].sort((a, b) => {
+        const fa = parseLocalDate(a.info?.fecha_inicio)
+        const fb = parseLocalDate(b.info?.fecha_inicio)
+        if (!fa && !fb) return (a.id || '').localeCompare(b.id || '')
+        if (!fa) return 1; if (!fb) return -1
+        return fa - fb
+      })
+    })
+  })
+  const clientMonths = {}
+  CLIENTE_IDS.forEach(cl => {
+    clientMonths[cl] = Object.keys(monthMapByClient[cl]).sort((a, b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
+  })
+  const clientCounts = {}
+  CLIENTE_IDS.forEach(cl => {
+    let circs = 0, pax = 0
+    clientMonths[cl].forEach(mk => {
+      monthMapByClient[cl][mk].forEach(c => {
+        circs++
+        pax += parseInt(c.info?.pax) || 0
+      })
+    })
+    clientCounts[cl] = { circs, pax }
+  })
+
   // Cuando seleccionas un circuito o un mes en el main, abre ese mes en la sidebar (sin cerrar otros)
   useEffect(() => {
     if (view.type === 'circuit' && view.circuitId) {
@@ -694,53 +758,87 @@ function Dashboard({ session }) {
             })()}
             <SbDivider />
 
-            {sortedMonths.map((mk) => {
-              const mCircs = monthMap[mk]
-              const mPaid = mCircs.every((c) => c.rows.length > 0 && c.rows.every((r) => r.paid))
-              const isExpanded = expandedMonths.has(mk)
+            {CLIENTES.map(cliente => {
+              const months = clientMonths[cliente.id]
+              const counts = clientCounts[cliente.id]
+              const isClientExp = expandedClients.has(cliente.id)
               return (
-                <div key={mk}>
-                  {/* Cabecera del mes — clickeable para expandir/colapsar */}
+                <div key={cliente.id} style={{ marginBottom: 6 }}>
+                  {/* ═══ BANDA DE CLIENTE ═══ */}
                   <div
-                    onClick={() => toggleMonth(mk)}
-                    style={{ padding: '10px 16px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
-                    title={isExpanded ? 'Colapsar' : 'Expandir'}
+                    onClick={() => toggleClient(cliente.id)}
+                    style={{
+                      padding: '12px 16px',
+                      marginTop: 10,
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      background: isClientExp ? `linear-gradient(90deg, ${cliente.color}22, transparent)` : 'rgba(255,255,255,.03)',
+                      borderLeft: `3px solid ${cliente.color}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+                    }}
+                    title={isClientExp ? 'Colapsar' : 'Expandir'}
                   >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1.2, color: 'rgba(255,255,255,.35)' }}>
-                      <span style={{ fontSize: 8, transition: 'transform .15s', display: 'inline-block', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
-                      {mk}
-                      <span style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,.45)', background: 'rgba(255,255,255,.08)', padding: '1px 6px', borderRadius: 8 }}>{mCircs.length}</span>
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <span style={{ fontSize:10, color:cliente.color, transition:'transform .15s', display:'inline-block', transform: isClientExp ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                      <span style={{ fontSize:12, fontWeight:700, letterSpacing:.5, color:'#fff' }}>🏢 {cliente.label}</span>
+                    </div>
+                    <span style={{ fontSize:10, fontWeight:700, color: cliente.color, background: 'rgba(255,255,255,.05)', padding:'2px 8px', borderRadius:10 }}>
+                      {counts.circs}
                     </span>
-                    <div style={{ width: 7, height: 7, borderRadius: '50%', background: mPaid ? '#52b788' : '#e0c96a' }} />
                   </div>
 
-                  {isExpanded && (
-                    <>
-                      {/* Ver mes */}
-                      <SbItem label="📅 Ver mes" count={mCircs.length} active={view.type === 'month' && view.monthKey === mk} onClick={() => setView({ type: 'month', monthKey: mk })} indent />
-                      {/* Resultados del mes */}
-                      <SbItem label="📈 Resultados" count="" active={view.type === 'resultados_mes' && view.monthKey === mk} onClick={() => setView({ type: 'resultados_mes', monthKey: mk })} indent />
-
-                      {/* Circuitos */}
-                      {mCircs.map((c) => {
-                        const paid = c.rows.filter((r) => r.paid).length
-                        const allPaid = paid === c.rows.length && c.rows.length > 0
-                        const isActive = view.circuitId === c.id
-                        return (
-                          <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
-                            style={{ padding: '5px 16px 5px 32px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#b8952a' : 'transparent'}` }}>
-                            <div style={{ width: 6, height: 6, borderRadius: '50%', background: allPaid ? '#52b788' : '#e0c96a', flexShrink: 0 }} />
-                            <div style={{ overflow: 'hidden', flex: 1 }}>
-                              <div style={{ fontSize: 9.5, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }} title={c.id}>{c.id}</div>
-                              {c.info?.tl && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.info.tl}</div>}
-                            </div>
-                            {c.locked && <span title="Circuito cerrado" style={{ fontSize: 11, color: '#e0c96a', flexShrink: 0 }}>🔒</span>}
-                          </div>
-                        )
-                      })}
-                    </>
+                  {isClientExp && counts.circs === 0 && (
+                    <div style={{ padding:'10px 20px', fontSize:11, color:'rgba(255,255,255,.3)', fontStyle:'italic' }}>
+                      Sin circuitos aún
+                    </div>
                   )}
-                  <div style={{ height: 6 }} />
+
+                  {isClientExp && months.map((mk) => {
+                    const mCircs = monthMapByClient[cliente.id][mk]
+                    const mPaid = mCircs.every((c) => c.rows.length > 0 && c.rows.every((r) => r.paid))
+                    const mkKey = mk + '|' + cliente.id
+                    const isExpanded = expandedMonths.has(mkKey)
+                    return (
+                      <div key={mkKey}>
+                        <div
+                          onClick={() => toggleMonth(mkKey)}
+                          style={{ padding: '8px 16px 3px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
+                          title={isExpanded ? 'Colapsar' : 'Expandir'}
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1.2, color: 'rgba(255,255,255,.35)' }}>
+                            <span style={{ fontSize: 8, transition: 'transform .15s', display: 'inline-block', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                            {mk}
+                            <span style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,.45)', background: 'rgba(255,255,255,.08)', padding: '1px 6px', borderRadius: 8 }}>{mCircs.length}</span>
+                          </span>
+                          <div style={{ width: 7, height: 7, borderRadius: '50%', background: mPaid ? '#52b788' : '#e0c96a' }} />
+                        </div>
+
+                        {isExpanded && (
+                          <>
+                            <SbItem label="📅 Ver mes" count={mCircs.length} active={view.type === 'month' && view.monthKey === mk && view.cliente === cliente.id} onClick={() => setView({ type: 'month', monthKey: mk, cliente: cliente.id })} indent />
+                            <SbItem label="📈 Resultados" count="" active={view.type === 'resultados_mes' && view.monthKey === mk && view.cliente === cliente.id} onClick={() => setView({ type: 'resultados_mes', monthKey: mk, cliente: cliente.id })} indent />
+                            {mCircs.map((c) => {
+                              const paid = c.rows.filter((r) => r.paid).length
+                              const allPaid = paid === c.rows.length && c.rows.length > 0
+                              const isActive = view.circuitId === c.id
+                              return (
+                                <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
+                                  style={{ padding: '5px 16px 5px 40px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? cliente.color : 'transparent'}` }}>
+                                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: allPaid ? '#52b788' : '#e0c96a', flexShrink: 0 }} />
+                                  <div style={{ overflow: 'hidden', flex: 1 }}>
+                                    <div style={{ fontSize: 9.5, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }} title={c.id}>{c.id}</div>
+                                    {c.info?.tl && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.info.tl}</div>}
+                                  </div>
+                                  {c.locked && <span title="Circuito cerrado" style={{ fontSize: 11, color: '#e0c96a', flexShrink: 0 }}>🔒</span>}
+                                </div>
+                              )
+                            })}
+                          </>
+                        )}
+                        <div style={{ height: 4 }} />
+                      </div>
+                    )
+                  })}
                 </div>
               )
             })}
@@ -775,10 +873,35 @@ function Dashboard({ session }) {
 
       {/* ── MODALS ── */}
       {modal === 'upload' && (
-        <Modal title="Agregar Circuito" onClose={() => { setModal(null); setPendingCircuit(null) }}>
+        <Modal title="Agregar Circuito" onClose={() => { setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD') }}>
+          {/* Selector de cliente */}
+          <div style={{ marginBottom: 16, padding: '12px 14px', background:'#f5f1eb', border:'1px solid #ece7df', borderRadius: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
+              🏢 Cliente del circuito
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {CLIENTES.map(cl => (
+                <button key={cl.id} onClick={() => setPendingCliente(cl.id)}
+                  style={{
+                    padding:'8px 16px', border:'none', borderRadius:8, cursor:'pointer', fontSize:12,
+                    fontWeight: pendingCliente===cl.id ? 700 : 500, fontFamily:'inherit',
+                    background: pendingCliente===cl.id ? '#12151f' : '#fff',
+                    color: pendingCliente===cl.id ? cl.color : '#8a8278',
+                    borderLeft: `3px solid ${pendingCliente===cl.id ? cl.color : 'transparent'}`,
+                    transition:'all .15s'
+                  }}>
+                  🏢 {cl.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: '#8a8278', marginTop: 6, fontStyle: 'italic' }}>
+              Este circuito aparecerá en la banda del cliente seleccionado.
+            </div>
+          </div>
+
           <UploadZone xlsxReady={xlsxReady} onFile={handleCircuitFile} pending={pendingCircuit} fileRef={fileRef} onUpdatePending={setPendingCircuit} existingCircuits={circuits} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-            <Btn outline onClick={() => { setModal(null); setPendingCircuit(null) }}>Cancelar</Btn>
+            <Btn outline onClick={() => { setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD') }}>Cancelar</Btn>
             <Btn disabled={!pendingCircuit || saving} onClick={confirmLoad}>{saving ? 'Guardando...' : 'Confirmar y cargar ✓'}</Btn>
           </div>
         </Modal>
@@ -5127,13 +5250,38 @@ function RazonesSocialesPanel({ rows, update }) {
 function AllView({ circuits, monthMap, sortedMonths, tarifario, TC, socioMode, onSelect }) {
   let tMXN = 0, tUSD = 0, pMXN = 0, pUSD = 0
   circuits.forEach((c) => c.rows.forEach((r) => {
-    // En modo socio, ignoramos las filas OPCIONAL en los KPIs
     if (socioMode && (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL') return
     const { mxn, usd } = getImporte(r, c.info, tarifario)
     tMXN += mxn; tUSD += usd
     if (r.paid) { pMXN += mxn; pUSD += usd }
   }))
   const totalServicios = circuits.reduce((a, c) => a + c.rows.filter(r => !socioMode || (r.tipo||'').toString().toUpperCase().trim() !== 'OPCIONAL').length, 0)
+
+  // Agrupar por cliente -> mes
+  const porCliente = {}
+  CLIENTE_IDS.forEach(cl => { porCliente[cl] = {} })
+  circuits.forEach(c => {
+    const cl = getCliente(c)
+    const mk = c.month_key || 'Sin mes'
+    if (!porCliente[cl][mk]) porCliente[cl][mk] = []
+    porCliente[cl][mk].push(c)
+  })
+
+  const [expClientesInline, setExpClientesInline] = useState(() => {
+    try {
+      const raw = localStorage.getItem('cxp_expandedClientsInline')
+      return new Set(raw ? JSON.parse(raw) : CLIENTE_IDS)
+    } catch { return new Set(CLIENTE_IDS) }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('cxp_expandedClientsInline', JSON.stringify([...expClientesInline])) } catch {}
+  }, [expClientesInline])
+  const toggleCl = (cl) => setExpClientesInline(prev => {
+    const next = new Set(prev)
+    if (next.has(cl)) next.delete(cl); else next.add(cl)
+    return next
+  })
+
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 26, marginBottom: 4 }}>📊 Todos los circuitos</h2>
@@ -5144,14 +5292,76 @@ function AllView({ circuits, monthMap, sortedMonths, tarifario, TC, socioMode, o
         { cls: 'rust', label: '⏳ Pendiente MXN', val: fmtMXN(tMXN - pMXN), sub: fmtUSD(tUSD - pUSD) + ' USD' },
         { cls: 'sky', label: 'Total Servicios', val: totalServicios },
       ]} />
-      {sortedMonths.map((mk) => (
-        <div key={mk} style={{ marginBottom: 28 }}>
-          <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18, fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-            {cap(mk)} <span style={{ background: '#b8952a', color: '#12151f', borderRadius: 10, padding: '1px 9px', fontSize: 12, fontFamily: 'inherit', fontWeight: 700 }}>{monthMap[mk].length}</span>
+
+      {CLIENTES.map(cliente => {
+        const mesesClient = Object.keys(porCliente[cliente.id]).sort((a, b) => monthKeySortable(a).localeCompare(monthKeySortable(b)))
+        const totalCircs = mesesClient.reduce((s, mk) => s + porCliente[cliente.id][mk].length, 0)
+        const isExp = expClientesInline.has(cliente.id)
+        let clTMXN = 0, clTUSD = 0
+        mesesClient.forEach(mk => porCliente[cliente.id][mk].forEach(c => c.rows.forEach(r => {
+          if (socioMode && (r.tipo || '').toString().toUpperCase().trim() === 'OPCIONAL') return
+          const { mxn, usd } = getImporte(r, c.info, tarifario)
+          clTMXN += mxn; clTUSD += usd
+        })))
+        return (
+          <div key={cliente.id} style={{ marginBottom: 24, border: `2px solid ${cliente.color}44`, borderRadius: 14, overflow: 'hidden', background: 'rgba(255,255,255,.5)' }}>
+            <div
+              onClick={() => toggleCl(cliente.id)}
+              style={{
+                padding: '16px 20px',
+                cursor: 'pointer',
+                userSelect: 'none',
+                background: `linear-gradient(135deg, ${cliente.color}22 0%, ${cliente.color}08 100%)`,
+                borderBottom: isExp ? `1px solid ${cliente.color}33` : 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 14, color: cliente.color, transition: 'transform .15s', display: 'inline-block', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                <div>
+                  <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 700, color: '#12151f', lineHeight: 1 }}>
+                    🏢 {cliente.label}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#8a8278', marginTop: 4 }}>
+                    {totalCircs} circuito{totalCircs !== 1 ? 's' : ''} · {mesesClient.length} mes{mesesClient.length !== 1 ? 'es' : ''}
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 10, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5 }}>Total MN</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#12151f' }}>{fmtMXN(clTMXN)}</div>
+                </div>
+                {clTUSD > 0 && (
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 10, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5 }}>Total USD</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: '#1565a0' }}>{fmtUSD(clTUSD)}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {isExp && (
+              <div style={{ padding: '16px 20px' }}>
+                {totalCircs === 0 ? (
+                  <div style={{ padding: 20, textAlign: 'center', color: '#8a8278', fontSize: 13, fontStyle: 'italic' }}>
+                    No hay circuitos de este cliente aún.
+                  </div>
+                ) : (
+                  mesesClient.map(mk => (
+                    <div key={mk} style={{ marginBottom: 20 }}>
+                      <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 17, fontWeight: 700, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {cap(mk)} <span style={{ background: cliente.color, color: '#fff', borderRadius: 10, padding: '1px 9px', fontSize: 11, fontFamily: 'inherit', fontWeight: 700 }}>{porCliente[cliente.id][mk].length}</span>
+                      </div>
+                      <CircuitCards circs={porCliente[cliente.id][mk]} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={onSelect} />
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
-          <CircuitCards circs={monthMap[mk]} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={onSelect} />
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
