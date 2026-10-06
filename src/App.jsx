@@ -286,9 +286,27 @@ function Dashboard({ session }) {
           seenIds.add(r.id)
           return true
         })
+        // Cargar cobros (ingresos) y pre-factura — tablas opcionales (IMPRONTA)
+        let ingresosByCircuit = {}, prefacturaByCircuit = {}
+        try {
+          const { data: ingresos } = await supabase.from('circuit_ingresos').select('*').order('fecha', { ascending: true })
+          if (ingresos) ingresos.forEach(ing => {
+            if (!ingresosByCircuit[ing.circuit_id]) ingresosByCircuit[ing.circuit_id] = []
+            ingresosByCircuit[ing.circuit_id].push(ing)
+          })
+        } catch (e) { /* tabla puede no existir aún */ }
+        try {
+          const { data: prefact } = await supabase.from('circuit_prefactura').select('*').order('orden', { ascending: true })
+          if (prefact) prefact.forEach(pf => {
+            if (!prefacturaByCircuit[pf.circuit_id]) prefacturaByCircuit[pf.circuit_id] = []
+            prefacturaByCircuit[pf.circuit_id].push(pf)
+          })
+        } catch (e) { /* tabla puede no existir aún */ }
         const full = circs.map((c) => ({
           ...c,
           rows: allRows.filter((r) => r.circuit_id === c.id).map((r) => ({ ...r, fecha: parseLocalDate(r.fecha) })),
+          ingresos: ingresosByCircuit[c.id] || [],
+          prefactura: prefacturaByCircuit[c.id] || [],
         }))
         setCircuits(full)
         if (full.length > 0) setView({ type: 'all' })
@@ -5303,6 +5321,73 @@ function AllView({ circuits, monthMap, sortedMonths, tarifario, TC, socioMode, o
           const { mxn, usd } = getImporte(r, c.info, tarifario)
           clTMXN += mxn; clTUSD += usd
         })))
+        const esImpronta = cliente.id === 'IMPRONTA'
+
+        // ═══ Banda IMPRONTA — tema Día de Muertos (oscuro) ═══
+        if (esImpronta) {
+          // Total cobrado USD de todos los circuitos IMPRONTA
+          let impTotalUSD = 0, impCobradoUSD = 0
+          mesesClient.forEach(mk => porCliente[cliente.id][mk].forEach(c => {
+            impTotalUSD += c.moneda_cobrado === 'USD' ? (parseFloat(c.importe_cobrado) || 0) : 0
+            impCobradoUSD += (c.ingresos || []).reduce((s, i) => s + (parseFloat(i.monto) || 0), 0)
+          }))
+          return (
+            <div key={cliente.id} style={{ marginBottom: 24, borderRadius: 14, overflow: 'hidden', background: '#1a1420', border: '2px solid #d4537e44' }}>
+              {/* Papel picado superior */}
+              <div style={{ height: 14, background: 'repeating-linear-gradient(90deg, #d4537e 0 18px, transparent 18px 20px, #ef9f27 20px 38px, transparent 38px 40px, #1d9e75 40px 58px, transparent 58px 60px, #378add 60px 78px, transparent 78px 80px)' }} />
+              <div
+                onClick={() => toggleCl(cliente.id)}
+                style={{ padding: '18px 24px', cursor: 'pointer', userSelect: 'none', background: '#241528', borderBottom: isExp ? '2px solid #d4537e' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <span style={{ fontSize: 13, color: '#ef9f27', transition: 'transform .15s', display: 'inline-block', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                  <div>
+                    <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, fontWeight: 700, color: '#fff', lineHeight: 1 }}>🏢 IMPRONTA</div>
+                    <div style={{ fontSize: 12, color: '#c99', marginTop: 5, letterSpacing: .5 }}>
+                      💀 Día de Muertos 2026 · {totalCircs} circuito{totalCircs !== 1 ? 's' : ''}
+                    </div>
+                  </div>
+                </div>
+                {impTotalUSD > 0 && (
+                  <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 10, color: '#a77', textTransform: 'uppercase', letterSpacing: .5 }}>Cobrado</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: '#ef9f27' }}>{fmtUSD(impCobradoUSD)}</div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 10, color: '#a77', textTransform: 'uppercase', letterSpacing: .5 }}>Total USD</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#5dcaa5' }}>{fmtUSD(impTotalUSD)}</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {isExp && (
+                <div style={{ padding: '22px 24px', background: 'linear-gradient(180deg, #1a1420 0%, #1f1a26 100%)' }}>
+                  {totalCircs === 0 ? (
+                    <div style={{ padding: 20, textAlign: 'center', color: '#a88', fontSize: 13, fontStyle: 'italic' }}>
+                      No hay circuitos de IMPRONTA aún.
+                    </div>
+                  ) : (
+                    mesesClient.map(mk => (
+                      <div key={mk} style={{ marginBottom: 20 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                          <span style={{ fontSize: 18 }}>💀</span>
+                          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 16, color: '#ef9f27', fontWeight: 700 }}>{cap(mk)}</span>
+                          <span style={{ fontSize: 11, color: '#fff', background: '#d4537e', borderRadius: 10, padding: '1px 9px', fontWeight: 700 }}>{porCliente[cliente.id][mk].length}</span>
+                          <span style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, #d4537e44, transparent)' }} />
+                        </div>
+                        <CircuitCardsImpronta circs={porCliente[cliente.id][mk]} onSelect={onSelect} />
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        // ═══ Banda normal (WE ROAD) ═══
         return (
           <div key={cliente.id} style={{ marginBottom: 24, border: `2px solid ${cliente.color}44`, borderRadius: 14, overflow: 'hidden', background: 'rgba(255,255,255,.5)' }}>
             <div
@@ -5439,6 +5524,88 @@ function CircuitCards({ circs, tarifario, TC, socioMode, onSelect }) {
 }
 
 
+// ═══════════════════════════════════════════════════════════════════
+// CircuitCardsImpronta — Cards con tema Día de Muertos para IMPRONTA
+// Muestra cobranza (ingresos USD) en lugar de costos/utilidad
+// ═══════════════════════════════════════════════════════════════════
+const JUMP_COLORS = ['#d4537e', '#ef9f27', '#1d9e75', '#378add', '#7a6ad4', '#d85a30']
+
+function CircuitCardsImpronta({ circs, onSelect }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 16 }}>
+      {circs.map((c, idx) => {
+        const color = JUMP_COLORS[idx % JUMP_COLORS.length]
+        // Cobros registrados
+        const ingresos = c.ingresos || []
+        const totalCobrado = ingresos.reduce((s, i) => s + (parseFloat(i.monto) || 0), 0)
+        // Ingreso total esperado (pre-factura o importe_cobrado)
+        const totalEsperado = c.moneda_cobrado === 'USD' ? (parseFloat(c.importe_cobrado) || 0) : (parseFloat(c.importe_cobrado) || 0)
+        const monedaEsp = c.moneda_cobrado || 'USD'
+        const pctCobrado = totalEsperado > 0 ? Math.round((totalCobrado / totalEsperado) * 100) : 0
+        const completo = totalEsperado > 0 && totalCobrado >= totalEsperado - 0.01
+
+        const fi = c.info?.fecha_inicio
+        const ff = c.info?.fecha_fin
+        const fmtF = (f) => f ? (f instanceof Date ? f : parseLocalDate(f)).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) : '—'
+        const nombre = c.info?.nombre || c.info?.tl || c.id
+        // Nombre corto "JUMP X"
+        const jumpMatch = (nombre.match(/JUMP\s*\d+/i) || [''])[0].toUpperCase()
+
+        return (
+          <div key={c.id} onClick={() => onSelect(c.id)}
+            style={{
+              position: 'relative', background: '#2a1d30', border: `1px solid ${color}55`,
+              borderRadius: 14, padding: 18, overflow: 'hidden', cursor: 'pointer'
+            }}>
+            <div style={{ position: 'absolute', top: -14, right: -14, fontSize: 60, opacity: .08, pointerEvents: 'none' }}>🌼</div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              {jumpMatch && <span style={{ background: color, color: '#fff', fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 20 }}>{jumpMatch}</span>}
+              <span style={{ fontSize: 11, color: '#a88', fontFamily: "'IBM Plex Mono',monospace" }}>{c.id}</span>
+              {c.locked && <span title="Cerrado" style={{ marginLeft: 'auto', fontSize: 12 }}>🔒</span>}
+            </div>
+
+            <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 17, color: '#fff', fontWeight: 700, marginBottom: 12, lineHeight: 1.2 }}>
+              {nombre}
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+              <span style={{ fontSize: 11, color: '#c99', background: '#ffffff10', padding: '3px 9px', borderRadius: 6 }}>📅 {fmtF(fi)} – {fmtF(ff)}</span>
+              <span style={{ fontSize: 11, color: '#c99', background: '#ffffff10', padding: '3px 9px', borderRadius: 6 }}>👤 {c.info?.pax || '—'} pax</span>
+            </div>
+
+            {/* Cobranza */}
+            {totalEsperado > 0 ? (
+              <>
+                <div style={{ borderTop: '1px solid #ffffff12', paddingTop: 12, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ fontSize: 11, color: '#a88', textTransform: 'uppercase', letterSpacing: .5 }}>Ingreso total</span>
+                  <span style={{ fontSize: 19, fontWeight: 700, color: '#5dcaa5' }}>{fmtUSD(totalEsperado)} <span style={{ fontSize: 11, color: '#789' }}>{monedaEsp}</span></span>
+                </div>
+                {/* Barra de cobranza */}
+                <div style={{ height: 5, background: '#ffffff12', borderRadius: 3, overflow: 'hidden', marginBottom: 6 }}>
+                  <div style={{ height: '100%', width: Math.min(pctCobrado, 100) + '%', background: completo ? '#5dcaa5' : '#ef9f27', borderRadius: 3 }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, color: '#a88' }}>Cobrado {fmtUSD(totalCobrado)} ({pctCobrado}%)</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 9, background: completo ? '#1d9e7533' : '#ef9f2733', color: completo ? '#5dcaa5' : '#ef9f27' }}>
+                    {completo ? '✅ Cobrado' : '⏳ Parcial'}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <div style={{ borderTop: '1px solid #ffffff12', paddingTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontSize: 11, color: '#a88', textTransform: 'uppercase', letterSpacing: .5 }}>Ingreso</span>
+                <span style={{ fontSize: 15, fontWeight: 400, color: '#789', fontStyle: 'italic' }}>pendiente</span>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+
 // ── EditableInfoField — campo editable inline en header ──
 function EditableInfoField({ label, value, type, onSave, isReadOnly }) {
   const [editing, setEditing] = useState(false)
@@ -5466,6 +5633,100 @@ function EditableInfoField({ label, value, type, onSave, isReadOnly }) {
 }
 
 // ── Circuit Detail ──
+// ═══════════════════════════════════════════════════════════════════
+// ImprontaCobranzaPanel — muestra pre-factura + cobros de un circuito IMPRONTA
+// ═══════════════════════════════════════════════════════════════════
+function ImprontaCobranzaPanel({ circ }) {
+  const ingresos = circ.ingresos || []
+  const prefactura = circ.prefactura || []
+  const totalEsperado = parseFloat(circ.importe_cobrado) || 0
+  const moneda = circ.moneda_cobrado || 'USD'
+  const totalCobrado = ingresos.reduce((s, i) => s + (parseFloat(i.monto) || 0), 0)
+  const saldoPend = totalEsperado - totalCobrado
+  const pctCobrado = totalEsperado > 0 ? Math.round((totalCobrado / totalEsperado) * 100) : 0
+  const completo = totalEsperado > 0 && totalCobrado >= totalEsperado - 0.01
+  const totalPrefact = prefactura.reduce((s, p) => s + (parseFloat(p.importe) || 0), 0)
+
+  const fmtFecha = (f) => {
+    if (!f) return '—'
+    const d = parseLocalDate(f)
+    return d ? d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+  }
+
+  return (
+    <div style={{ marginBottom: 16, borderRadius: 14, overflow: 'hidden', background: '#241528', border: '1px solid #d4537e55' }}>
+      <div style={{ height: 8, background: 'repeating-linear-gradient(90deg, #d4537e 0 14px, transparent 14px 16px, #ef9f27 16px 30px, transparent 30px 32px, #1d9e75 32px 46px, transparent 46px 48px, #378add 48px 62px, transparent 62px 64px)' }} />
+      <div style={{ padding: '16px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+          <span style={{ fontSize: 16 }}>💀</span>
+          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 17, color: '#ef9f27', fontWeight: 700 }}>Cobranza IMPRONTA</span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 18 }}>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Ingreso total</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#5dcaa5' }}>{fmtUSD(totalEsperado)} <span style={{ fontSize: 11, color: '#789' }}>{moneda}</span></div>
+          </div>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Cobrado</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#ef9f27' }}>{fmtUSD(totalCobrado)}</div>
+          </div>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '10px 14px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 4 }}>Saldo pendiente</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: completo ? '#5dcaa5' : '#d4537e' }}>{fmtUSD(Math.abs(saldoPend))}</div>
+          </div>
+        </div>
+
+        {/* Barra */}
+        <div style={{ height: 6, background: '#ffffff12', borderRadius: 3, overflow: 'hidden', marginBottom: 18 }}>
+          <div style={{ height: '100%', width: Math.min(pctCobrado, 100) + '%', background: completo ? '#5dcaa5' : '#ef9f27', borderRadius: 3 }} />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 18 }}>
+          {/* Pre-factura */}
+          {prefactura.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#c99', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>📄 Pre-factura (c/IVA)</div>
+              <div style={{ background: '#ffffff06', borderRadius: 10, padding: '4px 0' }}>
+                {prefactura.map((p, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 14px', borderBottom: i < prefactura.length - 1 ? '1px solid #ffffff0a' : 'none' }}>
+                    <span style={{ fontSize: 12, color: '#d9cccc' }}>{p.concepto}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#fff', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(p.importe)}</span>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderTop: '1px solid #ffffff15', marginTop: 2 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#ef9f27' }}>Total</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(totalPrefact)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Cobros */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#c99', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>🏦 Cobros recibidos</div>
+            {ingresos.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#a88', fontStyle: 'italic', padding: '8px 0' }}>Sin cobros registrados aún.</div>
+            ) : (
+              <div style={{ background: '#ffffff06', borderRadius: 10, padding: '4px 0' }}>
+                {ingresos.map((ing, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 14px', borderBottom: i < ingresos.length - 1 ? '1px solid #ffffff0a' : 'none' }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#fff', fontWeight: 600 }}>{ing.concepto || 'Cobro'}</div>
+                      <div style={{ fontSize: 10, color: '#a88' }}>{fmtFecha(ing.fecha)}{ing.referencia ? ' · ' + ing.referencia : ''}</div>
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#5dcaa5', fontFamily: "'IBM Plex Mono',monospace" }}>{fmtUSD(ing.monto)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFilters, filteredRows, socioMode, isReadOnly, togglePaid, setFechaPago, setNota, saveProv, saveImporte, saveImporteCobrado, saveCommission, saveFactura, saveRowField, addRow, deleteRow, saveOpcional, saveCircInfo, openLockModal, onDelete }) {
   const [editIC, setEditIC] = useState(false)
   const [icVal, setIcVal] = useState(circ.importe_cobrado || '')
@@ -5576,6 +5837,9 @@ function CircuitDetail({ circ, tarifario, TC, activeTab, setActiveTab, F, setFil
           </div>
         </div>
       )}
+
+      {/* ── PANEL DE COBRANZA IMPRONTA ── */}
+      {getCliente(circ) === 'IMPRONTA' && <ImprontaCobranzaPanel circ={circ} />}
 
       {/* ── BANNERS DE UTILIDAD — DOS COLUMNAS (UNA EN VISTA SOCIO) ── */}
       <div style={{display:'grid',gridTemplateColumns: socioMode ? '1fr' : '1fr 1fr',gap:12,marginBottom:16}}>
