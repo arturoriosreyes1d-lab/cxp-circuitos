@@ -96,6 +96,17 @@ const CLIENTES = [
 const CLIENTE_LABEL = Object.fromEntries(CLIENTES.map(c => [c.id, c.label]))
 const CLIENTE_IDS = CLIENTES.map(c => c.id)
 const getCliente = (c) => CLIENTE_IDS.includes(c?.cliente) ? c.cliente : 'WE_ROAD'
+const getGrupo = (c) => (c?.grupo && String(c.grupo).trim()) || 'Sin grupo'
+// Extrae "Jump N" del nombre/id del circuito para mostrar "Jump 1 · SO41761"
+const getJumpLabel = (c) => {
+  const nombre = c?.info?.nombre || c?.info?.tl || ''
+  const m = (nombre.match(/JUMP\s*\d+/i) || [''])[0]
+  if (m) {
+    const num = m.replace(/JUMP\s*/i, '')
+    return 'Jump ' + num
+  }
+  return null
+}
 
 function calcCircTotals(circ, tarifario, TC) {
   let costoMXN = 0, costoUSD = 0, paidMXN = 0, paidUSD = 0
@@ -214,6 +225,7 @@ function Dashboard({ session }) {
   const [modal, setModal] = useState(null)
   const [pendingCircuit, setPendingCircuit] = useState(null)
   const [pendingCliente, setPendingCliente] = useState('WE_ROAD')
+  const [pendingGrupo, setPendingGrupo] = useState('')
   const [deleteId, setDeleteId] = useState(null)
   const [activeTab, setActiveTab] = useState('cxp')
   const [saving, setSaving] = useState(false)
@@ -330,7 +342,7 @@ function Dashboard({ session }) {
     if (checkReadOnly()) return
     setSaving(true)
     try {
-      await supabase.from('circuits').upsert({ id: pendingCircuit.id, month_key: pendingCircuit.monthKey, info: pendingCircuit.info, cliente: pendingCliente })
+      await supabase.from('circuits').upsert({ id: pendingCircuit.id, month_key: pendingCircuit.monthKey, info: pendingCircuit.info, cliente: pendingCliente, grupo: pendingCliente === 'IMPRONTA' ? (pendingGrupo.trim() || null) : null })
       await supabase.from('circuit_rows').delete().eq('circuit_id', pendingCircuit.id)
       await supabase.from('circuit_rows').insert(pendingCircuit.rows.map((r) => ({
         circuit_id: pendingCircuit.id, idx: r.idx, fecha: dateToLocalStr(r.fecha),
@@ -342,7 +354,7 @@ function Dashboard({ session }) {
       await loadAll()
       setView({ type: 'circuit', circuitId: pendingCircuit.id })
       setActiveTab('cxp')
-      setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD')
+      setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD'); setPendingGrupo('')
     } catch (e) { console.error(e) }
     setSaving(false)
   }
@@ -680,6 +692,25 @@ function Dashboard({ session }) {
     clientCounts[cl] = { circs, pax }
   })
 
+  // ── Agrupación por GRUPO (solo IMPRONTA): grupoMap[grupo] = [circs...] ──
+  const grupoMap = {}
+  visibleCircuits.filter(c => getCliente(c) === 'IMPRONTA').forEach(c => {
+    const g = getGrupo(c)
+    if (!grupoMap[g]) grupoMap[g] = []
+    grupoMap[g].push(c)
+  })
+  // Ordenar circuitos dentro de cada grupo por fecha_inicio
+  Object.keys(grupoMap).forEach(g => {
+    grupoMap[g].sort((a, b) => {
+      const fa = parseLocalDate(a.info?.fecha_inicio)
+      const fb = parseLocalDate(b.info?.fecha_inicio)
+      if (!fa && !fb) return (a.id || '').localeCompare(b.id || '')
+      if (!fa) return 1; if (!fb) return -1
+      return fa - fb
+    })
+  })
+  const gruposImpronta = Object.keys(grupoMap).sort()
+
   // Cuando seleccionas un circuito o un mes en el main, abre ese mes en la sidebar (sin cerrar otros)
   useEffect(() => {
     if (view.type === 'circuit' && view.circuitId) {
@@ -780,11 +811,22 @@ function Dashboard({ session }) {
               const months = clientMonths[cliente.id]
               const counts = clientCounts[cliente.id]
               const isClientExp = expandedClients.has(cliente.id)
+              const esImpronta = cliente.id === 'IMPRONTA'
               return (
                 <div key={cliente.id} style={{ marginBottom: 6 }}>
                   {/* ═══ BANDA DE CLIENTE ═══ */}
+                  {/* IMPRONTA: clic abre vista temática directa + expande. WE ROAD: solo expande */}
                   <div
-                    onClick={() => toggleClient(cliente.id)}
+                    onClick={() => {
+                      if (esImpronta) {
+                        // Abrir vista temática del primer grupo disponible
+                        const primerGrupo = gruposImpronta[0] || 'Día de Muertos'
+                        setView({ type: 'impronta', grupo: primerGrupo })
+                        if (!expandedClients.has(cliente.id)) toggleClient(cliente.id)
+                      } else {
+                        toggleClient(cliente.id)
+                      }
+                    }}
                     style={{
                       padding: '12px 16px',
                       marginTop: 10,
@@ -794,10 +836,11 @@ function Dashboard({ session }) {
                       borderLeft: `3px solid ${cliente.color}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between'
                     }}
-                    title={isClientExp ? 'Colapsar' : 'Expandir'}
+                    title={esImpronta ? 'Ver IMPRONTA' : (isClientExp ? 'Colapsar' : 'Expandir')}
                   >
                     <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                      <span style={{ fontSize:10, color:cliente.color, transition:'transform .15s', display:'inline-block', transform: isClientExp ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                      <span onClick={(e)=>{ if(esImpronta){ e.stopPropagation(); toggleClient(cliente.id) } }}
+                        style={{ fontSize:10, color:cliente.color, transition:'transform .15s', display:'inline-block', transform: isClientExp ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
                       <span style={{ fontSize:12, fontWeight:700, letterSpacing:.5, color:'#fff' }}>🏢 {cliente.label}</span>
                     </div>
                     <span style={{ fontSize:10, fontWeight:700, color: cliente.color, background: 'rgba(255,255,255,.05)', padding:'2px 8px', borderRadius:10 }}>
@@ -811,7 +854,47 @@ function Dashboard({ session }) {
                     </div>
                   )}
 
-                  {isClientExp && months.map((mk) => {
+                  {/* ═══ IMPRONTA: agrupar por GRUPO (Día de Muertos, etc.) ═══ */}
+                  {isClientExp && esImpronta && gruposImpronta.map((g) => {
+                    const gCircs = grupoMap[g]
+                    const gKey = 'grupo|' + g
+                    const isExpanded = expandedMonths.has(gKey)
+                    return (
+                      <div key={gKey}>
+                        <div
+                          style={{ padding: '8px 16px 3px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
+                          title={isExpanded ? 'Colapsar' : 'Expandir'}
+                        >
+                          <span onClick={() => { setView({ type: 'impronta', grupo: g }); toggleMonth(gKey) }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1.2, color: view.type === 'impronta' && view.grupo === g ? '#ef9f27' : 'rgba(255,255,255,.5)' }}>
+                            <span style={{ fontSize: 8, transition: 'transform .15s', display: 'inline-block', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                            💀 {g}
+                            <span style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,.45)', background: 'rgba(255,255,255,.08)', padding: '1px 6px', borderRadius: 8 }}>{gCircs.length}</span>
+                          </span>
+                        </div>
+
+                        {isExpanded && gCircs.map((c) => {
+                          const isActive = view.circuitId === c.id
+                          const jumpLbl = getJumpLabel(c)
+                          const label = jumpLbl ? `${jumpLbl} · ${c.id}` : c.id
+                          return (
+                            <div key={c.id} onClick={() => { setView({ type: 'circuit', circuitId: c.id }); setActiveTab('cxp'); setFilters({ tipo: 'ALL', cat: 'ALL', pago: 'ALL', fecha: '', proveedor: 'ALL' }) }}
+                              style={{ padding: '5px 16px 5px 40px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, borderLeft: `3px solid ${isActive ? '#d4537e' : 'transparent'}` }}>
+                              <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#e0c96a', flexShrink: 0 }} />
+                              <div style={{ overflow: 'hidden', flex: 1 }}>
+                                <div style={{ fontSize: 9.5, color: isActive ? '#fff' : 'rgba(255,255,255,.65)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.id}>{label}</div>
+                              </div>
+                              {c.locked && <span title="Circuito cerrado" style={{ fontSize: 11, color: '#e0c96a', flexShrink: 0 }}>🔒</span>}
+                            </div>
+                          )
+                        })}
+                        <div style={{ height: 4 }} />
+                      </div>
+                    )
+                  })}
+
+                  {/* ═══ WE ROAD: agrupar por MES (como siempre) ═══ */}
+                  {isClientExp && !esImpronta && months.map((mk) => {
                     const mCircs = monthMapByClient[cliente.id][mk]
                     const mPaid = mCircs.every((c) => c.rows.length > 0 && c.rows.every((r) => r.paid))
                     const mkKey = mk + '|' + cliente.id
@@ -874,6 +957,7 @@ function Dashboard({ session }) {
         <main style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
           {view.type === 'empty' && <EmptyState onAdd={() => { setPendingCircuit(null); setModal('upload') }} />}
           {view.type === 'all' && <AllView circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
+          {view.type === 'impronta' && <ImprontaView grupoActivo={view.grupo} grupoMap={grupoMap} gruposImpronta={gruposImpronta} onSelectGrupo={(g)=>setView({type:'impronta',grupo:g})} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'month' && <MonthView mk={view.monthKey} circuits={monthMap[view.monthKey] || []} tarifario={tarifario} TC={TC} socioMode={socioMode} onSelect={(id) => { setView({ type: 'circuit', circuitId: id }); setActiveTab('cxp') }} />}
           {view.type === 'resultados_all' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} />}
           {view.type === 'resultados_mes' && <EstadoResultados circuits={visibleCircuits} monthMap={monthMap} sortedMonths={sortedMonths} tarifario={tarifario} TC={TC} pietroFeeEur={pietroFeeEur} tcEur={tcEur} gastosOperativosMxn={gastosOperativosMxn} gastosItems={gastosItems} onEditGastos={isReadOnly ? null : () => setGastosModal(true)} socioMode={socioMode} isReadOnly={isReadOnly} initModo="mes" initMes={view.monthKey} />}
@@ -891,7 +975,7 @@ function Dashboard({ session }) {
 
       {/* ── MODALS ── */}
       {modal === 'upload' && (
-        <Modal title="Agregar Circuito" onClose={() => { setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD') }}>
+        <Modal title="Agregar Circuito" onClose={() => { setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD'); setPendingGrupo('') }}>
           {/* Selector de cliente */}
           <div style={{ marginBottom: 16, padding: '12px 14px', background:'#f5f1eb', border:'1px solid #ece7df', borderRadius: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
@@ -915,11 +999,25 @@ function Dashboard({ session }) {
             <div style={{ fontSize: 10, color: '#8a8278', marginTop: 6, fontStyle: 'italic' }}>
               Este circuito aparecerá en la banda del cliente seleccionado.
             </div>
+            {/* Campo grupo — solo IMPRONTA */}
+            {pendingCliente === 'IMPRONTA' && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #ece7df' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#8a8278', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 6 }}>
+                  💀 Grupo de operación
+                </div>
+                <input type="text" value={pendingGrupo} onChange={e => setPendingGrupo(e.target.value)}
+                  placeholder="Día de Muertos"
+                  style={{ width: '100%', border: '1.5px solid #d8d2c8', borderRadius: 8, padding: '8px 12px', fontFamily: 'inherit', fontSize: 14, background: '#fff', outline: 'none', boxSizing: 'border-box' }} />
+                <div style={{ fontSize: 10, color: '#8a8278', marginTop: 4, fontStyle: 'italic' }}>
+                  Agrupa circuitos IMPRONTA por temporada (ej. "Día de Muertos", "Navidad 2026").
+                </div>
+              </div>
+            )}
           </div>
 
           <UploadZone xlsxReady={xlsxReady} onFile={handleCircuitFile} pending={pendingCircuit} fileRef={fileRef} onUpdatePending={setPendingCircuit} existingCircuits={circuits} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-            <Btn outline onClick={() => { setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD') }}>Cancelar</Btn>
+            <Btn outline onClick={() => { setModal(null); setPendingCircuit(null); setPendingCliente('WE_ROAD'); setPendingGrupo('') }}>Cancelar</Btn>
             <Btn disabled={!pendingCircuit || saving} onClick={confirmLoad}>{saving ? 'Guardando...' : 'Confirmar y cargar ✓'}</Btn>
           </div>
         </Modal>
@@ -5525,6 +5623,86 @@ function CircuitCards({ circs, tarifario, TC, socioMode, onSelect }) {
 
 
 // ═══════════════════════════════════════════════════════════════════
+// ImprontaView — Vista temática Día de Muertos con selector de grupos
+// ═══════════════════════════════════════════════════════════════════
+function ImprontaView({ grupoActivo, grupoMap, gruposImpronta, onSelectGrupo, onSelect }) {
+  const [selectorOpen, setSelectorOpen] = useState(false)
+  const grupo = grupoActivo && grupoMap[grupoActivo] ? grupoActivo : (gruposImpronta[0] || 'Día de Muertos')
+  const circs = grupoMap[grupo] || []
+
+  // KPIs del grupo
+  let totalUSD = 0, cobradoUSD = 0
+  circs.forEach(c => {
+    totalUSD += c.moneda_cobrado === 'USD' ? (parseFloat(c.importe_cobrado) || 0) : 0
+    cobradoUSD += (c.ingresos || []).reduce((s, i) => s + (parseFloat(i.monto) || 0), 0)
+  })
+
+  return (
+    <div style={{ background: '#1a1420', borderRadius: 14, overflow: 'hidden', margin: '-24px', minHeight: 'calc(100vh - 60px)' }}>
+      {/* Papel picado */}
+      <div style={{ height: 14, background: 'repeating-linear-gradient(90deg, #d4537e 0 18px, transparent 18px 20px, #ef9f27 20px 38px, transparent 38px 40px, #1d9e75 40px 58px, transparent 58px 60px, #378add 60px 78px, transparent 78px 80px)' }} />
+
+      <div style={{ padding: '24px 28px' }}>
+        {/* Selector de grupo */}
+        <div style={{ position: 'relative', display: 'inline-block', marginBottom: 20 }}>
+          <div onClick={() => setSelectorOpen(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#2a1d30', border: '1px solid #d4537e55', borderRadius: 12, padding: '10px 16px', cursor: 'pointer' }}>
+            <span style={{ fontSize: 18 }}>💀</span>
+            <div>
+              <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5 }}>Grupo de operación</div>
+              <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 19, color: '#fff', fontWeight: 700, lineHeight: 1.1 }}>{grupo}</div>
+            </div>
+            <span style={{ fontSize: 14, color: '#ef9f27', marginLeft: 8, transform: selectorOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>▾</span>
+          </div>
+          {selectorOpen && (
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, background: '#241528', border: '1px solid #d4537e55', borderRadius: 10, padding: 5, minWidth: 240, zIndex: 20, boxShadow: '0 8px 30px rgba(0,0,0,.5)' }}>
+              {gruposImpronta.map(g => (
+                <div key={g} onClick={() => { onSelectGrupo(g); setSelectorOpen(false) }}
+                  style={{ padding: '9px 12px', borderRadius: 7, cursor: 'pointer', background: g === grupo ? '#d4537e22' : 'transparent', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, color: '#fff', fontWeight: g === grupo ? 700 : 500 }}>💀 {g}</span>
+                  <span style={{ fontSize: 10, color: '#5dcaa5', background: '#1d9e7522', padding: '2px 8px', borderRadius: 10 }}>{grupoMap[g].length} circuitos</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* KPIs */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '12px 16px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5 }}>Circuitos</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: '#fff', marginTop: 3 }}>{circs.length}</div>
+          </div>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '12px 16px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5 }}>Cobrado USD</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: '#ef9f27', marginTop: 3 }}>{fmtUSD(cobradoUSD)}</div>
+          </div>
+          <div style={{ background: '#ffffff08', borderRadius: 10, padding: '12px 16px' }}>
+            <div style={{ fontSize: 10, color: '#a88', textTransform: 'uppercase', letterSpacing: .5 }}>Total USD</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: '#5dcaa5', marginTop: 3 }}>{fmtUSD(totalUSD)}</div>
+          </div>
+        </div>
+
+        {/* Título + cards */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+          <span style={{ fontSize: 18 }}>💀</span>
+          <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 16, color: '#ef9f27', fontWeight: 700 }}>{grupo}</span>
+          <span style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, #d4537e44, transparent)' }} />
+        </div>
+
+        {circs.length === 0 ? (
+          <div style={{ padding: 40, textAlign: 'center', color: '#a88', fontSize: 14, fontStyle: 'italic' }}>
+            No hay circuitos en este grupo aún.
+          </div>
+        ) : (
+          <CircuitCardsImpronta circs={circs} onSelect={onSelect} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // CircuitCardsImpronta — Cards con tema Día de Muertos para IMPRONTA
 // Muestra cobranza (ingresos USD) en lugar de costos/utilidad
 // ═══════════════════════════════════════════════════════════════════
@@ -5547,9 +5725,12 @@ function CircuitCardsImpronta({ circs, onSelect }) {
         const fi = c.info?.fecha_inicio
         const ff = c.info?.fecha_fin
         const fmtF = (f) => f ? (f instanceof Date ? f : parseLocalDate(f)).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) : '—'
-        const nombre = c.info?.nombre || c.info?.tl || c.id
+        const nombreFull = c.info?.nombre || c.info?.tl || c.id
         // Nombre corto "JUMP X"
-        const jumpMatch = (nombre.match(/JUMP\s*\d+/i) || [''])[0].toUpperCase()
+        const jumpMatch = (nombreFull.match(/JUMP\s*\d+/i) || [''])[0].toUpperCase()
+        // Título de card: "Grupo Jump N" si hay JUMP, si no el nombre completo
+        const jumpNum = jumpMatch ? jumpMatch.replace(/JUMP\s*/i, '') : ''
+        const nombre = jumpMatch ? `Grupo Jump ${jumpNum}` : nombreFull
 
         return (
           <div key={c.id} onClick={() => onSelect(c.id)}
